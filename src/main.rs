@@ -46,16 +46,10 @@ struct Metadata {
     reference_time_str: String,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BilinearEntry {
-    indices: [i32; 4],
-    weights: [f32; 4],
-}
-
 struct AppState {
     file_path: RwLock<String>,
-    lookup_table: Vec<BilinearEntry>,
-    png_cache: DashMap<(String, i64), Vec<u8>>, // Key: (ensemble_or_stat, time_seconds)
+    empty_tile: Vec<u8>,
+    png_cache: DashMap<(String, i64, u32, u32, u32), Vec<u8>>, // Key: (ens, time, z, x, y)
     metadata: RwLock<Option<Metadata>>,
 }
 
@@ -75,10 +69,8 @@ async fn main() {
     let initial_file = find_latest_nc_file(".").expect("No NetCDF (.nc) files found in workspace root!");
     println!("Found initial NetCDF file: {}", initial_file);
 
-    // 2. Precompute the Web Mercator to NetCDF coordinate lookup table
-    println!("Precomputing coordinate mapping table ({}x{})...", GRID_W, GRID_H);
-    let lookup_table = precompute_lookup_table();
-    println!("Coordinate mapping table initialized.");
+    // 2. Generate the empty transparent tile
+    let empty_tile = generate_empty_tile();
 
     // 3. Load initial metadata
     let metadata_val = match load_metadata(&initial_file) {
@@ -91,7 +83,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         file_path: RwLock::new(initial_file.clone()),
-        lookup_table,
+        empty_tile,
         png_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val),
     });
@@ -147,7 +139,7 @@ async fn main() {
     // 5. Configure Router
     let app = Router::new()
         .route("/api/metadata", get(get_metadata))
-        .route("/api/map/:ens/:time", get(get_map))
+        .route("/api/map/:ens/:time/:z/:x/:y", get(get_tile))
         .route("/api/value", get(get_value))
         .nest_service("/", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
@@ -210,66 +202,15 @@ fn load_metadata(file_path: &str) -> Result<Metadata, Box<dyn std::error::Error 
     })
 }
 
-/// Precompute mapping from Web Mercator pixels to NetCDF grid array indices with bilinear interpolation weights
-fn precompute_lookup_table() -> Vec<BilinearEntry> {
-    let mut table = vec![
-        BilinearEntry {
-            indices: [-1; 4],
-            weights: [0.0; 4],
-        };
-        (GRID_W * GRID_H) as usize
-    ];
-
-    for row in 0..GRID_H {
-        for col in 0..GRID_W {
-            // 1. Get Web Mercator coordinates for pixel center
-            let x_merc = MERCATOR_LEFT + (col as f64 + 0.5) * (MERCATOR_RIGHT - MERCATOR_LEFT) / (GRID_W as f64);
-            let y_merc = MERCATOR_TOP - (row as f64 + 0.5) * (MERCATOR_TOP - MERCATOR_BOTTOM) / (GRID_H as f64);
-
-            // 2. Convert to GPS
-            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
-
-            // 3. Convert to Polar Stereographic
-            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
-
-            // 4. Find fractional coordinate indices in the KNMI grid
-            let fx = (px - KNMI_X0) / KNMI_DX;
-            let fy = (py - KNMI_Y0) / KNMI_DY;
-
-            let ix1 = fx.floor() as i32;
-            let iy1 = fy.floor() as i32;
-            let ix2 = ix1 + 1;
-            let iy2 = iy1 + 1;
-
-            let wx = (fx - ix1 as f64) as f32;
-            let wy = (fy - iy1 as f64) as f32;
-
-            let w00 = (1.0 - wx) * (1.0 - wy);
-            let w10 = wx * (1.0 - wy);
-            let w01 = (1.0 - wx) * wy;
-            let w11 = wx * wy;
-
-            let get_index = |x: i32, y: i32| -> i32 {
-                if x >= 0 && x < KNMI_GRID_W as i32 && y >= 0 && y < KNMI_GRID_H as i32 {
-                    y * (KNMI_GRID_W as i32) + x
-                } else {
-                    -1
-                }
-            };
-
-            table[(row * GRID_W + col) as usize] = BilinearEntry {
-                indices: [
-                    get_index(ix1, iy1),
-                    get_index(ix2, iy1),
-                    get_index(ix1, iy2),
-                    get_index(ix2, iy2),
-                ],
-                weights: [w00, w10, w01, w11],
-            };
-        }
-    }
-
-    table
+/// Generates a 256x256 transparent PNG to serve for empty/out-of-bounds tiles
+fn generate_empty_tile() -> Vec<u8> {
+    use image::{ImageBuffer, ImageFormat};
+    use std::io::Cursor;
+    let img = ImageBuffer::from_pixel(256, 256, image::Rgba([0_u8, 0_u8, 0_u8, 0_u8]));
+    let mut png_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut png_bytes);
+    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    png_bytes
 }
 
 // API: Metadata
@@ -281,17 +222,119 @@ async fn get_metadata(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
     }
 }
 
-// API: Serves Web Mercator projected colored PNG overlay
-async fn get_map(
-    Path((ens_str, time)): Path<(String, i64)>,
+/// Bilinear interpolation helper for raw data values
+fn interpolate_bilinear(fx: f64, fy: f64, raw_slice: &[u16]) -> u16 {
+    let ix1 = fx.floor() as i32;
+    let iy1 = fy.floor() as i32;
+    let ix2 = ix1 + 1;
+    let iy2 = iy1 + 1;
+
+    if ix1 < -1 || ix1 >= KNMI_GRID_W as i32 || iy1 < -1 || iy1 >= KNMI_GRID_H as i32 {
+        return 65535;
+    }
+
+    let wx = (fx - ix1 as f64) as f32;
+    let wy = (fy - iy1 as f64) as f32;
+
+    let w00 = (1.0 - wx) * (1.0 - wy);
+    let w10 = wx * (1.0 - wy);
+    let w01 = (1.0 - wx) * wy;
+    let w11 = wx * wy;
+
+    let get_val = |x: i32, y: i32| -> Option<(u16, f32)> {
+        if x >= 0 && x < KNMI_GRID_W as i32 && y >= 0 && y < KNMI_GRID_H as i32 {
+            let val = raw_slice[(y * KNMI_GRID_W as i32 + x) as usize];
+            if val != 65535 {
+                Some((val, 1.0))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let mut sum_val = 0.0;
+    let mut sum_weight = 0.0;
+
+    let neighbors = [
+        (get_val(ix1, iy1), w00),
+        (get_val(ix2, iy1), w10),
+        (get_val(ix1, iy2), w01),
+        (get_val(ix2, iy2), w11),
+    ];
+
+    for (opt, w) in neighbors {
+        if let Some((val, _)) = opt {
+            sum_val += (val as f64) * (w as f64);
+            sum_weight += w as f64;
+        }
+    }
+
+    if sum_weight > 0.001 {
+        (sum_val / sum_weight).round() as u16
+    } else {
+        65535
+    }
+}
+
+// API: Serves Web Mercator projected colored PNG overlay tile dynamically
+async fn get_tile(
+    Path((ens_str, time, z, x, y)): Path<(String, i64, u32, u32, u32)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Check cache
-    if let Some(cached_png) = state.png_cache.get(&(ens_str.clone(), time)) {
+    if let Some(cached_png) = state.png_cache.get(&(ens_str.clone(), time, z, x, y)) {
         return Ok(Response::builder()
             .header("Content-Type", "image/png")
             .header("Cache-Control", "public, max-age=300")
             .body(axum::body::Body::from(cached_png.value().clone()))
+            .unwrap());
+    }
+
+    // 1. Calculate the Web Mercator bounds of the tile
+    const MAP_LIMIT: f64 = std::f64::consts::PI * 6378137.0; // 20037508.342789244
+    let n = 2.0_f64.powi(z as i32);
+    let tile_size = (2.0 * MAP_LIMIT) / n;
+    let left = -MAP_LIMIT + (x as f64) * tile_size;
+    let right = left + tile_size;
+    let top = MAP_LIMIT - (y as f64) * tile_size;
+    let bottom = top - tile_size;
+
+    // 2. Convert the 4 corners to Polar Stereographic to verify overlap
+    let corners = [
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+    ];
+    let mut ps_coords = Vec::with_capacity(4);
+    for (cx, cy) in corners {
+        let (lon, lat) = projection::mercator_to_lonlat(cx, cy);
+        let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
+        ps_coords.push((px, py));
+    }
+
+    let min_px = ps_coords.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
+    let max_px = ps_coords.iter().map(|c| c.0).fold(f64::NEG_INFINITY, f64::max);
+    let min_py = ps_coords.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
+    let max_py = ps_coords.iter().map(|c| c.1).fold(f64::NEG_INFINITY, f64::max);
+
+    // Bounding Box of KNMI grid in Polar Stereographic
+    const KNMI_X_MIN: f64 = 500.0 - 50000.0;
+    const KNMI_X_MAX: f64 = 700500.0 + 50000.0;
+    const KNMI_Y_MIN: f64 = -4415495.4 - 50000.0;
+    const KNMI_Y_MAX: f64 = -3650495.4 + 50000.0;
+
+    let overlap = max_px >= KNMI_X_MIN && min_px <= KNMI_X_MAX &&
+                  max_py >= KNMI_Y_MIN && min_py <= KNMI_Y_MAX;
+
+    if !overlap {
+        // Return transparent tile
+        return Ok(Response::builder()
+            .header("Content-Type", "image/png")
+            .header("Cache-Control", "public, max-age=300")
+            .body(axum::body::Body::from(state.empty_tile.clone()))
             .unwrap());
     }
 
@@ -326,7 +369,6 @@ async fn get_map(
         // Compute statistics for each cell
         let grid_size = KNMI_GRID_H * KNMI_GRID_W;
         for i in 0..grid_size {
-            // Check if cell is fill value (out of bounds)
             if member_slices[0][i] == 65535 {
                 raw_slice[i] = 65535;
                 continue;
@@ -342,7 +384,6 @@ async fn get_map(
                 }
                 raw_slice[i] = max_val;
             } else if ens_str == "prob" {
-                // Percentage of members with rain >= 0.1 mm/h (raw value >= 10)
                 let mut count = 0;
                 for slice in &member_slices {
                     let val = slice[i];
@@ -386,41 +427,47 @@ async fn get_map(
         })?;
     }
 
-    // Reproject to Web Mercator in-memory using the lookup table with bilinear interpolation
-    let mut projected_grid = vec![65535_u16; (GRID_W * GRID_H) as usize];
-    for i in 0..projected_grid.len() {
-        let entry = &state.lookup_table[i];
-        let mut sum_val = 0.0;
-        let mut sum_weight = 0.0;
+    // Render tile image dynamically
+    use image::{ImageBuffer, ImageFormat};
+    use std::io::Cursor;
+    let mut img = ImageBuffer::new(256, 256);
 
-        for k in 0..4 {
-            let src_idx = entry.indices[k];
-            let weight = entry.weights[k];
-            if src_idx >= 0 {
-                let val = raw_slice[src_idx as usize];
-                if val != 65535 {
-                    sum_val += (val as f64) * (weight as f64);
-                    sum_weight += weight as f64;
-                }
-            }
-        }
+    for row in 0..256 {
+        for col in 0..256 {
+            // 1. Get Web Mercator coordinates for pixel center
+            let col_frac = (col as f64 + 0.5) / 256.0;
+            let row_frac = (row as f64 + 0.5) / 256.0;
+            let x_merc = left + col_frac * (right - left);
+            let y_merc = top - row_frac * (top - bottom);
 
-        if sum_weight > 0.001 {
-            projected_grid[i] = (sum_val / sum_weight).round() as u16;
-        } else {
-            projected_grid[i] = 65535;
+            // 2. Convert to GPS
+            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
+
+            // 3. Convert to Polar Stereographic
+            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
+
+            // 4. Bilinear interpolation from raw_slice
+            let fx = (px - KNMI_X0) / KNMI_DX;
+            let fy = (py - KNMI_Y0) / KNMI_DY;
+
+            let val_raw = interpolate_bilinear(fx, fy, &raw_slice);
+
+            let color = if is_prob {
+                get_probability_color(val_raw)
+            } else {
+                get_color(val_raw)
+            };
+
+            img.put_pixel(col, row, image::Rgba(color));
         }
     }
 
-    // Render PNG image
-    let png_bytes = if is_prob {
-        render_probability_png(&projected_grid)
-    } else {
-        render_png(&projected_grid)
-    };
+    let mut png_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut png_bytes);
+    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
 
     // Cache results
-    state.png_cache.insert((ens_str, time), png_bytes.clone());
+    state.png_cache.insert((ens_str, time, z, x, y), png_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/png")
@@ -605,24 +652,7 @@ fn get_color(val_raw: u16) -> [u8; 4] {
     [0, 0, 0, 0]
 }
 
-/// Renders raw uint16 grid to PNG bytes
-fn render_png(grid: &[u16]) -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
-    use std::io::Cursor;
 
-    let mut img = ImageBuffer::new(GRID_W, GRID_H);
-    for (i, &val) in grid.iter().enumerate() {
-        let x = (i as u32) % GRID_W;
-        let y = (i as u32) / GRID_W;
-        let color = get_color(val);
-        img.put_pixel(x, y, image::Rgba(color));
-    }
-
-    let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
-    png_bytes
-}
 
 /// Maps probability percent (0-100) to color
 fn get_probability_color(p: u16) -> [u8; 4] {
@@ -665,21 +695,4 @@ fn get_probability_color(p: u16) -> [u8; 4] {
     [0, 0, 0, 0]
 }
 
-/// Renders probability percent grid to PNG bytes
-fn render_probability_png(grid: &[u16]) -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
-    use std::io::Cursor;
 
-    let mut img = ImageBuffer::new(GRID_W, GRID_H);
-    for (i, &val) in grid.iter().enumerate() {
-        let x = (i as u32) % GRID_W;
-        let y = (i as u32) / GRID_W;
-        let color = get_probability_color(val);
-        img.put_pixel(x, y, image::Rgba(color));
-    }
-
-    let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
-    png_bytes
-}

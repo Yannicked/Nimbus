@@ -68,7 +68,7 @@ function initMap() {
         center: [52.1, 5.2], // Center on Netherlands
         zoom: 7,
         minZoom: 6,
-        maxZoom: 10
+        maxZoom: 12
     });
 
     // Base Layer: CartoDB Dark Matter (Recommended)
@@ -162,29 +162,31 @@ function drawSliderTicks() {
     }
 }
 
-// Update the map ImageOverlay
+// Update the map TileOverlay
 function updateRadarOverlay() {
     if (!metadata) return;
 
     const timeVal = metadata.times[currentTimeIndex];
-    const imageUrl = `/api/map/${currentEns}/${timeVal}`;
+    const urlTemplate = `/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}`;
 
-    // Compute bounding box coordinates in Lat/Lon
+    // Compute bounding box coordinates in Lat/Lon for bounds restriction
     const sw = mercatorToLonLat(metadata.left, metadata.bottom);
     const ne = mercatorToLonLat(metadata.right, metadata.top);
-    const imageBounds = [sw, ne];
+    const bounds = [sw, ne];
 
     const opacity = parseFloat(opacitySlider.value) / 100;
 
     if (radarOverlay) {
-        // Update existing overlay URL and bounds
-        radarOverlay.setUrl(imageUrl);
+        radarOverlay.setUrl(urlTemplate);
         radarOverlay.setOpacity(opacity);
     } else {
-        // Create new overlay
-        radarOverlay = L.imageOverlay(imageUrl, imageBounds, {
+        radarOverlay = L.tileLayer(urlTemplate, {
             opacity: opacity,
-            interactive: false // We capture clicks/moves on map level for hover value queries
+            bounds: bounds,
+            minZoom: 6,
+            maxZoom: 12,
+            tileSize: 256,
+            updateWhenIdle: false
         }).addTo(map);
     }
 }
