@@ -457,3 +457,21 @@ header .ref-time .value {
 .leaflet-control-layers-expanded {
     padding: 10px 14px !important;
 }
+
+/* Statistics Buttons styling */
+.ensemble-grid button.stat-btn {
+    background: rgba(168, 85, 247, 0.08); /* slight purple tint */
+    border-color: rgba(168, 85, 247, 0.18);
+}
+
+.ensemble-grid button.stat-btn:hover {
+    background: rgba(168, 85, 247, 0.16);
+    border-color: rgba(168, 85, 247, 0.3);
+}
+
+.ensemble-grid button.stat-btn.active {
+    background: #a855f7; /* solid purple */
+    border-color: #c084fc;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+}
+

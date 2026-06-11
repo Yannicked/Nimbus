@@ -104,11 +104,25 @@ async function loadApp() {
 
         // Create Ensemble Selector Buttons
         ensembleGrid.innerHTML = '';
+        
+        // Add E1-E20
         metadata.ensembles.forEach(ens => {
             const btn = document.createElement('button');
             btn.textContent = `E${ens}`;
             if (ens === currentEns) btn.classList.add('active');
             btn.addEventListener('click', () => selectEnsemble(ens));
+            ensembleGrid.appendChild(btn);
+        });
+
+        // Add special statistics buttons
+        const stats = ['med', 'max', 'prob'];
+        const statLabels = { 'med': 'MED', 'max': 'MAX', 'prob': 'PROB' };
+        stats.forEach(stat => {
+            const btn = document.createElement('button');
+            btn.textContent = statLabels[stat];
+            btn.classList.add('stat-btn');
+            if (stat === currentEns) btn.classList.add('active');
+            btn.addEventListener('click', () => selectEnsemble(stat));
             ensembleGrid.appendChild(btn);
         });
 
@@ -186,8 +200,14 @@ function updateTimeStepDisplay() {
 // Handle Ensemble Switch
 function selectEnsemble(ens) {
     currentEns = ens;
-    document.querySelectorAll('.ensemble-grid button').forEach((btn, idx) => {
-        if (metadata.ensembles[idx] === ens) {
+    document.querySelectorAll('.ensemble-grid button').forEach((btn) => {
+        const text = btn.textContent;
+        const isTarget = (ens === 'med' && text === 'MED') ||
+                         (ens === 'max' && text === 'MAX') ||
+                         (ens === 'prob' && text === 'PROB') ||
+                         (typeof ens === 'number' && text === `E${ens}`);
+        
+        if (isTarget) {
             btn.classList.add('active');
         } else {
             btn.classList.remove('active');
@@ -328,8 +348,18 @@ async function triggerHoverQuery() {
             hoverValue.textContent = "Out of Grid";
             hoverValue.style.color = "var(--text-secondary)";
         } else if (res.status === "no_rain" || res.value === 0.0) {
-            hoverValue.textContent = "0.00 mm/h";
+            if (currentEns === 'prob') {
+                hoverValue.textContent = "0% Chance";
+            } else {
+                hoverValue.textContent = "0.00 mm/h";
+            }
             hoverValue.style.color = "var(--text-secondary)";
+        } else if (res.status === "probability") {
+            hoverValue.textContent = `${Math.round(res.value)}% Chance`;
+            // Color code probability
+            if (res.value < 30) hoverValue.style.color = "#94a3b8"; // Grey-blue
+            else if (res.value < 70) hoverValue.style.color = "#3b82f6"; // Blue
+            else hoverValue.style.color = "#a855f7"; // Purple / High probability
         } else {
             hoverValue.textContent = `${res.value.toFixed(2)} mm/h`;
             // Color code value dynamically in panel based on intensity
