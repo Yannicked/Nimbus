@@ -276,7 +276,7 @@ function clearRadarLayers() {
 
 // Setup Raster Source and Layer
 function setupRadarSourceAndLayer() {
-    if (!metadata) return;
+    if (!metadata || !map || !map.isStyleLoaded()) return;
 
     // Remove if already exists
     if (map.getSource('radar-raster')) {
@@ -314,7 +314,7 @@ function setupRadarSourceAndLayer() {
 
 // Update the map TileOverlay by changing setTiles
 function updateRadarOverlay() {
-    if (!metadata) return;
+    if (!metadata || !map || !map.isStyleLoaded()) return;
 
     const timeVal = metadata.times[currentTimeIndex];
     const urlTemplate = `${window.location.origin}/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
