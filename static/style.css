@@ -475,3 +475,9 @@ header .ref-time .value {
     box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
 }
 
+/* Force browser-side smooth scaling for the radar image overlay */
+.leaflet-image-layer {
+    image-rendering: auto !important;
+    image-rendering: smooth !important;
+}
+

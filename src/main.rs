@@ -46,9 +46,15 @@ struct Metadata {
     reference_time_str: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BilinearEntry {
+    indices: [i32; 4],
+    weights: [f32; 4],
+}
+
 struct AppState {
     file_path: RwLock<String>,
-    lookup_table: Vec<i32>,
+    lookup_table: Vec<BilinearEntry>,
     png_cache: DashMap<(String, i64), Vec<u8>>, // Key: (ensemble_or_stat, time_seconds)
     metadata: RwLock<Option<Metadata>>,
 }
@@ -204,9 +210,15 @@ fn load_metadata(file_path: &str) -> Result<Metadata, Box<dyn std::error::Error 
     })
 }
 
-/// Precompute mapping from Web Mercator pixels to NetCDF grid array indices
-fn precompute_lookup_table() -> Vec<i32> {
-    let mut table = vec![-1; (GRID_W * GRID_H) as usize];
+/// Precompute mapping from Web Mercator pixels to NetCDF grid array indices with bilinear interpolation weights
+fn precompute_lookup_table() -> Vec<BilinearEntry> {
+    let mut table = vec![
+        BilinearEntry {
+            indices: [-1; 4],
+            weights: [0.0; 4],
+        };
+        (GRID_W * GRID_H) as usize
+    ];
 
     for row in 0..GRID_H {
         for col in 0..GRID_W {
@@ -220,14 +232,40 @@ fn precompute_lookup_table() -> Vec<i32> {
             // 3. Convert to Polar Stereographic
             let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
 
-            // 4. Find closest indices in the KNMI grid
-            let ix = ((px - KNMI_X0) / KNMI_DX).round() as i32;
-            let iy = ((py - KNMI_Y0) / KNMI_DY).round() as i32;
+            // 4. Find fractional coordinate indices in the KNMI grid
+            let fx = (px - KNMI_X0) / KNMI_DX;
+            let fy = (py - KNMI_Y0) / KNMI_DY;
 
-            if ix >= 0 && ix < KNMI_GRID_W as i32 && iy >= 0 && iy < KNMI_GRID_H as i32 {
-                let index = iy * (KNMI_GRID_W as i32) + ix;
-                table[(row * GRID_W + col) as usize] = index;
-            }
+            let ix1 = fx.floor() as i32;
+            let iy1 = fy.floor() as i32;
+            let ix2 = ix1 + 1;
+            let iy2 = iy1 + 1;
+
+            let wx = (fx - ix1 as f64) as f32;
+            let wy = (fy - iy1 as f64) as f32;
+
+            let w00 = (1.0 - wx) * (1.0 - wy);
+            let w10 = wx * (1.0 - wy);
+            let w01 = (1.0 - wx) * wy;
+            let w11 = wx * wy;
+
+            let get_index = |x: i32, y: i32| -> i32 {
+                if x >= 0 && x < KNMI_GRID_W as i32 && y >= 0 && y < KNMI_GRID_H as i32 {
+                    y * (KNMI_GRID_W as i32) + x
+                } else {
+                    -1
+                }
+            };
+
+            table[(row * GRID_W + col) as usize] = BilinearEntry {
+                indices: [
+                    get_index(ix1, iy1),
+                    get_index(ix2, iy1),
+                    get_index(ix1, iy2),
+                    get_index(ix2, iy2),
+                ],
+                weights: [w00, w10, w01, w11],
+            };
         }
     }
 
@@ -348,12 +386,29 @@ async fn get_map(
         })?;
     }
 
-    // Reproject to Web Mercator in-memory using the lookup table
+    // Reproject to Web Mercator in-memory using the lookup table with bilinear interpolation
     let mut projected_grid = vec![65535_u16; (GRID_W * GRID_H) as usize];
     for i in 0..projected_grid.len() {
-        let src_idx = state.lookup_table[i];
-        if src_idx >= 0 {
-            projected_grid[i] = raw_slice[src_idx as usize];
+        let entry = &state.lookup_table[i];
+        let mut sum_val = 0.0;
+        let mut sum_weight = 0.0;
+
+        for k in 0..4 {
+            let src_idx = entry.indices[k];
+            let weight = entry.weights[k];
+            if src_idx >= 0 {
+                let val = raw_slice[src_idx as usize];
+                if val != 65535 {
+                    sum_val += (val as f64) * (weight as f64);
+                    sum_weight += weight as f64;
+                }
+            }
+        }
+
+        if sum_weight > 0.001 {
+            projected_grid[i] = (sum_val / sum_weight).round() as u16;
+        } else {
+            projected_grid[i] = 65535;
         }
     }
 
