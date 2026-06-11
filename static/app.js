@@ -27,8 +27,6 @@ const CONFIG = {
     // Sliding-window layer cache config
     cache: {
         preloadAhead: 2, // Number of future frames to pre-load
-        keepWindowStart: -2, // Keep layers from this index offset...
-        keepWindowEnd: 4 // ...to this index offset (inclusive)
     },
     // Legend and visualization colors
     radarVisualization: {
@@ -86,10 +84,16 @@ let currentEns = CONFIG.defaults.ensemble;
 let currentTimeIndex = CONFIG.defaults.timeIndex;
 let isPlaying = false;
 let playInterval = null;
-let activeTimeVal = null;
 let clickedMarker = null;
 let chartInstance = null;
 let activeCoords = null;
+
+// WebGL Custom Layer variables
+let radarProgram = null;
+let positionBuffer = null;
+let texcoordBuffer = null;
+let glContext = null;
+let textureCache = {};
 
 // DOM Elements
 const refTimeVal = document.getElementById('ref-time-value');
@@ -167,13 +171,12 @@ function initMap() {
     map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
     map.on('load', () => {
-        updateRadarOverlay();
+        setupRadarSourceAndLayer();
     });
 
-    // Recreate source and layer on style changes
+    // Recreate custom WebGL layer on style changes
     map.on('style.load', () => {
-        activeTimeVal = null;
-        updateRadarOverlay();
+        setupRadarSourceAndLayer();
     });
 
     // Attach map mouse events for hover & click
@@ -277,128 +280,323 @@ function drawSliderTicks() {
     }
 }
 
-// Clear all active radar layers and sources from the map
-function clearRadarLayers() {
-    if (!metadata || !map || !map.isStyleLoaded()) return;
+// Helper to load/bind WebGL textures asynchronously
+function getOrLoadTexture(gl, timeVal) {
+    if (!metadata) return null;
+    
+    const cacheKey = `${currentEns}-${timeVal}-${metadata.version}`;
+    
+    if (textureCache[cacheKey]) {
+        return textureCache[cacheKey].loaded ? textureCache[cacheKey].texture : null;
+    }
+    
+    // Create temporary 1x1 empty texture slot
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+    
+    textureCache[cacheKey] = {
+        texture: texture,
+        loaded: false
+    };
+    
+    // Load PNG containing raw data in R and G channels
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+        
+        // Lossless bilinear interpolation filter parameters
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        
+        textureCache[cacheKey].loaded = true;
+        
+        // Trigger map repaint so newly loaded data draws immediately
+        if (map) map.triggerRepaint();
+    };
+    
+    img.src = `${window.location.origin}/api/data/${currentEns}/${timeVal}?v=${metadata.version}`;
+    
+    return null;
+}
 
-    for (const tVal of metadata.times) {
-        const layerId = `radar-layer-${tVal}`;
-        const sourceId = `radar-source-${tVal}`;
-        if (map.getLayer(layerId)) {
-            map.removeLayer(layerId);
+// Custom MapLibre WebGL Layer Interface
+const webglRadarLayer = {
+    id: 'radar-webgl-layer',
+    type: 'custom',
+    
+    onAdd: function (mapInstance, gl) {
+        glContext = gl;
+        
+        // 1. Compile Shaders
+        const vertexShaderSource = `
+            attribute vec2 a_position;
+            attribute vec2 a_texcoord;
+            varying vec2 v_texcoord;
+            uniform mat4 u_matrix;
+            void main() {
+                gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
+                v_texcoord = a_texcoord;
+            }
+        `;
+        
+        const fragmentShaderSource = `
+            precision mediump float;
+            varying vec2 v_texcoord;
+            uniform sampler2D u_texture;
+            uniform float u_opacity;
+            uniform vec4 u_colors[9];
+            uniform float u_values[9];
+            
+            vec4 getColor(float val) {
+                if (val < u_values[0]) return vec4(0.0);
+                if (val <= u_values[1]) {
+                    float t = (val - u_values[0]) / (u_values[1] - u_values[0]);
+                    return mix(u_colors[0], u_colors[1], t);
+                }
+                if (val <= u_values[2]) {
+                    float t = (val - u_values[1]) / (u_values[2] - u_values[1]);
+                    return mix(u_colors[1], u_colors[2], t);
+                }
+                if (val <= u_values[3]) {
+                    float t = (val - u_values[2]) / (u_values[3] - u_values[2]);
+                    return mix(u_colors[2], u_colors[3], t);
+                }
+                if (val <= u_values[4]) {
+                    float t = (val - u_values[3]) / (u_values[4] - u_values[3]);
+                    return mix(u_colors[3], u_colors[4], t);
+                }
+                if (val <= u_values[5]) {
+                    float t = (val - u_values[4]) / (u_values[5] - u_values[4]);
+                    return mix(u_colors[4], u_colors[5], t);
+                }
+                if (val <= u_values[6]) {
+                    float t = (val - u_values[5]) / (u_values[6] - u_values[5]);
+                    return mix(u_colors[5], u_colors[6], t);
+                }
+                if (val <= u_values[7]) {
+                    float t = (val - u_values[6]) / (u_values[7] - u_values[6]);
+                    return mix(u_colors[6], u_colors[7], t);
+                }
+                if (val <= u_values[8]) {
+                    float t = (val - u_values[7]) / (u_values[8] - u_values[7]);
+                    return mix(u_colors[7], u_colors[8], t);
+                }
+                return u_colors[8];
+            }
+            
+            void main() {
+                vec4 tex = texture2D(u_texture, v_texcoord);
+                float r = tex.r * 255.0;
+                float g = tex.g * 255.0;
+                float raw_val = r * 256.0 + g;
+                if (raw_val >= 65535.0 || raw_val == 0.0) {
+                    discard;
+                }
+                float val = raw_val * 0.01;
+                vec4 c = getColor(val);
+                if (c.a == 0.0) {
+                    discard;
+                }
+                gl_FragColor = vec4(c.rgb, c.a * u_opacity);
+            }
+        `;
+        
+        function compileShader(source, type) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error("Shader compilation error:", gl.getShaderInfoLog(shader));
+                return null;
+            }
+            return shader;
         }
-        if (map.getSource(sourceId)) {
-            map.removeSource(sourceId);
+        
+        const vs = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
+        const fs = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+        
+        radarProgram = gl.createProgram();
+        gl.attachShader(radarProgram, vs);
+        gl.attachShader(radarProgram, fs);
+        gl.linkProgram(radarProgram);
+        
+        if (!gl.getProgramParameter(radarProgram, gl.LINK_STATUS)) {
+            console.error("Program linking error:", gl.getProgramInfoLog(radarProgram));
+        }
+        
+        // 2. Set up Mercator projection vertex buffer
+        const MAP_LIMIT = 20037508.342789244;
+        function toMerc(x, y) {
+            const ux = (x + MAP_LIMIT) / (2.0 * MAP_LIMIT);
+            const uy = (MAP_LIMIT - y) / (2.0 * MAP_LIMIT);
+            return [ux, uy];
+        }
+        
+        // Bounding box: MERCATOR_LEFT: 0.0, MERCATOR_RIGHT: 1210000.0, MERCATOR_BOTTOM: 6250000.0, MERCATOR_TOP: 7560000.0
+        const BL = toMerc(0.0, 6250000.0);
+        const BR = toMerc(1210000.0, 6250000.0);
+        const TR = toMerc(1210000.0, 7560000.0);
+        const TL = toMerc(0.0, 7560000.0);
+        
+        // Define two triangles forming a quad
+        const vertices = new Float32Array([
+            BL[0], BL[1],
+            BR[0], BR[1],
+            TL[0], TL[1],
+            TL[0], TL[1],
+            BR[0], BR[1],
+            TR[0], TR[1]
+        ]);
+        
+        positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        
+        // Texture Coordinates
+        const texcoords = new Float32Array([
+            0, 1,
+            1, 1,
+            0, 0,
+            0, 0,
+            1, 1,
+            1, 0
+        ]);
+        
+        texcoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, texcoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.STATIC_DRAW);
+    },
+    
+    render: function (gl, matrix) {
+        if (!metadata || !radarProgram) return;
+        
+        const timeVal = metadata.times[currentTimeIndex];
+        const texture = getOrLoadTexture(gl, timeVal);
+        if (!texture) return; // Wait for texture load
+        
+        gl.useProgram(radarProgram);
+        
+        // Bind position attribute
+        const aPosition = gl.getAttribLocation(radarProgram, 'a_position');
+        gl.enableVertexAttribArray(aPosition);
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+        
+        // Bind texture coordinates attribute
+        const aTexcoord = gl.getAttribLocation(radarProgram, 'a_texcoord');
+        gl.enableVertexAttribArray(aTexcoord);
+        gl.bindBuffer(gl.ARRAY_BUFFER, texcoordBuffer);
+        gl.vertexAttribPointer(aTexcoord, 2, gl.FLOAT, false, 0, 0);
+        
+        // Set projection matrix
+        gl.uniformMatrix4fv(gl.getUniformLocation(radarProgram, 'u_matrix'), false, matrix);
+        
+        // Bind texture sampler
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(gl.getUniformLocation(radarProgram, 'u_texture'), 0);
+        
+        // Opacity uniform
+        const opacity = parseFloat(opacitySlider.value) / 100;
+        gl.uniform1f(gl.getUniformLocation(radarProgram, 'u_opacity'), opacity);
+        
+        // Dynamic color stops uniform configuration
+        const isProb = currentEns === 'prob';
+        let colors, values;
+        
+        if (isProb) {
+            colors = [
+                [0, 0, 0, 0],
+                [180/255, 200/255, 220/255, 0.35],
+                [100/255, 160/255, 255/255, 0.5],
+                [0/255, 100/255, 255/255, 0.65],
+                [0/255, 200/255, 100/255, 0.75],
+                [220/255, 0/255, 220/255, 0.85],
+                [255/255, 255/255, 255/255, 0.95],
+                [255/255, 255/255, 255/255, 0.95],
+                [255/255, 255/255, 255/255, 0.95]
+            ];
+            values = [10.0, 30.0, 50.0, 70.0, 90.0, 100.0, 100.0, 100.0, 99999.0];
+        } else {
+            colors = [
+                [0, 0, 0, 0],
+                [120/255, 200/255, 255/255, 0.5],
+                [0/255, 100/255, 255/255, 0.7],
+                [0/255, 200/255, 0/255, 0.7],
+                [255/255, 230/255, 0/255, 0.8],
+                [255/255, 120/255, 0/255, 0.9],
+                [255/255, 0/255, 0/255, 0.95],
+                [200/255, 0/255, 200/255, 1.0],
+                [255/255, 255/255, 255/255, 1.0]
+            ];
+            values = [0.05, 0.2, 1.0, 5.0, 15.0, 30.0, 100.0, 250.0, 99999.0];
+        }
+        
+        const flatColors = new Float32Array(colors.reduce((acc, val) => acc.concat(val), []));
+        const flatValues = new Float32Array(values);
+        
+        gl.uniform4fv(gl.getUniformLocation(radarProgram, 'u_colors'), flatColors);
+        gl.uniform1fv(gl.getUniformLocation(radarProgram, 'u_values'), flatValues);
+        
+        // Alpha Blending config
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+    },
+    
+    onRemove: function (map, gl) {
+        if (radarProgram) {
+            gl.deleteProgram(radarProgram);
+            radarProgram = null;
+        }
+        if (positionBuffer) {
+            gl.deleteBuffer(positionBuffer);
+            positionBuffer = null;
+        }
+        if (texcoordBuffer) {
+            gl.deleteBuffer(texcoordBuffer);
+            texcoordBuffer = null;
         }
     }
-    activeTimeVal = null;
+};
+
+// Clear cached textures
+function clearRadarLayers() {
+    textureCache = {};
+    if (map) map.triggerRepaint();
 }
 
-// Setup Raster Source and Layer for a specific timeVal
-function setupRadarSourceAndLayer(timeVal) {
+// Add the custom WebGL layer to style
+function setupRadarSourceAndLayer() {
     if (!metadata || !map || !map.isStyleLoaded()) return;
 
-    const sourceId = `radar-source-${timeVal}`;
-    const layerId = `radar-layer-${timeVal}`;
+    if (map.getLayer('radar-webgl-layer')) {
+        map.removeLayer('radar-webgl-layer');
+    }
 
-    // Remove if already exists (just in case)
-    if (map.getLayer(layerId)) map.removeLayer(layerId);
-    if (map.getSource(sourceId)) map.removeSource(sourceId);
-
-    const urlTemplate = `${window.location.origin}/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
-
-    // Compute bounding box coordinates in Lat/Lon for bounds restriction
-    const sw = mercatorToLonLat(metadata.left, metadata.bottom);
-    const ne = mercatorToLonLat(metadata.right, metadata.top);
-
-    map.addSource(sourceId, {
-        type: 'raster',
-        tiles: [urlTemplate],
-        tileSize: 256,
-        bounds: [sw[1], sw[0], ne[1], ne[0]],
-        minzoom: CONFIG.map.minZoom,
-        maxzoom: CONFIG.map.maxZoom
-    });
-
-    map.addLayer({
-        id: layerId,
-        type: 'raster',
-        source: sourceId,
-        layout: {
-            'visibility': 'none' // Start completely disabled
-        },
-        paint: {
-            'raster-opacity': 0
-        }
-    });
+    map.addLayer(webglRadarLayer);
 }
 
-// Update the radar layers using a sliding-window cache with visibility toggles
+// Trigger map repaint and preload future frames
 function updateRadarOverlay() {
     if (!metadata || !map || !map.isStyleLoaded()) return;
 
-    const timeVal = metadata.times[currentTimeIndex];
-    const opacity = parseFloat(opacitySlider.value) / 100;
-    activeTimeVal = timeVal;
+    map.triggerRepaint();
 
-    // 1. Identify which indices are active or preloaded
-    const len = metadata.times.length;
-    const activeIndex = currentTimeIndex;
-    
-    const preloadIndices = new Set();
-    for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
-        preloadIndices.add((currentTimeIndex + i) % len);
-    }
-
-    // 2. Loop through all timeline indices to manage their visibility
-    for (let i = 0; i < len; i++) {
-        const tVal = metadata.times[i];
-        const sourceId = `radar-source-${tVal}`;
-        const layerId = `radar-layer-${tVal}`;
-
-        if (i === activeIndex) {
-            // Active frame: visible with chosen opacity
-            if (!map.getSource(sourceId)) {
-                setupRadarSourceAndLayer(tVal);
-            }
-            if (map.getLayer(layerId)) {
-                map.setLayoutProperty(layerId, 'visibility', 'visible');
-                map.setPaintProperty(layerId, 'raster-opacity', opacity);
-            }
-        } else if (preloadIndices.has(i)) {
-            // Preload frame: visible with 0 opacity (to force browser fetch/WebGL load)
-            if (!map.getSource(sourceId)) {
-                setupRadarSourceAndLayer(tVal);
-            }
-            if (map.getLayer(layerId)) {
-                map.setLayoutProperty(layerId, 'visibility', 'visible');
-                map.setPaintProperty(layerId, 'raster-opacity', 0);
-            }
-        } else {
-            // Hidden frame: completely disabled (visibility: none) to avoid requests when zooming/panning
-            if (map.getLayer(layerId)) {
-                map.setLayoutProperty(layerId, 'visibility', 'none');
-            }
-        }
-    }
-
-    // 3. Sliding-window Garbage Collection: prune layers outside the window to free WebGL memory
-    const keepIndices = new Set();
-    for (let i = CONFIG.cache.keepWindowStart; i <= CONFIG.cache.keepWindowEnd; i++) {
-        const idx = (currentTimeIndex + i + len) % len;
-        keepIndices.add(metadata.times[idx]);
-    }
-
-    for (const tVal of metadata.times) {
-        if (!keepIndices.has(tVal)) {
-            const oldLayerId = `radar-layer-${tVal}`;
-            const oldSourceId = `radar-source-${tVal}`;
-            if (map.getLayer(oldLayerId)) {
-                map.removeLayer(oldLayerId);
-            }
-            if (map.getSource(oldSourceId)) {
-                map.removeSource(oldSourceId);
-            }
+    if (glContext) {
+        const len = metadata.times.length;
+        for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
+            const nextIndex = (currentTimeIndex + i) % len;
+            const nextTimeVal = metadata.times[nextIndex];
+            getOrLoadTexture(glContext, nextTimeVal);
         }
     }
 }
@@ -464,11 +662,8 @@ timeSlider.addEventListener('input', (e) => {
 opacitySlider.addEventListener('input', (e) => {
     const val = e.target.value;
     opacityValue.textContent = `${val}%`;
-    if (activeTimeVal) {
-        const activeLayerId = `radar-layer-${activeTimeVal}`;
-        if (map && map.getLayer(activeLayerId)) {
-            map.setPaintProperty(activeLayerId, 'raster-opacity', parseFloat(val) / 100);
-        }
+    if (map) {
+        map.triggerRepaint();
     }
 });
 
@@ -533,6 +728,7 @@ function startPlayer() {
     playInterval = setInterval(stepForward, intervalMs);
 }
 
+// Stop playback
 function stopPlayer() {
     if (!isPlaying) return;
     isPlaying = false;

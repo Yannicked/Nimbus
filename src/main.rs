@@ -87,6 +87,8 @@ struct AppState {
     tile_cache: DashMap<(String, i64, u32, u32, u32), Vec<u8>>,
     /// Key: (ens, time), value: raw grid slice
     grid_cache: DashMap<(String, i64), Arc<Vec<u16>>>,
+    /// Key: (ens, time), value: PNG data image bytes
+    data_cache: DashMap<(String, i64), Vec<u8>>,
     metadata: RwLock<Option<Metadata>>,
 }
 
@@ -310,6 +312,7 @@ async fn main() {
         empty_tile,
         tile_cache: DashMap::new(),
         grid_cache: DashMap::new(),
+        data_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val.clone()),
     });
 
@@ -357,6 +360,7 @@ async fn main() {
 
                             state_clone.tile_cache.clear();
                             state_clone.grid_cache.clear();
+                            state_clone.data_cache.clear();
                             println!("Successfully reloaded metadata and cleared caches.");
                         }
                         Err(e) => {
@@ -372,6 +376,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/metadata", get(get_metadata))
         .route("/api/map/:ens/:time/:z/:x/:y", get(get_tile))
+        .route("/api/data/:ens/:time", get(get_data_image))
         .route("/api/value", get(get_value))
         .route("/api/timeseries", get(get_timeseries))
         .nest_service("/", ServeDir::new("static"))
@@ -772,6 +777,93 @@ async fn get_tile(
         .header("Content-Type", "image/webp")
         .header("Cache-Control", "public, max-age=300")
         .body(axum::body::Body::from(webp_bytes))
+        .unwrap())
+}
+
+/// Renders the entire KNMI radar grid for a timeframe as a 700x765 Web Mercator projected
+/// lossless PNG. The u16 raw values are packed into the Red (high byte) and Green (low byte) channels.
+fn render_data_png_bytes(raw_slice: &[u16]) -> Vec<u8> {
+    use image::{ImageBuffer, ImageFormat};
+    use std::io::Cursor;
+    
+    let mut img = ImageBuffer::new(GRID_W, GRID_H);
+
+    for row in 0..GRID_H {
+        for col in 0..GRID_W {
+            let col_frac = (col as f64 + 0.5) / GRID_W as f64;
+            let row_frac = (row as f64 + 0.5) / GRID_H as f64;
+            
+            // Map pixel coordinates to the overall Web Mercator bounds
+            let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
+            let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
+
+            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
+            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
+
+            let fx = (px - KNMI_X0) / KNMI_DX;
+            let fy = (py - KNMI_Y0) / KNMI_DY;
+
+            let val_raw = interpolate_bilinear(fx, fy, raw_slice);
+
+            // Pack the u16 value into the Red (high byte) and Green (low byte) channels
+            let r = (val_raw >> 8) as u8;
+            let g = (val_raw & 0xFF) as u8;
+
+            img.put_pixel(col, row, image::Rgba([r, g, 0, 255]));
+        }
+    }
+
+    let mut png_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut png_bytes);
+    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    png_bytes
+}
+
+/// Serves the lossless R/G packed raw radar data PNG for a timeframe.
+async fn get_data_image(
+    Path((ens_str, time)): Path<(String, i64)>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Check cache
+    if let Some(cached_data) = state.data_cache.get(&(ens_str.clone(), time)) {
+        return Ok(Response::builder()
+            .header("Content-Type", "image/png")
+            .header("Cache-Control", "public, max-age=300")
+            .body(axum::body::Body::from(cached_data.value().clone()))
+            .unwrap());
+    }
+
+    // Get current file path and metadata
+    let file_path = state.file_path.read().await.clone();
+    let meta = state.metadata.read().await.clone().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Metadata not available".to_string(),
+    ))?;
+
+    // Retrieve or compute raw slice
+    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
+        cached.value().clone()
+    } else {
+        let computed = compute_raw_slice(&file_path, &meta, &ens_str, time)?;
+        let arc = Arc::new(computed);
+        state
+            .grid_cache
+            .insert((ens_str.clone(), time), arc.clone());
+        arc
+    };
+
+    // Render data png bytes
+    let png_bytes = render_data_png_bytes(&raw_slice);
+
+    // Cache results
+    state
+        .data_cache
+        .insert((ens_str, time), png_bytes.clone());
+
+    Ok(Response::builder()
+        .header("Content-Type", "image/png")
+        .header("Cache-Control", "public, max-age=300")
+        .body(axum::body::Body::from(png_bytes))
         .unwrap())
 }
 
