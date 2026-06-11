@@ -30,6 +30,28 @@
         <div id="hover-coords" class="hover-coords">lat: --, lon: --</div>
     </div>
 
+    <!-- Chart Panel (Location Time-Series) -->
+    <div id="chart-panel" class="glass-panel hidden">
+        <button id="chart-close" class="chart-close-btn" title="Close Panel"><i class="fa-solid fa-xmark"></i></button>
+        <header class="chart-header">
+            <h3><i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend</h3>
+            <div id="chart-coords" class="chart-coords">lat: --, lon: --</div>
+        </header>
+        <div class="chart-container">
+            <canvas id="rainfall-chart"></canvas>
+        </div>
+        <div class="chart-stats">
+            <div class="stat-box">
+                <span class="stat-label">Peak Intensity</span>
+                <span id="chart-stat-peak" class="stat-val">-- mm/h</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">Total Accumulation</span>
+                <span id="chart-stat-total" class="stat-val">-- mm</span>
+            </div>
+        </div>
+    </div>
+
     <!-- Main Dashboard Control Panel -->
     <div id="control-panel" class="glass-panel">
         <header>
@@ -83,10 +105,10 @@
         <div class="bottom-row">
             <!-- Ensemble Select -->
             <div class="ensemble-select-container">
-                <label class="section-label">Ensemble Member</label>
-                <div class="ensemble-grid" id="ensemble-grid">
-                    <!-- Ensemble buttons injected by JS -->
-                </div>
+                <label class="section-label">Data Layer / Ensemble</label>
+                <select id="ensemble-select" class="glass-select">
+                    <!-- Options injected by JS -->
+                </select>
             </div>
 
             <!-- Legend Panel -->
@@ -120,6 +142,8 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
             integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
             crossorigin=""></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

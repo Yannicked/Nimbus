@@ -1,12 +1,15 @@
 // App Variables
 let map;
 let metadata = null;
-let currentEns = 1;
+let currentEns = 'med';
 let currentTimeIndex = 0;
 let isPlaying = false;
 let playInterval = null;
 let radarLayers = {}; // Key: timeVal, Value: L.tileLayer
 let activeTimeVal = null;
+let clickedMarker = null;
+let chartInstance = null;
+let activeCoords = null;
 
 // DOM Elements
 const refTimeVal = document.getElementById('ref-time-value');
@@ -20,10 +23,15 @@ const speedSlider = document.getElementById('speed-slider');
 const speedValue = document.getElementById('speed-value');
 const opacitySlider = document.getElementById('opacity-slider');
 const opacityValue = document.getElementById('opacity-value');
-const ensembleGrid = document.getElementById('ensemble-grid');
+const ensembleSelect = document.getElementById('ensemble-select');
 const hoverPanel = document.getElementById('hover-panel');
 const hoverValue = document.getElementById('hover-value');
 const hoverCoords = document.getElementById('hover-coords');
+const chartPanel = document.getElementById('chart-panel');
+const chartCloseBtn = document.getElementById('chart-close');
+const chartCoords = document.getElementById('chart-coords');
+const chartStatPeak = document.getElementById('chart-stat-peak');
+const chartStatTotal = document.getElementById('chart-stat-total');
 
 // Web Mercator to Lat/Lon Projection
 function mercatorToLonLat(x, y) {
@@ -67,10 +75,15 @@ function formatAbsoluteTime(refTimeStr, secondsOffset) {
 function initMap() {
     map = L.map('map', {
         center: [52.1, 5.2], // Center on Netherlands
-        zoom: 7,
+        zoom: 8,
         minZoom: 0,
         maxZoom: 12
     });
+
+    // Create custom pane for radar overlays to keep them on top of base layers
+    map.createPane('radarPane');
+    map.getPane('radarPane').style.zIndex = 450;
+    map.getPane('radarPane').style.pointerEvents = 'none';
 
     // Base Layer: CartoDB Dark Matter (Recommended)
     const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -103,29 +116,52 @@ async function loadApp() {
         // Display reference time
         refTimeVal.textContent = metadata.reference_time_str;
 
-        // Create Ensemble Selector Buttons
-        ensembleGrid.innerHTML = '';
+        // Create Ensemble Selector Options Grouped by Category
+        ensembleSelect.innerHTML = '';
         
-        // Add E1-E20
-        metadata.ensembles.forEach(ens => {
-            const btn = document.createElement('button');
-            btn.textContent = `E${ens}`;
-            if (ens === currentEns) btn.classList.add('active');
-            btn.addEventListener('click', () => selectEnsemble(ens));
-            ensembleGrid.appendChild(btn);
-        });
-
-        // Add special statistics buttons
+        // Add statistics first (separate / at the beginning)
+        const statsGroup = document.createElement('optgroup');
+        statsGroup.label = 'Statistics / Summary';
+        
         const stats = ['med', 'max', 'prob'];
-        const statLabels = { 'med': 'MED', 'max': 'MAX', 'prob': 'PROB' };
+        const statLabels = { 
+            'med': 'Median Forecast (MED)', 
+            'max': 'Maximum Forecast (MAX)', 
+            'prob': 'Precipitation Probability (PROB)' 
+        };
         stats.forEach(stat => {
-            const btn = document.createElement('button');
-            btn.textContent = statLabels[stat];
-            btn.classList.add('stat-btn');
-            if (stat === currentEns) btn.classList.add('active');
-            btn.addEventListener('click', () => selectEnsemble(stat));
-            ensembleGrid.appendChild(btn);
+            const opt = document.createElement('option');
+            opt.value = stat;
+            opt.textContent = statLabels[stat];
+            if (stat === currentEns) opt.selected = true;
+            statsGroup.appendChild(opt);
         });
+        ensembleSelect.appendChild(statsGroup);
+
+        // Add individual ensemble members
+        const membersGroup = document.createElement('optgroup');
+        membersGroup.label = 'Ensemble Members';
+        
+        metadata.ensembles.forEach(ens => {
+            const opt = document.createElement('option');
+            opt.value = ens.toString();
+            opt.textContent = `Ensemble Member E${ens}`;
+            if (ens === currentEns) opt.selected = true;
+            membersGroup.appendChild(opt);
+        });
+        ensembleSelect.appendChild(membersGroup);
+
+        // Add change event listener if not already added
+        if (!ensembleSelect._hasChangeListener) {
+            ensembleSelect.addEventListener('change', (e) => {
+                let val = e.target.value;
+                if (!isNaN(val)) {
+                    val = parseInt(val);
+                }
+                selectEnsemble(val);
+            });
+            ensembleSelect._hasChangeListener = true;
+        }
 
         // Initialize Timeline Slider
         timeSlider.min = 0;
@@ -199,6 +235,7 @@ function updateRadarOverlay() {
     // 1. If layer for this timeVal doesn't exist, create it in background
     if (!radarLayers[timeVal]) {
         const layer = L.tileLayer(urlTemplate, {
+            pane: 'radarPane',
             opacity: 0, // start hidden to avoid grey flashes
             bounds: bounds,
             minZoom: 0,
@@ -232,6 +269,7 @@ function updateRadarOverlay() {
         if (!radarLayers[nextTimeVal]) {
             const nextUrlTemplate = `/api/map/${currentEns}/${nextTimeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
             const nextLayer = L.tileLayer(nextUrlTemplate, {
+                pane: 'radarPane',
                 opacity: 0, // Keep hidden in the background
                 bounds: bounds,
                 minZoom: 0,
@@ -329,22 +367,20 @@ function updateLegend() {
 function selectEnsemble(ens) {
     currentEns = ens;
     clearRadarLayers();
-    document.querySelectorAll('.ensemble-grid button').forEach((btn) => {
-        const text = btn.textContent;
-        const isTarget = (ens === 'med' && text === 'MED') ||
-                         (ens === 'max' && text === 'MAX') ||
-                         (ens === 'prob' && text === 'PROB') ||
-                         (typeof ens === 'number' && text === `E${ens}`);
-        
-        if (isTarget) {
-            btn.classList.add('active');
-        } else {
-            btn.classList.remove('active');
-        }
-    });
+    
+    // Update dropdown value if it differs
+    if (ensembleSelect.value !== ens.toString()) {
+        ensembleSelect.value = ens.toString();
+    }
+    
     updateRadarOverlay();
     updateLegend();
     triggerHoverQuery(); // update hover panel if mouse is over map
+    
+    // If timeseries chart is open, reload it for the new ensemble selection
+    if (activeCoords) {
+        showTimeseriesChart(activeCoords.lat, activeCoords.lon);
+    }
 }
 
 // Handle Slider Input
@@ -542,6 +578,185 @@ function startMetadataPolling() {
     }, 5000);
 }
 
+async function showTimeseriesChart(lat, lon) {
+    if (!metadata) return;
+    activeCoords = { lat, lon };
+    
+    // Show the panel
+    chartPanel.classList.remove('hidden');
+    chartCoords.textContent = `lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`;
+    
+    try {
+        const url = `/api/timeseries?ens=${currentEns}&lat=${lat}&lon=${lon}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Timeseries request failed");
+        const data = await res.json();
+        
+        if (data.status === "out_of_bounds" || data.values.length === 0) {
+            chartCoords.textContent = "Selected point is out of radar bounds";
+            if (chartInstance) {
+                chartInstance.destroy();
+                chartInstance = null;
+            }
+            chartStatPeak.textContent = "-- mm/h";
+            chartStatTotal.textContent = "-- mm";
+            return;
+        }
+        
+        const peakVal = Math.max(...data.values);
+        let totalVal = 0.0;
+        
+        if (currentEns === 'prob') {
+            chartStatPeak.textContent = `${Math.round(peakVal)}%`;
+            const avgVal = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            chartStatTotal.textContent = `${Math.round(avgVal)}% (avg)`;
+            
+            document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Peak Probability";
+            document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Avg Probability";
+        } else {
+            // total_mm = sum(rates) / 12 (5 mins intervals)
+            totalVal = data.values.reduce((a, b) => a + b, 0) / 12.0;
+            chartStatPeak.textContent = `${peakVal.toFixed(2)} mm/h`;
+            chartStatTotal.textContent = `${totalVal.toFixed(2)} mm`;
+            
+            document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Peak Intensity";
+            document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Total Accumulation";
+        }
+        
+        const labels = data.times.map(secs => {
+            const timeStr = formatAbsoluteTime(metadata.reference_time_str, secs);
+            const match = timeStr.match(/(\d{2}:\d{2})/);
+            return match ? match[1] : `+${Math.round(secs/60)}m`;
+        });
+        
+        const isProb = currentEns === 'prob';
+        const labelText = isProb ? "Rain Probability (%)" : "Rainfall Rate (mm/h)";
+        const borderColor = isProb ? "#a855f7" : "#38bdf8";
+        const backgroundColor = isProb ? "rgba(168, 85, 247, 0.15)" : "rgba(56, 189, 248, 0.15)";
+        
+        const ctx = document.getElementById('rainfall-chart').getContext('2d');
+        
+        if (chartInstance) {
+            chartInstance.data.labels = labels;
+            chartInstance.data.datasets[0].label = labelText;
+            chartInstance.data.datasets[0].data = data.values;
+            chartInstance.data.datasets[0].borderColor = borderColor;
+            chartInstance.data.datasets[0].backgroundColor = backgroundColor;
+            chartInstance.options.scales.y.title.text = labelText;
+            chartInstance.options.scales.y.max = isProb ? 100 : undefined;
+            chartInstance.update();
+        } else {
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: labelText,
+                        data: data.values,
+                        borderColor: borderColor,
+                        backgroundColor: backgroundColor,
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        pointHoverRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            backgroundColor: '#1e1e24',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#f8fafc',
+                            borderColor: 'rgba(255,255,255,0.1)',
+                            borderWidth: 1,
+                            callbacks: {
+                                label: function(context) {
+                                    return ` ${context.parsed.y.toFixed(2)}${isProb ? '%' : ' mm/h'}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)'
+                            },
+                            ticks: {
+                                color: '#94a3b8',
+                                font: {
+                                    size: 9
+                                },
+                                maxTicksLimit: 6
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)'
+                            },
+                            ticks: {
+                                color: '#94a3b8',
+                                font: {
+                                    size: 9
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: labelText,
+                                color: '#94a3b8',
+                                font: {
+                                    size: 9,
+                                    weight: 'bold'
+                                }
+                            },
+                            min: 0,
+                            max: isProb ? 100 : undefined
+                        }
+                    }
+                }
+            });
+        }
+    } catch (e) {
+        console.error("Timeseries error:", e);
+        chartCoords.textContent = "Error loading trend chart";
+    }
+}
+
+function closeTimeseriesChart() {
+    chartPanel.classList.add('hidden');
+    activeCoords = null;
+    
+    if (clickedMarker) {
+        map.removeLayer(clickedMarker);
+        clickedMarker = null;
+    }
+    
+    if (chartInstance) {
+        chartInstance.destroy();
+        chartInstance = null;
+    }
+}
+
+function handleMapClick(e) {
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+    
+    if (clickedMarker) {
+        clickedMarker.setLatLng(e.latlng);
+    } else {
+        clickedMarker = L.marker(e.latlng).addTo(map);
+    }
+    
+    showTimeseriesChart(lat, lon);
+}
+
 // App Entry Point
 window.addEventListener('DOMContentLoaded', () => {
     initMap();
@@ -551,4 +766,6 @@ window.addEventListener('DOMContentLoaded', () => {
     // Attach map event listeners
     map.on('mousemove', handleMapMouseMove);
     map.on('mouseout', handleMapMouseOut);
+    map.on('click', handleMapClick);
+    chartCloseBtn.addEventListener('click', closeTimeseriesChart);
 });

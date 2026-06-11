@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use rumqttc::{AsyncClient, MqttOptions, Transport, TlsConfiguration, Event, Packet, QoS};
 
 // Target Web Mercator grid dimensions and bounds
 const GRID_W: u32 = 700;
@@ -65,6 +66,8 @@ struct ValueQuery {
 
 #[tokio::main]
 async fn main() {
+    // Load environment variables from .env file
+    dotenvy::dotenv().ok();
     println!("Starting Weather Radar service...");
 
     // 1. Find the latest netcdf file in the current directory
@@ -91,7 +94,11 @@ async fn main() {
         metadata: RwLock::new(metadata_val.clone()),
     });
 
-
+    // Spawn MQTT client to listen for updates from KNMI
+    let state_clone_mqtt = state.clone();
+    tokio::spawn(async move {
+        start_knmi_mqtt_listener(state_clone_mqtt).await;
+    });
 
     // 4. Set up directory watcher to monitor file updates
     let state_clone = state.clone();
@@ -149,6 +156,7 @@ async fn main() {
         .route("/api/metadata", get(get_metadata))
         .route("/api/map/:ens/:time/:z/:x/:y", get(get_tile))
         .route("/api/value", get(get_value))
+        .route("/api/timeseries", get(get_timeseries))
         .nest_service("/", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -584,6 +592,135 @@ async fn get_value(
     ])))
 }
 
+#[derive(Deserialize)]
+struct TimeseriesQuery {
+    ens: String,
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Serialize)]
+struct TimeseriesResponse {
+    status: String,
+    lat: f64,
+    lon: f64,
+    ens: String,
+    times: Vec<i64>,
+    values: Vec<f64>,
+}
+
+async fn get_timeseries(
+    Query(q): Query<TimeseriesQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let file_path = state.file_path.read().await.clone();
+    let meta = state.metadata.read().await.clone().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Metadata not available".to_string(),
+    ))?;
+
+    // Convert GPS coordinates to Polar Stereographic
+    let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
+
+    // Get grid cell index
+    let ix = ((px - KNMI_X0) / KNMI_DX).round() as i32;
+    let iy = ((py - KNMI_Y0) / KNMI_DY).round() as i32;
+
+    if ix < 0 || ix >= KNMI_GRID_W as i32 || iy < 0 || iy >= KNMI_GRID_H as i32 {
+        return Ok(axum::Json(TimeseriesResponse {
+            status: "out_of_bounds".to_string(),
+            lat: q.lat,
+            lon: q.lon,
+            ens: q.ens,
+            times: Vec::new(),
+            values: Vec::new(),
+        }));
+    }
+
+    let file = netcdf::open(&file_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let var = file
+        .variable("precip_intensity")
+        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "precip_intensity variable missing".to_string()))?;
+
+    let num_times = meta.times.len();
+    let num_ensembles = meta.ensembles.len();
+    let mut values = Vec::with_capacity(num_times);
+
+    if q.ens == "med" || q.ens == "max" || q.ens == "prob" {
+        // Read values for all ensembles and all times at the target pixel
+        // slice starts at: [0, 0, iy, ix], count is: [num_ensembles, num_times, 1, 1]
+        let raw_grid = var.get_values::<u16, _>((
+            &[0, 0, iy as usize, ix as usize][..],
+            &[num_ensembles, num_times, 1, 1][..]
+        )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        for t in 0..num_times {
+            let mut member_vals = Vec::with_capacity(num_ensembles);
+            for e in 0..num_ensembles {
+                // Row-major index for shape [num_ensembles, num_times]
+                let idx = e * num_times + t;
+                member_vals.push(raw_grid[idx]);
+            }
+
+            if member_vals[0] == 65535 {
+                values.push(0.0);
+                continue;
+            }
+
+            if q.ens == "max" {
+                let max_raw = member_vals.iter().cloned().filter(|&v| v != 65535).max().unwrap_or(0);
+                values.push((max_raw as f64) * 0.01);
+            } else if q.ens == "prob" {
+                let count = member_vals.iter().cloned().filter(|&v| v != 65535 && v >= 10).count();
+                let prob = ((count * 100) / num_ensembles) as f64;
+                values.push(prob);
+            } else { // "med"
+                member_vals.sort_unstable();
+                let med_raw = member_vals[num_ensembles / 2];
+                if med_raw == 65535 {
+                    values.push(0.0);
+                } else {
+                    values.push((med_raw as f64) * 0.01);
+                }
+            }
+        }
+    } else {
+        // Individual member
+        let ens_num: i32 = q.ens.parse().map_err(|_| {
+            (StatusCode::BAD_REQUEST, format!("Invalid ensemble parameter: {}", q.ens))
+        })?;
+
+        let ens_idx = meta
+            .ensembles
+            .iter()
+            .position(|&e| e == ens_num)
+            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid ensemble: {}", ens_num)))?;
+
+        // Slice starts at: [ens_idx, 0, iy, ix], count is: [1, num_times, 1, 1]
+        let raw_values = var.get_values::<u16, _>((
+            &[ens_idx, 0, iy as usize, ix as usize][..],
+            &[1, num_times, 1, 1][..]
+        )).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        for val_raw in raw_values {
+            if val_raw == 65535 {
+                values.push(0.0);
+            } else {
+                values.push((val_raw as f64) * 0.01);
+            }
+        }
+    }
+
+    Ok(axum::Json(TimeseriesResponse {
+        status: "ok".to_string(),
+        lat: q.lat,
+        lon: q.lon,
+        ens: q.ens,
+        times: meta.times.clone(),
+        values,
+    }))
+}
+
 /// Reads a 2D slice (y, x) for a given ensemble and time index from NetCDF
 fn read_netcdf_slice(
     file_path: &str,
@@ -739,6 +876,160 @@ fn render_tile_webp_bytes(
     let mut cursor = Cursor::new(&mut webp_bytes);
     img.write_to(&mut cursor, ImageFormat::WebP).unwrap();
     webp_bytes
+}
+
+async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
+    let broker = "wss://mqtt.dataplatform.knmi.nl";
+    let port = 443;
+    let mqtt_password = std::env::var("KNMI_MQTT_PASSWORD")
+        .expect("KNMI_MQTT_PASSWORD environment variable not set!");
+    let open_data_api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
+        .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
+    let topic = "dataplatform/file/v1/seamless_precipitation_ensemble_forecast_members/1.0/#";
+
+    let client_id = format!("weer-service-{}", std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs());
+
+    println!("Initializing KNMI MQTT subscriber with Client ID: {}...", client_id);
+
+    let mut mqttoptions = MqttOptions::new(client_id, broker, port);
+    mqttoptions.set_keep_alive(Duration::from_secs(30));
+    mqttoptions.set_credentials("token", mqtt_password);
+
+    let tls_config = TlsConfiguration::default();
+    mqttoptions.set_transport(Transport::wss_with_config(tls_config));
+
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
+
+    // Subscribe to topic
+    if let Err(e) = client.subscribe(topic, QoS::AtMostOnce).await {
+        eprintln!("Failed to subscribe to KNMI MQTT topic: {:?}", e);
+        return;
+    }
+    println!("Subscribed to KNMI topic: {}", topic);
+
+    // Event loop
+    loop {
+        match eventloop.poll().await {
+            Ok(notification) => {
+                if let Event::Incoming(Packet::Publish(publish)) = notification {
+                    let payload_str = match String::from_utf8(publish.payload.to_vec()) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    println!("Received KNMI MQTT notification: {}", payload_str);
+                    
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                        let data = json.get("data");
+                        let file_name = data
+                            .and_then(|d| d.get("filename").or_else(|| d.get("fileName")).or_else(|| d.get("file_name")))
+                            .and_then(|v| v.as_str())
+                            .or_else(|| json.get("fileName").or_else(|| json.get("file_name")).and_then(|v| v.as_str()));
+
+                        let file_url = data
+                            .and_then(|d| d.get("url"))
+                            .and_then(|v| v.as_str());
+
+                        if let Some(name) = file_name {
+                            if name.ends_with(".nc") {
+                                println!("New NetCDF file available: {}", name);
+                                let state_clone = state.clone();
+                                let name_clone = name.to_string();
+                                let url_opt = file_url.map(|s| s.to_string());
+                                let open_data_api_key_clone = open_data_api_key.to_string();
+                                tokio::spawn(async move {
+                                    if let Err(e) = download_and_update_nc_file(&name_clone, url_opt.as_deref(), &open_data_api_key_clone, state_clone).await {
+                                        eprintln!("Error processing file update for {}: {:?}", name_clone, e);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("MQTT Connection error: {:?}. Retrying in 10 seconds...", e);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileUrlResponse {
+    #[serde(rename = "temporaryDownloadUrl")]
+    temporary_download_url: String,
+}
+
+async fn download_and_update_nc_file(
+    filename: &str,
+    file_url: Option<&str>,
+    api_key: &str,
+    _state: Arc<AppState>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("Requesting download URL for {} from KNMI Open Data API...", filename);
+    
+    let url = match file_url {
+        Some(u) => u.to_string(),
+        None => format!(
+            "https://api.dataplatform.knmi.nl/open-data/v1/datasets/seamless_precipitation_ensemble_forecast_members/versions/1.0/files/{}/url",
+            filename
+        ),
+    };
+
+    let client = reqwest::Client::builder().build()?;
+    
+    let res = client
+        .get(&url)
+        .header("Authorization", api_key)
+        .send()
+        .await?;
+
+    if !res.status().is_success() {
+        return Err(format!("Failed to get download URL, HTTP status: {}", res.status()).into());
+    }
+
+    let url_resp: FileUrlResponse = res.json().await?;
+    let download_url = url_resp.temporary_download_url;
+
+    println!("Downloading file from temporary URL: {}...", filename);
+
+    let file_res = client.get(&download_url).send().await?;
+    if !file_res.status().is_success() {
+        return Err(format!("Failed to download file content, HTTP status: {}", file_res.status()).into());
+    }
+
+    let bytes = file_res.bytes().await?;
+    
+    let temp_path = "temp_knmi_download.nc";
+    tokio::fs::write(temp_path, &bytes).await?;
+
+    let final_path = format!("./{}", filename);
+    tokio::fs::rename(temp_path, &final_path).await?;
+    println!("Successfully downloaded and saved: {}", final_path);
+
+    // Delete old NetCDF files to save space
+    if let Ok(mut entries) = tokio::fs::read_dir(".").await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "nc" {
+                        if let Some(file_stem) = path.file_name().and_then(|n| n.to_str()) {
+                            if file_stem != filename && file_stem.starts_with("KNMI_PYSTEPS_BLEND_ENS_") {
+                                println!("Deleting old NetCDF file: {:?}", path);
+                                let _ = tokio::fs::remove_file(path).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 

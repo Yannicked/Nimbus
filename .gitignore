@@ -18,3 +18,7 @@ wheels/
 
 # Temporary scratch space
 /scratch/
+
+# Environment variables
+.env
+
