@@ -68,7 +68,7 @@ function initMap() {
     map = L.map('map', {
         center: [52.1, 5.2], // Center on Netherlands
         zoom: 7,
-        minZoom: 6,
+        minZoom: 0,
         maxZoom: 12
     });
 
@@ -201,7 +201,7 @@ function updateRadarOverlay() {
         const layer = L.tileLayer(urlTemplate, {
             opacity: 0, // start hidden to avoid grey flashes
             bounds: bounds,
-            minZoom: 6,
+            minZoom: 0,
             maxZoom: 12,
             tileSize: 256,
             updateWhenIdle: false
@@ -233,7 +233,7 @@ function updateRadarOverlay() {
         const nextLayer = L.tileLayer(nextUrlTemplate, {
             opacity: 0, // Keep hidden in the background
             bounds: bounds,
-            minZoom: 6,
+            minZoom: 0,
             maxZoom: 12,
             tileSize: 256,
             updateWhenIdle: false
