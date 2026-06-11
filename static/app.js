@@ -5,7 +5,8 @@ let currentEns = 1;
 let currentTimeIndex = 0;
 let isPlaying = false;
 let playInterval = null;
-let radarOverlay = null;
+let radarLayers = {}; // Key: timeVal, Value: L.tileLayer
+let activeTimeVal = null;
 
 // DOM Elements
 const refTimeVal = document.getElementById('ref-time-value');
@@ -162,11 +163,30 @@ function drawSliderTicks() {
     }
 }
 
-// Update the map TileOverlay
+// Helper to hide all inactive radar tile layers
+function hideInactiveLayers(activeTimeVal) {
+    for (const timeVal in radarLayers) {
+        if (parseInt(timeVal) !== activeTimeVal) {
+            radarLayers[timeVal].setOpacity(0);
+        }
+    }
+}
+
+// Clear all active layers when ensemble member changes
+function clearRadarLayers() {
+    for (const timeVal in radarLayers) {
+        map.removeLayer(radarLayers[timeVal]);
+    }
+    radarLayers = {};
+    activeTimeVal = null;
+}
+
+// Update the map TileOverlay using a double-buffered layer pool with background preloading
 function updateRadarOverlay() {
     if (!metadata) return;
 
     const timeVal = metadata.times[currentTimeIndex];
+    const opacity = parseFloat(opacitySlider.value) / 100;
     const urlTemplate = `/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}`;
 
     // Compute bounding box coordinates in Lat/Lon for bounds restriction
@@ -174,20 +194,57 @@ function updateRadarOverlay() {
     const ne = mercatorToLonLat(metadata.right, metadata.top);
     const bounds = [sw, ne];
 
-    const opacity = parseFloat(opacitySlider.value) / 100;
+    activeTimeVal = timeVal;
 
-    if (radarOverlay) {
-        radarOverlay.setUrl(urlTemplate);
-        radarOverlay.setOpacity(opacity);
-    } else {
-        radarOverlay = L.tileLayer(urlTemplate, {
-            opacity: opacity,
+    // 1. If layer for this timeVal doesn't exist, create it in background
+    if (!radarLayers[timeVal]) {
+        const layer = L.tileLayer(urlTemplate, {
+            opacity: 0, // start hidden to avoid grey flashes
             bounds: bounds,
             minZoom: 6,
             maxZoom: 12,
             tileSize: 256,
             updateWhenIdle: false
         }).addTo(map);
+
+        layer._isLoaded = false;
+        layer.on('load', () => {
+            layer._isLoaded = true;
+            // Only show if this timeVal is still the active one
+            if (activeTimeVal === timeVal) {
+                layer.setOpacity(opacity);
+                hideInactiveLayers(timeVal);
+            }
+        });
+
+        radarLayers[timeVal] = layer;
+    } else {
+        // 2. If it already exists, show it immediately
+        const layer = radarLayers[timeVal];
+        layer.setOpacity(opacity);
+        hideInactiveLayers(timeVal);
+    }
+
+    // 3. Active Preloading: load the next frame in the background
+    const nextIndex = (currentTimeIndex + 1) % metadata.times.length;
+    const nextTimeVal = metadata.times[nextIndex];
+    if (!radarLayers[nextTimeVal]) {
+        const nextUrlTemplate = `/api/map/${currentEns}/${nextTimeVal}/{z}/{x}/{y}`;
+        const nextLayer = L.tileLayer(nextUrlTemplate, {
+            opacity: 0, // Keep hidden in the background
+            bounds: bounds,
+            minZoom: 6,
+            maxZoom: 12,
+            tileSize: 256,
+            updateWhenIdle: false
+        }).addTo(map);
+
+        nextLayer._isLoaded = false;
+        nextLayer.on('load', () => {
+            nextLayer._isLoaded = true;
+        });
+
+        radarLayers[nextTimeVal] = nextLayer;
     }
 }
 
@@ -252,6 +309,7 @@ function updateLegend() {
 // Handle Ensemble Switch
 function selectEnsemble(ens) {
     currentEns = ens;
+    clearRadarLayers();
     document.querySelectorAll('.ensemble-grid button').forEach((btn) => {
         const text = btn.textContent;
         const isTarget = (ens === 'med' && text === 'MED') ||
@@ -282,8 +340,9 @@ timeSlider.addEventListener('input', (e) => {
 opacitySlider.addEventListener('input', (e) => {
     const val = e.target.value;
     opacityValue.textContent = `${val}%`;
-    if (radarOverlay) {
-        radarOverlay.setOpacity(parseFloat(val) / 100);
+    const activeLayer = radarLayers[activeTimeVal];
+    if (activeLayer) {
+        activeLayer.setOpacity(parseFloat(val) / 100);
     }
 });
 
