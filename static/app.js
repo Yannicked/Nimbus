@@ -1,8 +1,112 @@
-// App Variables
+// App Configuration
+const CONFIG = {
+    // Map settings
+    map: {
+        defaultCenter: [52.1, 5.2], // Center on Netherlands
+        defaultZoom: 8,
+        minZoom: 0,
+        maxZoom: 14,
+        radarPaneZIndex: 450,
+        tileSize: 256,
+        // Leaflet base maps
+        baseLayers: {
+            dark: {
+                url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 20
+            },
+            light: {
+                url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 20
+            },
+            raster: {
+                url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 20
+            },
+            osm: {
+                url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                maxZoom: 19
+            }
+        }
+    },
+    // Application defaults & behavior
+    defaults: {
+        ensemble: 'med', // Default selected ensemble/statistic ('med', 'max', 'prob', or ensemble member number)
+        opacity: 70, // Default radar layer opacity (%)
+        speed: 3, // Default playback speed (fps)
+        timeIndex: 0 // Default starting time index
+    },
+    // Timing and performance
+    intervals: {
+        metadataPollingMs: 5000, // Metadata check interval
+        hoverThrottleMs: 100, // Hover values API query throttle
+    },
+    // Sliding-window layer cache config
+    cache: {
+        preloadAhead: 2, // Number of future frames to pre-load
+        keepWindowStart: -2, // Keep layers from this index offset...
+        keepWindowEnd: 4 // ...to this index offset (inclusive)
+    },
+    // Legend and visualization colors
+    radarVisualization: {
+        prob: {
+            title: "Rain Probability",
+            colors: [
+                "rgba(180, 200, 220, 0.35)",
+                "rgba(100, 160, 255, 0.5)",
+                "rgba(0, 100, 255, 0.65)",
+                "rgba(0, 200, 100, 0.75)",
+                "rgba(220, 0, 220, 0.85)",
+                "rgba(255, 255, 255, 0.95)"
+            ],
+            labels: ["10%", "30%", "50%", "70%", "90%", "100%"]
+        },
+        rate: {
+            title: "Rainfall Rate (mm/h)",
+            colors: [
+                "rgba(120, 200, 255, 0.5)",
+                "rgba(0, 100, 255, 0.7)",
+                "rgba(0, 200, 0, 0.7)",
+                "rgba(255, 230, 0, 0.8)",
+                "rgba(255, 120, 0, 0.9)",
+                "rgba(255, 0, 0, 0.95)",
+                "rgba(200, 0, 200, 1.0)",
+                "rgba(255, 255, 255, 1.0)"
+            ],
+            labels: ["0.05", "0.2", "1", "5", "15", "30", "100", "250+"]
+        }
+    },
+    // Chart options
+    chart: {
+        tension: 0.3,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        maxTicksLimit: 6,
+        colors: {
+            prob: {
+                border: "#a855f7",
+                background: "rgba(168, 85, 247, 0.15)"
+            },
+            rate: {
+                border: "#38bdf8",
+                background: "rgba(56, 189, 248, 0.15)"
+            }
+        }
+    }
+};
+
+// App State
 let map;
 let metadata = null;
-let currentEns = 'med';
-let currentTimeIndex = 0;
+let currentEns = CONFIG.defaults.ensemble;
+let currentTimeIndex = CONFIG.defaults.timeIndex;
 let isPlaying = false;
 let playInterval = null;
 let radarLayers = {}; // Key: timeVal, Value: L.tileLayer
@@ -49,7 +153,7 @@ function formatRelativeTime(seconds) {
     if (h > 0) {
         return `+${h}h ${m.toString().padStart(2, '0')}m`;
     }
-    return `+${m}m`;
+    return `+${m}`;
 }
 
 // Format absolute forecast time
@@ -74,33 +178,47 @@ function formatAbsoluteTime(refTimeStr, secondsOffset) {
 // Initialize Leaflet Map
 function initMap() {
     map = L.map('map', {
-        center: [52.1, 5.2], // Center on Netherlands
-        zoom: 8,
-        minZoom: 0,
-        maxZoom: 14
+        center: CONFIG.map.defaultCenter,
+        zoom: CONFIG.map.defaultZoom,
+        minZoom: CONFIG.map.minZoom,
+        maxZoom: CONFIG.map.maxZoom
     });
 
     // Create custom pane for radar overlays to keep them on top of base layers
     map.createPane('radarPane');
-    map.getPane('radarPane').style.zIndex = 450;
+    map.getPane('radarPane').style.zIndex = CONFIG.map.radarPaneZIndex;
     map.getPane('radarPane').style.pointerEvents = 'none';
 
     // Base Layer: CartoDB Dark Matter (Recommended)
-    const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
+    const darkLayer = L.tileLayer(CONFIG.map.baseLayers.dark.url, {
+        attribution: CONFIG.map.baseLayers.dark.attribution,
+        subdomains: CONFIG.map.baseLayers.dark.subdomains,
+        maxZoom: CONFIG.map.baseLayers.dark.maxZoom
+    }).addTo(map);
+
+    const lightLayer = L.tileLayer(CONFIG.map.baseLayers.light.url, {
+        attribution: CONFIG.map.baseLayers.light.attribution,
+        subdomains: CONFIG.map.baseLayers.light.subdomains,
+        maxZoom: CONFIG.map.baseLayers.light.maxZoom
+    }).addTo(map);
+
+    const rasterLayer = L.tileLayer(CONFIG.map.baseLayers.raster.url, {
+        attribution: CONFIG.map.baseLayers.raster.attribution,
+        subdomains: CONFIG.map.baseLayers.raster.subdomains,
+        maxZoom: CONFIG.map.baseLayers.raster.maxZoom
     }).addTo(map);
 
     // Base Layer: Standard OpenStreetMap
-    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-        maxZoom: 19
+    const osmLayer = L.tileLayer(CONFIG.map.baseLayers.osm.url, {
+        attribution: CONFIG.map.baseLayers.osm.attribution,
+        maxZoom: CONFIG.map.baseLayers.osm.maxZoom
     });
 
     // Layer Controls
     const baseMaps = {
         "Dark Theme (OSM)": darkLayer,
+        "Light Theme (OSM)": lightLayer,
+        "Raster Theme (OSM)": rasterLayer,
         "Standard OpenStreetMap": osmLayer
     };
     L.control.layers(baseMaps).addTo(map);
@@ -174,6 +292,7 @@ async function loadApp() {
         // Load initial radar overlay
         updateRadarOverlay();
         updateTimeStepDisplay();
+        updateLegend();
 
     } catch (e) {
         console.error(e);
@@ -182,6 +301,7 @@ async function loadApp() {
 }
 
 // Render ticks on the timeline slider
+// Every hourly step is marked as a larger tick
 function drawSliderTicks() {
     const ticksContainer = document.getElementById('slider-ticks');
     ticksContainer.innerHTML = '';
@@ -238,9 +358,9 @@ function updateRadarOverlay() {
             pane: 'radarPane',
             opacity: 0, // start hidden to avoid grey flashes
             bounds: bounds,
-            minZoom: 0,
-            maxZoom: 14,
-            tileSize: 256,
+            minZoom: CONFIG.map.minZoom,
+            maxZoom: CONFIG.map.maxZoom,
+            tileSize: CONFIG.map.tileSize,
             updateWhenIdle: false
         }).addTo(map);
 
@@ -262,8 +382,8 @@ function updateRadarOverlay() {
         hideInactiveLayers(timeVal);
     }
 
-    // 3. Active Preloading: load the next 2 frames in the background
-    for (let i = 1; i <= 2; i++) {
+    // 3. Active Preloading: load the next N frames in the background
+    for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
         const nextIndex = (currentTimeIndex + i) % metadata.times.length;
         const nextTimeVal = metadata.times[nextIndex];
         if (!radarLayers[nextTimeVal]) {
@@ -272,9 +392,9 @@ function updateRadarOverlay() {
                 pane: 'radarPane',
                 opacity: 0, // Keep hidden in the background
                 bounds: bounds,
-                minZoom: 0,
-                maxZoom: 14,
-                tileSize: 256,
+                minZoom: CONFIG.map.minZoom,
+                maxZoom: CONFIG.map.maxZoom,
+                tileSize: CONFIG.map.tileSize,
                 updateWhenIdle: false
             }).addTo(map);
 
@@ -288,10 +408,9 @@ function updateRadarOverlay() {
     }
 
     // 4. Sliding-window Garbage Collection: prune layers outside the window
-    // Keep window: [currentTimeIndex - 2, currentTimeIndex + 4] (with circular wrapping)
     const keepIndices = new Set();
     const len = metadata.times.length;
-    for (let i = -2; i <= 4; i++) {
+    for (let i = CONFIG.cache.keepWindowStart; i <= CONFIG.cache.keepWindowEnd; i++) {
         const idx = (currentTimeIndex + i + len) % len;
         keepIndices.add(metadata.times[idx]);
     }
@@ -306,6 +425,7 @@ function updateRadarOverlay() {
 }
 
 // Update time text displays
+// Format absolute and relative forecast times from metadata
 function updateTimeStepDisplay() {
     if (!metadata) return;
     const timeVal = metadata.times[currentTimeIndex];
@@ -320,47 +440,17 @@ function updateLegend() {
     const legendLabels = document.querySelector('.legend-labels');
     if (!legendTitle || !legendBar || !legendLabels) return;
 
-    if (currentEns === 'prob') {
-        legendTitle.textContent = "Rain Probability";
-        legendBar.innerHTML = `
-            <span style="background: rgba(180, 200, 220, 0.35);"></span>
-            <span style="background: rgba(100, 160, 255, 0.5);"></span>
-            <span style="background: rgba(0, 100, 255, 0.65);"></span>
-            <span style="background: rgba(0, 200, 100, 0.75);"></span>
-            <span style="background: rgba(220, 0, 220, 0.85);"></span>
-            <span style="background: rgba(255, 255, 255, 0.95);"></span>
-        `;
-        legendLabels.innerHTML = `
-            <span>10%</span>
-            <span>30%</span>
-            <span>50%</span>
-            <span>70%</span>
-            <span>90%</span>
-            <span>100%</span>
-        `;
-    } else {
-        legendTitle.textContent = "Rainfall Rate (mm/h)";
-        legendBar.innerHTML = `
-            <span style="background: rgba(120, 200, 255, 0.5);"></span>
-            <span style="background: rgba(0, 100, 255, 0.7);"></span>
-            <span style="background: rgba(0, 200, 0, 0.7);"></span>
-            <span style="background: rgba(255, 230, 0, 0.8);"></span>
-            <span style="background: rgba(255, 120, 0, 0.9);"></span>
-            <span style="background: rgba(255, 0, 0, 0.95);"></span>
-            <span style="background: rgba(200, 0, 200, 1.0);"></span>
-            <span style="background: rgba(255, 255, 255, 1.0);"></span>
-        `;
-        legendLabels.innerHTML = `
-            <span>0.05</span>
-            <span>0.2</span>
-            <span>1</span>
-            <span>5</span>
-            <span>15</span>
-            <span>30</span>
-            <span>100</span>
-            <span>250+</span>
-        `;
-    }
+    const visConfig = (currentEns === 'prob') ? CONFIG.radarVisualization.prob : CONFIG.radarVisualization.rate;
+    
+    legendTitle.textContent = visConfig.title;
+    
+    legendBar.innerHTML = visConfig.colors
+        .map(color => `<span style="background: ${color};"></span>`)
+        .join('');
+        
+    legendLabels.innerHTML = visConfig.labels
+        .map(label => `<span>${label}</span>`)
+        .join('');
 }
 
 // Handle Ensemble Switch
@@ -486,12 +576,12 @@ function handleMapMouseMove(e) {
     hoverPanel.classList.remove('glass-panel', 'hidden');
     hoverPanel.classList.add('glass-panel'); // Make sure it's shown
 
-    // Throttle queries to 100ms
+    // Throttle queries
     if (hoverTimeout) return;
     hoverTimeout = setTimeout(() => {
         hoverTimeout = null;
         triggerHoverQuery();
-    }, 100);
+    }, CONFIG.intervals.hoverThrottleMs);
 }
 
 // Hide hover panel when mouse leaves map
@@ -544,7 +634,7 @@ async function triggerHoverQuery() {
     }
 }
 
-// Poll for metadata updates every 5 seconds to detect new NetCDF file
+// Poll for metadata updates to detect new NetCDF file
 function startMetadataPolling() {
     setInterval(async () => {
         try {
@@ -575,9 +665,10 @@ function startMetadataPolling() {
         } catch (e) {
             console.error("Failed to check for metadata update:", e);
         }
-    }, 5000);
+    }, CONFIG.intervals.metadataPollingMs);
 }
 
+// Renders the interactive timeseries chart using Chart.js
 async function showTimeseriesChart(lat, lon) {
     if (!metadata) return;
     activeCoords = { lat, lon };
@@ -630,9 +721,10 @@ async function showTimeseriesChart(lat, lon) {
         });
         
         const isProb = currentEns === 'prob';
-        const labelText = isProb ? "Rain Probability (%)" : "Rainfall Rate (mm/h)";
-        const borderColor = isProb ? "#a855f7" : "#38bdf8";
-        const backgroundColor = isProb ? "rgba(168, 85, 247, 0.15)" : "rgba(56, 189, 248, 0.15)";
+        const labelText = isProb ? CONFIG.radarVisualization.prob.title + " (%)" : CONFIG.radarVisualization.rate.title;
+        const chartColors = isProb ? CONFIG.chart.colors.prob : CONFIG.chart.colors.rate;
+        const borderColor = chartColors.border;
+        const backgroundColor = chartColors.background;
         
         const ctx = document.getElementById('rainfall-chart').getContext('2d');
         
@@ -655,11 +747,11 @@ async function showTimeseriesChart(lat, lon) {
                         data: data.values,
                         borderColor: borderColor,
                         backgroundColor: backgroundColor,
-                        borderWidth: 2,
+                        borderWidth: CONFIG.chart.borderWidth,
                         fill: true,
-                        tension: 0.3,
-                        pointRadius: 0,
-                        pointHoverRadius: 4
+                        tension: CONFIG.chart.tension,
+                        pointRadius: CONFIG.chart.pointRadius,
+                        pointHoverRadius: CONFIG.chart.pointHoverRadius
                     }]
                 },
                 options: {
@@ -694,7 +786,7 @@ async function showTimeseriesChart(lat, lon) {
                                 font: {
                                     size: 9
                                 },
-                                maxTicksLimit: 6
+                                maxTicksLimit: CONFIG.chart.maxTicksLimit
                             }
                         },
                         y: {
@@ -729,6 +821,7 @@ async function showTimeseriesChart(lat, lon) {
     }
 }
 
+// Close chart, destroy chart instance and remove Leaflet pin
 function closeTimeseriesChart() {
     chartPanel.classList.add('hidden');
     activeCoords = null;
@@ -744,6 +837,7 @@ function closeTimeseriesChart() {
     }
 }
 
+// Map Click Listener
 function handleMapClick(e) {
     const lat = e.latlng.lat;
     const lon = e.latlng.lng;
@@ -759,6 +853,12 @@ function handleMapClick(e) {
 
 // App Entry Point
 window.addEventListener('DOMContentLoaded', () => {
+    // Sync default UI control values from CONFIG
+    speedSlider.value = CONFIG.defaults.speed;
+    speedValue.textContent = `${CONFIG.defaults.speed} fps`;
+    opacitySlider.value = CONFIG.defaults.opacity;
+    opacityValue.textContent = `${CONFIG.defaults.opacity}%`;
+
     initMap();
     loadApp();
     startMetadataPolling();
