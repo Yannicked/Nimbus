@@ -1,3 +1,7 @@
+//! Coordinate projection utilities for converting between Web Mercator
+//! (EPSG:3857), WGS84 geographic coordinates, and the KNMI Polar
+//! Stereographic grid used by the precipitation dataset.
+
 use std::f64::consts::PI;
 
 const WGS84_A: f64 = 6378137.0; // semi-major axis

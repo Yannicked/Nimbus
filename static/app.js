@@ -77,7 +77,7 @@ function initMap() {
         center: [52.1, 5.2], // Center on Netherlands
         zoom: 8,
         minZoom: 0,
-        maxZoom: 12
+        maxZoom: 14
     });
 
     // Create custom pane for radar overlays to keep them on top of base layers
@@ -239,7 +239,7 @@ function updateRadarOverlay() {
             opacity: 0, // start hidden to avoid grey flashes
             bounds: bounds,
             minZoom: 0,
-            maxZoom: 12,
+            maxZoom: 14,
             tileSize: 256,
             updateWhenIdle: false
         }).addTo(map);
@@ -273,7 +273,7 @@ function updateRadarOverlay() {
                 opacity: 0, // Keep hidden in the background
                 bounds: bounds,
                 minZoom: 0,
-                maxZoom: 12,
+                maxZoom: 14,
                 tileSize: 256,
                 updateWhenIdle: false
             }).addTo(map);
