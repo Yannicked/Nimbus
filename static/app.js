@@ -197,6 +197,56 @@ function updateTimeStepDisplay() {
     timeStepRelative.textContent = formatRelativeTime(timeVal);
 }
 
+// Update the legend colors and labels dynamically
+function updateLegend() {
+    const legendTitle = document.querySelector('.legend-container .section-label');
+    const legendBar = document.querySelector('.legend-bar');
+    const legendLabels = document.querySelector('.legend-labels');
+    if (!legendTitle || !legendBar || !legendLabels) return;
+
+    if (currentEns === 'prob') {
+        legendTitle.textContent = "Rain Probability";
+        legendBar.innerHTML = `
+            <span style="background: rgba(180, 200, 220, 0.35);"></span>
+            <span style="background: rgba(100, 160, 255, 0.5);"></span>
+            <span style="background: rgba(0, 100, 255, 0.65);"></span>
+            <span style="background: rgba(0, 200, 100, 0.75);"></span>
+            <span style="background: rgba(220, 0, 220, 0.85);"></span>
+            <span style="background: rgba(255, 255, 255, 0.95);"></span>
+        `;
+        legendLabels.innerHTML = `
+            <span>10%</span>
+            <span>30%</span>
+            <span>50%</span>
+            <span>70%</span>
+            <span>90%</span>
+            <span>100%</span>
+        `;
+    } else {
+        legendTitle.textContent = "Rainfall Rate (mm/h)";
+        legendBar.innerHTML = `
+            <span style="background: rgba(120, 200, 255, 0.5);"></span>
+            <span style="background: rgba(0, 100, 255, 0.7);"></span>
+            <span style="background: rgba(0, 200, 0, 0.7);"></span>
+            <span style="background: rgba(255, 230, 0, 0.8);"></span>
+            <span style="background: rgba(255, 120, 0, 0.9);"></span>
+            <span style="background: rgba(255, 0, 0, 0.95);"></span>
+            <span style="background: rgba(200, 0, 200, 1.0);"></span>
+            <span style="background: rgba(255, 255, 255, 1.0);"></span>
+        `;
+        legendLabels.innerHTML = `
+            <span>0.05</span>
+            <span>0.2</span>
+            <span>1</span>
+            <span>5</span>
+            <span>15</span>
+            <span>30</span>
+            <span>100</span>
+            <span>250+</span>
+        `;
+    }
+}
+
 // Handle Ensemble Switch
 function selectEnsemble(ens) {
     currentEns = ens;
@@ -214,6 +264,7 @@ function selectEnsemble(ens) {
         }
     });
     updateRadarOverlay();
+    updateLegend();
     triggerHoverQuery(); // update hover panel if mouse is over map
 }
 
