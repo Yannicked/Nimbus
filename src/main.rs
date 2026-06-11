@@ -50,6 +50,7 @@ struct AppState {
     file_path: RwLock<String>,
     empty_tile: Vec<u8>,
     png_cache: DashMap<(String, i64, u32, u32, u32), Vec<u8>>, // Key: (ens, time, z, x, y)
+    grid_cache: DashMap<(String, i64), Arc<Vec<u16>>>, // Key: (ens, time), value: raw grid slice
     metadata: RwLock<Option<Metadata>>,
 }
 
@@ -85,6 +86,7 @@ async fn main() {
         file_path: RwLock::new(initial_file.clone()),
         empty_tile,
         png_cache: DashMap::new(),
+        grid_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val),
     });
 
@@ -125,7 +127,8 @@ async fn main() {
                             *meta_write = Some(meta);
 
                             state_clone.png_cache.clear();
-                            println!("Successfully reloaded metadata and cleared PNG cache.");
+                            state_clone.grid_cache.clear();
+                            println!("Successfully reloaded metadata and cleared caches.");
                         }
                         Err(e) => {
                             eprintln!("Failed to load new NetCDF metadata: {}", e);
@@ -278,6 +281,97 @@ fn interpolate_bilinear(fx: f64, fy: f64, raw_slice: &[u16]) -> u16 {
     }
 }
 
+/// Helper to compute or load the raw grid slice (doing ensembles statistics if necessary)
+fn compute_raw_slice(
+    file_path: &str,
+    meta: &Metadata,
+    ens_str: &str,
+    time: i64,
+) -> Result<Vec<u16>, (StatusCode, String)> {
+    let mut raw_slice = vec![65535_u16; KNMI_GRID_H * KNMI_GRID_W];
+
+    if ens_str == "med" || ens_str == "max" || ens_str == "prob" {
+        // Read all 20 members
+        let mut member_slices = Vec::with_capacity(meta.ensembles.len());
+        for &ens_val in &meta.ensembles {
+            let ens_idx = meta.ensembles.iter().position(|&e| e == ens_val).unwrap();
+            let time_idx = meta.times.iter().position(|&t| t == time).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("Invalid time: {}", time),
+            ))?;
+            let slice = read_netcdf_slice(file_path, ens_idx, time_idx).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error reading slice for E{}: {}", ens_val, e),
+                )
+            })?;
+            member_slices.push(slice);
+        }
+
+        // Compute statistics for each cell
+        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+        for i in 0..grid_size {
+            if member_slices[0][i] == 65535 {
+                raw_slice[i] = 65535;
+                continue;
+            }
+
+            if ens_str == "max" {
+                let mut max_val = 0;
+                for slice in &member_slices {
+                    let val = slice[i];
+                    if val != 65535 && val > max_val {
+                        max_val = val;
+                    }
+                }
+                raw_slice[i] = max_val;
+            } else if ens_str == "prob" {
+                let mut count = 0;
+                for slice in &member_slices {
+                    let val = slice[i];
+                    if val != 65535 && val >= 10 {
+                        count += 1;
+                    }
+                }
+                raw_slice[i] = ((count * 100) / member_slices.len()) as u16;
+            } else { // "med"
+                let mut vals = vec![0; member_slices.len()];
+                for e in 0..member_slices.len() {
+                    vals[e] = member_slices[e][i];
+                }
+                vals.sort_unstable();
+                raw_slice[i] = vals[vals.len() / 2];
+            }
+        }
+    } else {
+        // Individual member
+        let ens_num: i32 = ens_str.parse().map_err(|_| {
+            (StatusCode::BAD_REQUEST, format!("Invalid ensemble parameter: {}", ens_str))
+        })?;
+
+        let ens_idx = meta
+            .ensembles
+            .iter()
+            .position(|&e| e == ens_num)
+            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid ensemble number: {}", ens_num)))?;
+
+        let time_idx = meta
+            .times
+            .iter()
+            .position(|&t| t == time)
+            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", time)))?;
+
+        raw_slice = read_netcdf_slice(file_path, ens_idx, time_idx).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error reading slice: {}", e),
+            )
+        })?;
+    }
+
+    Ok(raw_slice)
+}
+
 // API: Serves Web Mercator projected colored PNG overlay tile dynamically
 async fn get_tile(
     Path((ens_str, time, z, x, y)): Path<(String, i64, u32, u32, u32)>,
@@ -345,87 +439,17 @@ async fn get_tile(
         "Metadata not available".to_string(),
     ))?;
 
-    let mut raw_slice = vec![65535_u16; KNMI_GRID_H * KNMI_GRID_W];
     let is_prob = ens_str == "prob";
 
-    if ens_str == "med" || ens_str == "max" || ens_str == "prob" {
-        // Read all 20 members
-        let mut member_slices = Vec::with_capacity(meta.ensembles.len());
-        for &ens_val in &meta.ensembles {
-            let ens_idx = meta.ensembles.iter().position(|&e| e == ens_val).unwrap();
-            let time_idx = meta.times.iter().position(|&t| t == time).ok_or((
-                StatusCode::BAD_REQUEST,
-                format!("Invalid time: {}", time),
-            ))?;
-            let slice = read_netcdf_slice(&file_path, ens_idx, time_idx).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Error reading slice for E{}: {}", ens_val, e),
-                )
-            })?;
-            member_slices.push(slice);
-        }
-
-        // Compute statistics for each cell
-        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
-        for i in 0..grid_size {
-            if member_slices[0][i] == 65535 {
-                raw_slice[i] = 65535;
-                continue;
-            }
-
-            if ens_str == "max" {
-                let mut max_val = 0;
-                for slice in &member_slices {
-                    let val = slice[i];
-                    if val != 65535 && val > max_val {
-                        max_val = val;
-                    }
-                }
-                raw_slice[i] = max_val;
-            } else if ens_str == "prob" {
-                let mut count = 0;
-                for slice in &member_slices {
-                    let val = slice[i];
-                    if val != 65535 && val >= 10 {
-                        count += 1;
-                    }
-                }
-                raw_slice[i] = ((count * 100) / member_slices.len()) as u16;
-            } else { // "med"
-                let mut vals = vec![0; member_slices.len()];
-                for e in 0..member_slices.len() {
-                    vals[e] = member_slices[e][i];
-                }
-                vals.sort_unstable();
-                raw_slice[i] = vals[vals.len() / 2];
-            }
-        }
+    // 3. Retrieve or compute raw slice (cached in memory)
+    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
+        cached.value().clone()
     } else {
-        // Individual member
-        let ens_num: i32 = ens_str.parse().map_err(|_| {
-            (StatusCode::BAD_REQUEST, format!("Invalid ensemble parameter: {}", ens_str))
-        })?;
-
-        let ens_idx = meta
-            .ensembles
-            .iter()
-            .position(|&e| e == ens_num)
-            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid ensemble number: {}", ens_num)))?;
-
-        let time_idx = meta
-            .times
-            .iter()
-            .position(|&t| t == time)
-            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", time)))?;
-
-        raw_slice = read_netcdf_slice(&file_path, ens_idx, time_idx).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Error reading slice: {}", e),
-            )
-        })?;
-    }
+        let computed = compute_raw_slice(&file_path, &meta, &ens_str, time)?;
+        let arc = Arc::new(computed);
+        state.grid_cache.insert((ens_str.clone(), time), arc.clone());
+        arc
+    };
 
     // Render tile image dynamically
     use image::{ImageBuffer, ImageFormat};
