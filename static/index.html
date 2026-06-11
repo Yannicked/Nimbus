@@ -12,10 +12,9 @@
     <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-          crossorigin=""/>
+    <!-- MapLibre GL CSS -->
+    <link href="https://unpkg.com/maplibre-gl@4.3.0/dist/maplibre-gl.css" rel="stylesheet" />
+
     
     <link rel="stylesheet" href="style.css">
 </head>
@@ -111,6 +110,15 @@
                 </select>
             </div>
 
+            <!-- Map Theme Select -->
+            <div class="theme-select-container">
+                <label class="section-label">Map Style</label>
+                <select id="theme-select" class="glass-select">
+                    <option value="dark">Dark Theme</option>
+                    <option value="osm">OpenStreetMap</option>
+                </select>
+            </div>
+
             <!-- Legend Panel -->
             <div class="legend-container">
                 <label class="section-label">Rainfall Rate (mm/h)</label>
@@ -138,10 +146,8 @@
         </div>
     </div>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-            crossorigin=""></script>
+    <!-- MapLibre GL JS -->
+    <script src="https://unpkg.com/maplibre-gl@4.3.0/dist/maplibre-gl.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js"></script>

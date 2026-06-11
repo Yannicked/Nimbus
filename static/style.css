@@ -431,64 +431,32 @@ header .ref-time .value {
     color: var(--text-secondary);
 }
 
-/* Customized Leaflet Layer Control Styles */
-.leaflet-bar {
+/* Customized MapLibre GL Navigation Control Styles */
+.maplibregl-ctrl-group {
+    background: var(--bg-glass) !important;
     border: 1px solid var(--border-glass) !important;
     box-shadow: 0 4px 12px var(--shadow-color) !important;
     border-radius: 8px !important;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     overflow: hidden;
 }
 
-.leaflet-bar a {
-    background: var(--bg-glass) !important;
-    color: var(--text-primary) !important;
+.maplibregl-ctrl-group button {
+    background: transparent !important;
     border-bottom: 1px solid var(--border-glass) !important;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    color: var(--text-primary) !important;
+    transition: background-color 0.2s ease;
 }
 
-.leaflet-bar a:hover {
+.maplibregl-ctrl-group button:last-child {
+    border-bottom: none !important;
+}
+
+.maplibregl-ctrl-group button:hover {
     background: rgba(255, 255, 255, 0.15) !important;
 }
 
-.leaflet-control-layers {
-    background: var(--bg-glass) !important;
-    border: 1px solid var(--border-glass) !important;
-    box-shadow: 0 4px 12px var(--shadow-color) !important;
-    border-radius: 12px !important;
-    color: var(--text-primary) !important;
-    font-family: var(--font-body) !important;
-    font-weight: 500 !important;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-}
-
-.leaflet-control-layers-expanded {
-    padding: 10px 14px !important;
-}
-
-/* Statistics Buttons styling */
-.ensemble-grid button.stat-btn {
-    background: rgba(168, 85, 247, 0.08); /* slight purple tint */
-    border-color: rgba(168, 85, 247, 0.18);
-}
-
-.ensemble-grid button.stat-btn:hover {
-    background: rgba(168, 85, 247, 0.16);
-    border-color: rgba(168, 85, 247, 0.3);
-}
-
-.ensemble-grid button.stat-btn.active {
-    background: #a855f7; /* solid purple */
-    border-color: #c084fc;
-    box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
-}
-
-/* Force browser-side smooth scaling for the radar image overlay */
-.leaflet-image-layer {
-    image-rendering: auto !important;
-    image-rendering: smooth !important;
-}
 
 /* Chart Panel (Location Time-Series) */
 #chart-panel {

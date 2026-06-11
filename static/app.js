@@ -2,37 +2,14 @@
 const CONFIG = {
     // Map settings
     map: {
-        defaultCenter: [52.1, 5.2], // Center on Netherlands
-        defaultZoom: 8,
+        defaultCenter: [5.2, 52.1], // Center on Netherlands (lon, lat for MapLibre!)
+        defaultZoom: 7, // MapLibre zoom 7 roughly matches Leaflet zoom 8
         minZoom: 0,
         maxZoom: 14,
-        radarPaneZIndex: 450,
-        tileSize: 256,
-        // Leaflet base maps
-        baseLayers: {
-            dark: {
-                url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-                subdomains: 'abcd',
-                maxZoom: 20
-            },
-            light: {
-                url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-                subdomains: 'abcd',
-                maxZoom: 20
-            },
-            raster: {
-                url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-                subdomains: 'abcd',
-                maxZoom: 20
-            },
-            osm: {
-                url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                maxZoom: 19
-            }
+        // Standard CartoDB vector basemaps (Dark Matter and Voyager)
+        styles: {
+            dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+            osm: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json'
         }
     },
     // Application defaults & behavior
@@ -46,12 +23,6 @@ const CONFIG = {
     intervals: {
         metadataPollingMs: 5000, // Metadata check interval
         hoverThrottleMs: 100, // Hover values API query throttle
-    },
-    // Sliding-window layer cache config
-    cache: {
-        preloadAhead: 2, // Number of future frames to pre-load
-        keepWindowStart: -2, // Keep layers from this index offset...
-        keepWindowEnd: 4 // ...to this index offset (inclusive)
     },
     // Legend and visualization colors
     radarVisualization: {
@@ -109,8 +80,6 @@ let currentEns = CONFIG.defaults.ensemble;
 let currentTimeIndex = CONFIG.defaults.timeIndex;
 let isPlaying = false;
 let playInterval = null;
-let radarLayers = {}; // Key: timeVal, Value: L.tileLayer
-let activeTimeVal = null;
 let clickedMarker = null;
 let chartInstance = null;
 let activeCoords = null;
@@ -136,6 +105,7 @@ const chartCloseBtn = document.getElementById('chart-close');
 const chartCoords = document.getElementById('chart-coords');
 const chartStatPeak = document.getElementById('chart-stat-peak');
 const chartStatTotal = document.getElementById('chart-stat-total');
+const themeSelect = document.getElementById('theme-select');
 
 // Web Mercator to Lat/Lon Projection
 function mercatorToLonLat(x, y) {
@@ -175,53 +145,33 @@ function formatAbsoluteTime(refTimeStr, secondsOffset) {
     }) + ' (NL Time)';
 }
 
-// Initialize Leaflet Map
+// Initialize MapLibre Map
 function initMap() {
-    map = L.map('map', {
+    map = new maplibregl.Map({
+        container: 'map',
+        style: CONFIG.map.styles.dark,
         center: CONFIG.map.defaultCenter,
         zoom: CONFIG.map.defaultZoom,
         minZoom: CONFIG.map.minZoom,
         maxZoom: CONFIG.map.maxZoom
     });
 
-    // Create custom pane for radar overlays to keep them on top of base layers
-    map.createPane('radarPane');
-    map.getPane('radarPane').style.zIndex = CONFIG.map.radarPaneZIndex;
-    map.getPane('radarPane').style.pointerEvents = 'none';
+    // Add map navigation controls (zoom, compass)
+    map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
-    // Base Layer: CartoDB Dark Matter (Recommended)
-    const darkLayer = L.tileLayer(CONFIG.map.baseLayers.dark.url, {
-        attribution: CONFIG.map.baseLayers.dark.attribution,
-        subdomains: CONFIG.map.baseLayers.dark.subdomains,
-        maxZoom: CONFIG.map.baseLayers.dark.maxZoom
-    }).addTo(map);
-
-    const lightLayer = L.tileLayer(CONFIG.map.baseLayers.light.url, {
-        attribution: CONFIG.map.baseLayers.light.attribution,
-        subdomains: CONFIG.map.baseLayers.light.subdomains,
-        maxZoom: CONFIG.map.baseLayers.light.maxZoom
-    }).addTo(map);
-
-    const rasterLayer = L.tileLayer(CONFIG.map.baseLayers.raster.url, {
-        attribution: CONFIG.map.baseLayers.raster.attribution,
-        subdomains: CONFIG.map.baseLayers.raster.subdomains,
-        maxZoom: CONFIG.map.baseLayers.raster.maxZoom
-    }).addTo(map);
-
-    // Base Layer: Standard OpenStreetMap
-    const osmLayer = L.tileLayer(CONFIG.map.baseLayers.osm.url, {
-        attribution: CONFIG.map.baseLayers.osm.attribution,
-        maxZoom: CONFIG.map.baseLayers.osm.maxZoom
+    map.on('load', () => {
+        setupRadarSourceAndLayer();
     });
 
-    // Layer Controls
-    const baseMaps = {
-        "Dark Theme (OSM)": darkLayer,
-        "Light Theme (OSM)": lightLayer,
-        "Raster Theme (OSM)": rasterLayer,
-        "Standard OpenStreetMap": osmLayer
-    };
-    L.control.layers(baseMaps).addTo(map);
+    // Recreate source and layer on style changes
+    map.on('style.load', () => {
+        setupRadarSourceAndLayer();
+    });
+
+    // Attach map mouse events for hover & click
+    map.on('mousemove', handleMapMouseMove);
+    map.on('mouseout', handleMapMouseLeave);
+    map.on('click', handleMapClick);
 }
 
 // Fetch Metadata and Load App
@@ -319,108 +269,61 @@ function drawSliderTicks() {
     }
 }
 
-// Helper to hide all inactive radar tile layers
-function hideInactiveLayers(activeTimeVal) {
-    for (const timeVal in radarLayers) {
-        if (parseInt(timeVal) !== activeTimeVal) {
-            radarLayers[timeVal].setOpacity(0);
-        }
-    }
-}
-
-// Clear all active layers when ensemble member changes
+// Clear all active layers (no-op in MapLibre since we reuse the single source)
 function clearRadarLayers() {
-    for (const timeVal in radarLayers) {
-        map.removeLayer(radarLayers[timeVal]);
-    }
-    radarLayers = {};
-    activeTimeVal = null;
+    // Left for compatibility with Leaflet design
 }
 
-// Update the map TileOverlay using a sliding-window layer pool with background preloading
+// Setup Raster Source and Layer
+function setupRadarSourceAndLayer() {
+    if (!metadata) return;
+
+    // Remove if already exists
+    if (map.getSource('radar-raster')) {
+        map.removeLayer('radar-layer');
+        map.removeSource('radar-raster');
+    }
+
+    const timeVal = metadata.times[currentTimeIndex];
+    const urlTemplate = `${window.location.origin}/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
+
+    // Compute bounding box coordinates in Lat/Lon for bounds restriction
+    const sw = mercatorToLonLat(metadata.left, metadata.bottom); // [lat, lon]
+    const ne = mercatorToLonLat(metadata.right, metadata.top); // [lat, lon]
+
+    map.addSource('radar-raster', {
+        type: 'raster',
+        tiles: [urlTemplate],
+        tileSize: 256,
+        bounds: [sw[1], sw[0], ne[1], ne[0]],
+        minzoom: CONFIG.map.minZoom,
+        maxzoom: CONFIG.map.maxZoom
+    });
+
+    const opacity = parseFloat(opacitySlider.value) / 100;
+
+    map.addLayer({
+        id: 'radar-layer',
+        type: 'raster',
+        source: 'radar-raster',
+        paint: {
+            'raster-opacity': opacity
+        }
+    });
+}
+
+// Update the map TileOverlay by changing setTiles
 function updateRadarOverlay() {
     if (!metadata) return;
 
     const timeVal = metadata.times[currentTimeIndex];
-    const opacity = parseFloat(opacitySlider.value) / 100;
-    const urlTemplate = `/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
+    const urlTemplate = `${window.location.origin}/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
 
-    // Compute bounding box coordinates in Lat/Lon for bounds restriction
-    const sw = mercatorToLonLat(metadata.left, metadata.bottom);
-    const ne = mercatorToLonLat(metadata.right, metadata.top);
-    const bounds = [sw, ne];
-
-    activeTimeVal = timeVal;
-
-    // 1. If layer for this timeVal doesn't exist, create it in background
-    if (!radarLayers[timeVal]) {
-        const layer = L.tileLayer(urlTemplate, {
-            pane: 'radarPane',
-            opacity: 0, // start hidden to avoid grey flashes
-            bounds: bounds,
-            minZoom: CONFIG.map.minZoom,
-            maxZoom: CONFIG.map.maxZoom,
-            tileSize: CONFIG.map.tileSize,
-            updateWhenIdle: false
-        }).addTo(map);
-
-        layer._isLoaded = false;
-        layer.on('load', () => {
-            layer._isLoaded = true;
-            // Only show if this timeVal is still the active one
-            if (activeTimeVal === timeVal) {
-                layer.setOpacity(opacity);
-                hideInactiveLayers(timeVal);
-            }
-        });
-
-        radarLayers[timeVal] = layer;
+    const source = map.getSource('radar-raster');
+    if (source) {
+        source.setTiles([urlTemplate]);
     } else {
-        // 2. If it already exists, show it immediately
-        const layer = radarLayers[timeVal];
-        layer.setOpacity(opacity);
-        hideInactiveLayers(timeVal);
-    }
-
-    // 3. Active Preloading: load the next N frames in the background
-    for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
-        const nextIndex = (currentTimeIndex + i) % metadata.times.length;
-        const nextTimeVal = metadata.times[nextIndex];
-        if (!radarLayers[nextTimeVal]) {
-            const nextUrlTemplate = `/api/map/${currentEns}/${nextTimeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
-            const nextLayer = L.tileLayer(nextUrlTemplate, {
-                pane: 'radarPane',
-                opacity: 0, // Keep hidden in the background
-                bounds: bounds,
-                minZoom: CONFIG.map.minZoom,
-                maxZoom: CONFIG.map.maxZoom,
-                tileSize: CONFIG.map.tileSize,
-                updateWhenIdle: false
-            }).addTo(map);
-
-            nextLayer._isLoaded = false;
-            nextLayer.on('load', () => {
-                nextLayer._isLoaded = true;
-            });
-
-            radarLayers[nextTimeVal] = nextLayer;
-        }
-    }
-
-    // 4. Sliding-window Garbage Collection: prune layers outside the window
-    const keepIndices = new Set();
-    const len = metadata.times.length;
-    for (let i = CONFIG.cache.keepWindowStart; i <= CONFIG.cache.keepWindowEnd; i++) {
-        const idx = (currentTimeIndex + i + len) % len;
-        keepIndices.add(metadata.times[idx]);
-    }
-
-    for (const tVal in radarLayers) {
-        const tValInt = parseInt(tVal);
-        if (!keepIndices.has(tValInt)) {
-            map.removeLayer(radarLayers[tVal]);
-            delete radarLayers[tVal];
-        }
+        setupRadarSourceAndLayer();
     }
 }
 
@@ -485,9 +388,8 @@ timeSlider.addEventListener('input', (e) => {
 opacitySlider.addEventListener('input', (e) => {
     const val = e.target.value;
     opacityValue.textContent = `${val}%`;
-    const activeLayer = radarLayers[activeTimeVal];
-    if (activeLayer) {
-        activeLayer.setOpacity(parseFloat(val) / 100);
+    if (map && map.getLayer('radar-layer')) {
+        map.setPaintProperty('radar-layer', 'raster-opacity', parseFloat(val) / 100);
     }
 });
 
@@ -567,9 +469,10 @@ let hoverTimeout = null;
 
 // Throttled mouse listener on map
 function handleMapMouseMove(e) {
-    const latlng = e.latlng;
-    lastLat = latlng.lat;
-    lastLon = latlng.lng;
+    const lat = e.lngLat.lat;
+    const lon = e.lngLat.lng;
+    lastLat = lat;
+    lastLon = lon;
 
     // Show coordinates in panel
     hoverCoords.textContent = `lat: ${lastLat.toFixed(4)}, lon: ${lastLon.toFixed(4)}`;
@@ -585,7 +488,7 @@ function handleMapMouseMove(e) {
 }
 
 // Hide hover panel when mouse leaves map
-function handleMapMouseOut() {
+function handleMapMouseLeave() {
     hoverPanel.classList.add('hidden');
     lastLat = null;
     lastLon = null;
@@ -645,9 +548,6 @@ function startMetadataPolling() {
             if (metadata && newMetadata.version !== metadata.version) {
                 console.log("New NetCDF file detected! Reloading metadata and invalidating cache...");
                 metadata = newMetadata;
-
-                // Invalidate everything on client
-                clearRadarLayers();
 
                 // Re-render timeline slider (just in case the number of times changed)
                 timeSlider.max = metadata.times.length - 1;
@@ -821,13 +721,13 @@ async function showTimeseriesChart(lat, lon) {
     }
 }
 
-// Close chart, destroy chart instance and remove Leaflet pin
+// Close chart, destroy chart instance and remove MapLibre pin marker
 function closeTimeseriesChart() {
     chartPanel.classList.add('hidden');
     activeCoords = null;
     
     if (clickedMarker) {
-        map.removeLayer(clickedMarker);
+        clickedMarker.remove();
         clickedMarker = null;
     }
     
@@ -839,16 +739,25 @@ function closeTimeseriesChart() {
 
 // Map Click Listener
 function handleMapClick(e) {
-    const lat = e.latlng.lat;
-    const lon = e.latlng.lng;
+    const lat = e.lngLat.lat;
+    const lon = e.lngLat.lng;
     
     if (clickedMarker) {
-        clickedMarker.setLatLng(e.latlng);
+        clickedMarker.setLngLat(e.lngLat);
     } else {
-        clickedMarker = L.marker(e.latlng).addTo(map);
+        clickedMarker = new maplibregl.Marker()
+            .setLngLat(e.lngLat)
+            .addTo(map);
     }
     
     showTimeseriesChart(lat, lon);
+}
+
+// Switch Map Styles
+function switchMapStyle(styleKey) {
+    if (map && CONFIG.map.styles[styleKey]) {
+        map.setStyle(CONFIG.map.styles[styleKey]);
+    }
 }
 
 // App Entry Point
@@ -863,9 +772,10 @@ window.addEventListener('DOMContentLoaded', () => {
     loadApp();
     startMetadataPolling();
 
-    // Attach map event listeners
-    map.on('mousemove', handleMapMouseMove);
-    map.on('mouseout', handleMapMouseOut);
-    map.on('click', handleMapClick);
+    // Attach local controls listeners
     chartCloseBtn.addEventListener('click', closeTimeseriesChart);
+
+    themeSelect.addEventListener('change', (e) => {
+        switchMapStyle(e.target.value);
+    });
 });
