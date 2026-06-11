@@ -324,13 +324,16 @@ function setupRadarSourceAndLayer(timeVal) {
         id: layerId,
         type: 'raster',
         source: sourceId,
+        layout: {
+            'visibility': 'none' // Start completely disabled
+        },
         paint: {
-            'raster-opacity': 0 // Start hidden
+            'raster-opacity': 0
         }
     });
 }
 
-// Update the radar layers using a sliding-window cache
+// Update the radar layers using a sliding-window cache with visibility toggles
 function updateRadarOverlay() {
     if (!metadata || !map || !map.isStyleLoaded()) return;
 
@@ -338,40 +341,48 @@ function updateRadarOverlay() {
     const opacity = parseFloat(opacitySlider.value) / 100;
     activeTimeVal = timeVal;
 
-    // 1. Ensure the active frame's source and layer are loaded
-    const activeSourceId = `radar-source-${timeVal}`;
-    const activeLayerId = `radar-layer-${timeVal}`;
-    if (!map.getSource(activeSourceId)) {
-        setupRadarSourceAndLayer(timeVal);
+    // 1. Identify which indices are active or preloaded
+    const len = metadata.times.length;
+    const activeIndex = currentTimeIndex;
+    
+    const preloadIndices = new Set();
+    for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
+        preloadIndices.add((currentTimeIndex + i) % len);
     }
 
-    // 2. Set the active layer to the current opacity, and make it visible
-    if (map.getLayer(activeLayerId)) {
-        map.setPaintProperty(activeLayerId, 'raster-opacity', opacity);
-    }
+    // 2. Loop through all timeline indices to manage their visibility
+    for (let i = 0; i < len; i++) {
+        const tVal = metadata.times[i];
+        const sourceId = `radar-source-${tVal}`;
+        const layerId = `radar-layer-${tVal}`;
 
-    // 3. Hide all other layers
-    for (const tVal of metadata.times) {
-        if (tVal !== timeVal) {
-            const otherLayerId = `radar-layer-${tVal}`;
-            if (map.getLayer(otherLayerId)) {
-                map.setPaintProperty(otherLayerId, 'raster-opacity', 0);
+        if (i === activeIndex) {
+            // Active frame: visible with chosen opacity
+            if (!map.getSource(sourceId)) {
+                setupRadarSourceAndLayer(tVal);
+            }
+            if (map.getLayer(layerId)) {
+                map.setLayoutProperty(layerId, 'visibility', 'visible');
+                map.setPaintProperty(layerId, 'raster-opacity', opacity);
+            }
+        } else if (preloadIndices.has(i)) {
+            // Preload frame: visible with 0 opacity (to force browser fetch/WebGL load)
+            if (!map.getSource(sourceId)) {
+                setupRadarSourceAndLayer(tVal);
+            }
+            if (map.getLayer(layerId)) {
+                map.setLayoutProperty(layerId, 'visibility', 'visible');
+                map.setPaintProperty(layerId, 'raster-opacity', 0);
+            }
+        } else {
+            // Hidden frame: completely disabled (visibility: none) to avoid requests when zooming/panning
+            if (map.getLayer(layerId)) {
+                map.setLayoutProperty(layerId, 'visibility', 'none');
             }
         }
     }
 
-    // 4. Preload future frames
-    const len = metadata.times.length;
-    for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
-        const nextIndex = (currentTimeIndex + i) % len;
-        const nextTimeVal = metadata.times[nextIndex];
-        const nextSourceId = `radar-source-${nextTimeVal}`;
-        if (!map.getSource(nextSourceId)) {
-            setupRadarSourceAndLayer(nextTimeVal);
-        }
-    }
-
-    // 5. Sliding-window Garbage Collection: prune layers outside the window
+    // 3. Sliding-window Garbage Collection: prune layers outside the window to free WebGL memory
     const keepIndices = new Set();
     for (let i = CONFIG.cache.keepWindowStart; i <= CONFIG.cache.keepWindowEnd; i++) {
         const idx = (currentTimeIndex + i + len) % len;
