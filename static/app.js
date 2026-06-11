@@ -181,13 +181,13 @@ function clearRadarLayers() {
     activeTimeVal = null;
 }
 
-// Update the map TileOverlay using a double-buffered layer pool with background preloading
+// Update the map TileOverlay using a sliding-window layer pool with background preloading
 function updateRadarOverlay() {
     if (!metadata) return;
 
     const timeVal = metadata.times[currentTimeIndex];
     const opacity = parseFloat(opacitySlider.value) / 100;
-    const urlTemplate = `/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}`;
+    const urlTemplate = `/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
 
     // Compute bounding box coordinates in Lat/Lon for bounds restriction
     const sw = mercatorToLonLat(metadata.left, metadata.bottom);
@@ -225,26 +225,45 @@ function updateRadarOverlay() {
         hideInactiveLayers(timeVal);
     }
 
-    // 3. Active Preloading: load the next frame in the background
-    const nextIndex = (currentTimeIndex + 1) % metadata.times.length;
-    const nextTimeVal = metadata.times[nextIndex];
-    if (!radarLayers[nextTimeVal]) {
-        const nextUrlTemplate = `/api/map/${currentEns}/${nextTimeVal}/{z}/{x}/{y}`;
-        const nextLayer = L.tileLayer(nextUrlTemplate, {
-            opacity: 0, // Keep hidden in the background
-            bounds: bounds,
-            minZoom: 0,
-            maxZoom: 12,
-            tileSize: 256,
-            updateWhenIdle: false
-        }).addTo(map);
+    // 3. Active Preloading: load the next 2 frames in the background
+    for (let i = 1; i <= 2; i++) {
+        const nextIndex = (currentTimeIndex + i) % metadata.times.length;
+        const nextTimeVal = metadata.times[nextIndex];
+        if (!radarLayers[nextTimeVal]) {
+            const nextUrlTemplate = `/api/map/${currentEns}/${nextTimeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
+            const nextLayer = L.tileLayer(nextUrlTemplate, {
+                opacity: 0, // Keep hidden in the background
+                bounds: bounds,
+                minZoom: 0,
+                maxZoom: 12,
+                tileSize: 256,
+                updateWhenIdle: false
+            }).addTo(map);
 
-        nextLayer._isLoaded = false;
-        nextLayer.on('load', () => {
-            nextLayer._isLoaded = true;
-        });
+            nextLayer._isLoaded = false;
+            nextLayer.on('load', () => {
+                nextLayer._isLoaded = true;
+            });
 
-        radarLayers[nextTimeVal] = nextLayer;
+            radarLayers[nextTimeVal] = nextLayer;
+        }
+    }
+
+    // 4. Sliding-window Garbage Collection: prune layers outside the window
+    // Keep window: [currentTimeIndex - 2, currentTimeIndex + 4] (with circular wrapping)
+    const keepIndices = new Set();
+    const len = metadata.times.length;
+    for (let i = -2; i <= 4; i++) {
+        const idx = (currentTimeIndex + i + len) % len;
+        keepIndices.add(metadata.times[idx]);
+    }
+
+    for (const tVal in radarLayers) {
+        const tValInt = parseInt(tVal);
+        if (!keepIndices.has(tValInt)) {
+            map.removeLayer(radarLayers[tVal]);
+            delete radarLayers[tVal];
+        }
     }
 }
 
@@ -489,10 +508,45 @@ async function triggerHoverQuery() {
     }
 }
 
+// Poll for metadata updates every 5 seconds to detect new NetCDF file
+function startMetadataPolling() {
+    setInterval(async () => {
+        try {
+            const response = await fetch('/api/metadata');
+            if (!response.ok) return;
+            const newMetadata = await response.json();
+
+            if (metadata && newMetadata.version !== metadata.version) {
+                console.log("New NetCDF file detected! Reloading metadata and invalidating cache...");
+                metadata = newMetadata;
+
+                // Invalidate everything on client
+                clearRadarLayers();
+
+                // Re-render timeline slider (just in case the number of times changed)
+                timeSlider.max = metadata.times.length - 1;
+                if (currentTimeIndex >= metadata.times.length) {
+                    currentTimeIndex = 0;
+                    timeSlider.value = 0;
+                }
+                drawSliderTicks();
+                updateTimeStepDisplay();
+                updateRadarOverlay();
+
+                // Update reference time display
+                refTimeVal.textContent = metadata.reference_time_str;
+            }
+        } catch (e) {
+            console.error("Failed to check for metadata update:", e);
+        }
+    }, 5000);
+}
+
 // App Entry Point
 window.addEventListener('DOMContentLoaded', () => {
     initMap();
     loadApp();
+    startMetadataPolling();
 
     // Attach map event listeners
     map.on('mousemove', handleMapMouseMove);

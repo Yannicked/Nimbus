@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -44,12 +44,13 @@ struct Metadata {
     ensembles: Vec<i32>,
     times: Vec<i64>,
     reference_time_str: String,
+    version: u64,
 }
 
 struct AppState {
     file_path: RwLock<String>,
     empty_tile: Vec<u8>,
-    png_cache: DashMap<(String, i64, u32, u32, u32), Vec<u8>>, // Key: (ens, time, z, x, y)
+    tile_cache: DashMap<(String, i64, u32, u32, u32), Vec<u8>>, // Key: (ens, time, z, x, y)
     grid_cache: DashMap<(String, i64), Arc<Vec<u16>>>, // Key: (ens, time), value: raw grid slice
     metadata: RwLock<Option<Metadata>>,
 }
@@ -85,19 +86,12 @@ async fn main() {
     let state = Arc::new(AppState {
         file_path: RwLock::new(initial_file.clone()),
         empty_tile,
-        png_cache: DashMap::new(),
+        tile_cache: DashMap::new(),
         grid_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val.clone()),
     });
 
-    // Warm up the tile cache up to zoom level 8 on startup
-    if let Some(ref meta) = metadata_val {
-        let state_clone = state.clone();
-        let meta_clone = meta.clone();
-        tokio::spawn(async move {
-            precalculate_tiles(state_clone, meta_clone).await;
-        });
-    }
+
 
     // 4. Set up directory watcher to monitor file updates
     let state_clone = state.clone();
@@ -135,14 +129,11 @@ async fn main() {
                             let mut meta_write = state_clone.metadata.write().await;
                             *meta_write = Some(meta.clone());
 
-                            state_clone.png_cache.clear();
+                            state_clone.tile_cache.clear();
                             state_clone.grid_cache.clear();
                             println!("Successfully reloaded metadata and cleared caches.");
 
-                            let state_clone2 = state_clone.clone();
-                            tokio::spawn(async move {
-                                precalculate_tiles(state_clone2, meta).await;
-                            });
+
                         }
                         Err(e) => {
                             eprintln!("Failed to load new NetCDF metadata: {}", e);
@@ -206,6 +197,14 @@ fn load_metadata(file_path: &str) -> Result<Metadata, Box<dyn std::error::Error 
         val => return Err(format!("Unexpected time units type: {:?}", val).into()),
     };
 
+    // Use file modified time as the version number for client-side cache invalidation
+    let metadata_fs = std::fs::metadata(file_path)?;
+    let modified = metadata_fs.modified()?;
+    let version = modified
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     Ok(Metadata {
         left: MERCATOR_LEFT,
         right: MERCATOR_RIGHT,
@@ -216,18 +215,19 @@ fn load_metadata(file_path: &str) -> Result<Metadata, Box<dyn std::error::Error 
         ensembles,
         times,
         reference_time_str: time_units,
+        version,
     })
 }
 
-/// Generates a 256x256 transparent PNG to serve for empty/out-of-bounds tiles
+/// Generates a 256x256 transparent WebP to serve for empty/out-of-bounds tiles
 fn generate_empty_tile() -> Vec<u8> {
     use image::{ImageBuffer, ImageFormat};
     use std::io::Cursor;
     let img = ImageBuffer::from_pixel(256, 256, image::Rgba([0_u8, 0_u8, 0_u8, 0_u8]));
-    let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
-    png_bytes
+    let mut webp_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut webp_bytes);
+    img.write_to(&mut cursor, ImageFormat::WebP).unwrap();
+    webp_bytes
 }
 
 // API: Metadata
@@ -386,17 +386,17 @@ fn compute_raw_slice(
     Ok(raw_slice)
 }
 
-// API: Serves Web Mercator projected colored PNG overlay tile dynamically
+// API: Serves Web Mercator projected colored WebP overlay tile dynamically
 async fn get_tile(
     Path((ens_str, time, z, x, y)): Path<(String, i64, u32, u32, u32)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Check cache
-    if let Some(cached_png) = state.png_cache.get(&(ens_str.clone(), time, z, x, y)) {
+    if let Some(cached_tile) = state.tile_cache.get(&(ens_str.clone(), time, z, x, y)) {
         return Ok(Response::builder()
-            .header("Content-Type", "image/png")
+            .header("Content-Type", "image/webp")
             .header("Cache-Control", "public, max-age=300")
-            .body(axum::body::Body::from(cached_png.value().clone()))
+            .body(axum::body::Body::from(cached_tile.value().clone()))
             .unwrap());
     }
 
@@ -440,7 +440,7 @@ async fn get_tile(
     if !overlap {
         // Return transparent tile
         return Ok(Response::builder()
-            .header("Content-Type", "image/png")
+            .header("Content-Type", "image/webp")
             .header("Cache-Control", "public, max-age=300")
             .body(axum::body::Body::from(state.empty_tile.clone()))
             .unwrap());
@@ -465,52 +465,16 @@ async fn get_tile(
         arc
     };
 
-    // Render tile image dynamically
-    use image::{ImageBuffer, ImageFormat};
-    use std::io::Cursor;
-    let mut img = ImageBuffer::new(256, 256);
-
-    for row in 0..256 {
-        for col in 0..256 {
-            // 1. Get Web Mercator coordinates for pixel center
-            let col_frac = (col as f64 + 0.5) / 256.0;
-            let row_frac = (row as f64 + 0.5) / 256.0;
-            let x_merc = left + col_frac * (right - left);
-            let y_merc = top - row_frac * (top - bottom);
-
-            // 2. Convert to GPS
-            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
-
-            // 3. Convert to Polar Stereographic
-            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
-
-            // 4. Bilinear interpolation from raw_slice
-            let fx = (px - KNMI_X0) / KNMI_DX;
-            let fy = (py - KNMI_Y0) / KNMI_DY;
-
-            let val_raw = interpolate_bilinear(fx, fy, &raw_slice);
-
-            let color = if is_prob {
-                get_probability_color(val_raw)
-            } else {
-                get_color(val_raw)
-            };
-
-            img.put_pixel(col, row, image::Rgba(color));
-        }
-    }
-
-    let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    // Render tile image dynamically using WebP
+    let webp_bytes = render_tile_webp_bytes(left, right, top, bottom, &raw_slice, is_prob);
 
     // Cache results
-    state.png_cache.insert((ens_str, time, z, x, y), png_bytes.clone());
+    state.tile_cache.insert((ens_str, time, z, x, y), webp_bytes.clone());
 
     Ok(Response::builder()
-        .header("Content-Type", "image/png")
+        .header("Content-Type", "image/webp")
         .header("Cache-Control", "public, max-age=300")
-        .body(axum::body::Body::from(png_bytes))
+        .body(axum::body::Body::from(webp_bytes))
         .unwrap())
 }
 
@@ -734,7 +698,7 @@ fn get_probability_color(p: u16) -> [u8; 4] {
 }
 
 /// Helper to render tile image bytes
-fn render_tile_png_bytes(
+fn render_tile_webp_bytes(
     left: f64,
     right: f64,
     top: f64,
@@ -771,148 +735,12 @@ fn render_tile_png_bytes(
         }
     }
 
-    let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
-    png_bytes
+    let mut webp_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut webp_bytes);
+    img.write_to(&mut cursor, ImageFormat::WebP).unwrap();
+    webp_bytes
 }
 
-/// Helper to convert Web Mercator coordinates to Tile indices at zoom z
-fn mercator_to_tile(x: f64, y: f64, z: u32) -> (u32, u32) {
-    const MAP_LIMIT: f64 = std::f64::consts::PI * 6378137.0;
-    let n = 2.0_f64.powi(z as i32);
-    let tile_size = (2.0 * MAP_LIMIT) / n;
 
-    let col = ((x + MAP_LIMIT) / tile_size).floor() as u32;
-    let row = ((MAP_LIMIT - y) / tile_size).floor() as u32;
-
-    (col, row)
-}
-
-/// Background task to precalculate tiles up to zoom level 8
-async fn precalculate_tiles(state: Arc<AppState>, meta: Metadata) {
-    let file_path = state.file_path.read().await.clone();
-    
-    // Prepare all unique frames (ensemble members & statistics * times)
-    let mut frames = Vec::new();
-    for stat in &["med", "max", "prob"] {
-        for &time in &meta.times {
-            frames.push((stat.to_string(), time));
-        }
-    }
-    for &ens in &meta.ensembles {
-        for &time in &meta.times {
-            frames.push((ens.to_string(), time));
-        }
-    }
-
-    let start_time = std::time::Instant::now();
-    println!("Pre-loading all {} grid slices sequentially to avoid NetCDF lock contention...", frames.len());
-
-    // 1. Load and cache all raw grid slices sequentially (forces single-threaded NC access)
-    for (ens_str, time) in &frames {
-        let raw_slice = match compute_raw_slice(&file_path, &meta, ens_str, *time) {
-            Ok(slice) => Arc::new(slice),
-            Err(e) => {
-                eprintln!("Precalc error loading slice for {} at {}: {:?}", ens_str, time, e);
-                continue;
-            }
-        };
-        state.grid_cache.insert((ens_str.clone(), *time), raw_slice);
-    }
-
-    let load_duration = start_time.elapsed();
-    println!("Loaded all grid slices in {:.2}s. Rendering tiles in parallel...", load_duration.as_secs_f64());
-
-    // 2. Render all tiles up to zoom level 8 in parallel using Tokio tasks
-    let num_cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let semaphore = Arc::new(Semaphore::new(num_cores));
-    let mut tasks = Vec::with_capacity(frames.len());
-
-    for (ens_str, time) in frames {
-        let state = state.clone();
-        let sem = semaphore.clone();
-
-        let permit = sem.acquire_owned().await.unwrap();
-
-        tasks.push(tokio::task::spawn_blocking(move || {
-            // Retrieve cached raw slice
-            let raw_slice = match state.grid_cache.get(&(ens_str.clone(), time)) {
-                Some(cached) => cached.value().clone(),
-                None => {
-                    drop(permit);
-                    return;
-                }
-            };
-
-            // Precalculate all tiles for zoom levels 0 to 8
-            for z in 0..=8 {
-                let (x_min, y_min) = mercator_to_tile(MERCATOR_LEFT, MERCATOR_TOP, z);
-                let (x_max, y_max) = mercator_to_tile(MERCATOR_RIGHT, MERCATOR_BOTTOM, z);
-
-                for x in x_min..=x_max {
-                    for y in y_min..=y_max {
-                        // Bounding Box of tile in Web Mercator
-                        const MAP_LIMIT: f64 = std::f64::consts::PI * 6378137.0;
-                        let n = 2.0_f64.powi(z as i32);
-                        let tile_size = (2.0 * MAP_LIMIT) / n;
-                        let left = -MAP_LIMIT + (x as f64) * tile_size;
-                        let right = left + tile_size;
-                        let top = MAP_LIMIT - (y as f64) * tile_size;
-                        let bottom = top - tile_size;
-
-                        // Verify overlap with KNMI grid bounds in Polar Stereographic
-                        let corners = [
-                            (left, top),
-                            (right, top),
-                            (left, bottom),
-                            (right, bottom),
-                        ];
-                        let mut ps_coords = Vec::with_capacity(4);
-                        for (cx, cy) in corners {
-                            let (lon, lat) = projection::mercator_to_lonlat(cx, cy);
-                            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
-                            ps_coords.push((px, py));
-                        }
-
-                        let min_px = ps_coords.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
-                        let max_px = ps_coords.iter().map(|c| c.0).fold(f64::NEG_INFINITY, f64::max);
-                        let min_py = ps_coords.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
-                        let max_py = ps_coords.iter().map(|c| c.1).fold(f64::NEG_INFINITY, f64::max);
-
-                        const KNMI_X_MIN: f64 = 500.0 - 50000.0;
-                        const KNMI_X_MAX: f64 = 700500.0 + 50000.0;
-                        const KNMI_Y_MIN: f64 = -4415495.4 - 50000.0;
-                        const KNMI_Y_MAX: f64 = -3650495.4 + 50000.0;
-
-                        let overlap = max_px >= KNMI_X_MIN && min_px <= KNMI_X_MAX &&
-                                      max_py >= KNMI_Y_MIN && min_py <= KNMI_Y_MAX;
-
-                        let png_bytes = if !overlap {
-                            state.empty_tile.clone()
-                        } else {
-                            render_tile_png_bytes(left, right, top, bottom, &raw_slice, ens_str == "prob")
-                        };
-
-                        state.png_cache.insert((ens_str.clone(), time, z, x, y), png_bytes);
-                    }
-                }
-            }
-
-            drop(permit);
-        }));
-    }
-
-    // Wait for all tasks to complete
-    for task in tasks {
-        let _ = task.await;
-    }
-
-    println!(
-        "Finished tile precalculation in {:.2}s. Total tiles cached: {}",
-        start_time.elapsed().as_secs_f64(),
-        state.png_cache.len()
-    );
-}
 
 
