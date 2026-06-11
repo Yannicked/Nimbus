@@ -24,6 +24,12 @@ const CONFIG = {
         metadataPollingMs: 5000, // Metadata check interval
         hoverThrottleMs: 100, // Hover values API query throttle
     },
+    // Sliding-window layer cache config
+    cache: {
+        preloadAhead: 2, // Number of future frames to pre-load
+        keepWindowStart: -2, // Keep layers from this index offset...
+        keepWindowEnd: 4 // ...to this index offset (inclusive)
+    },
     // Legend and visualization colors
     radarVisualization: {
         prob: {
@@ -80,6 +86,7 @@ let currentEns = CONFIG.defaults.ensemble;
 let currentTimeIndex = CONFIG.defaults.timeIndex;
 let isPlaying = false;
 let playInterval = null;
+let activeTimeVal = null;
 let clickedMarker = null;
 let chartInstance = null;
 let activeCoords = null;
@@ -160,12 +167,13 @@ function initMap() {
     map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
     map.on('load', () => {
-        setupRadarSourceAndLayer();
+        updateRadarOverlay();
     });
 
     // Recreate source and layer on style changes
     map.on('style.load', () => {
-        setupRadarSourceAndLayer();
+        activeTimeVal = null;
+        updateRadarOverlay();
     });
 
     // Attach map mouse events for hover & click
@@ -269,29 +277,41 @@ function drawSliderTicks() {
     }
 }
 
-// Clear all active layers (no-op in MapLibre since we reuse the single source)
+// Clear all active radar layers and sources from the map
 function clearRadarLayers() {
-    // Left for compatibility with Leaflet design
-}
-
-// Setup Raster Source and Layer
-function setupRadarSourceAndLayer() {
     if (!metadata || !map || !map.isStyleLoaded()) return;
 
-    // Remove if already exists
-    if (map.getSource('radar-raster')) {
-        map.removeLayer('radar-layer');
-        map.removeSource('radar-raster');
+    for (const tVal of metadata.times) {
+        const layerId = `radar-layer-${tVal}`;
+        const sourceId = `radar-source-${tVal}`;
+        if (map.getLayer(layerId)) {
+            map.removeLayer(layerId);
+        }
+        if (map.getSource(sourceId)) {
+            map.removeSource(sourceId);
+        }
     }
+    activeTimeVal = null;
+}
 
-    const timeVal = metadata.times[currentTimeIndex];
+// Setup Raster Source and Layer for a specific timeVal
+function setupRadarSourceAndLayer(timeVal) {
+    if (!metadata || !map || !map.isStyleLoaded()) return;
+
+    const sourceId = `radar-source-${timeVal}`;
+    const layerId = `radar-layer-${timeVal}`;
+
+    // Remove if already exists (just in case)
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    if (map.getSource(sourceId)) map.removeSource(sourceId);
+
     const urlTemplate = `${window.location.origin}/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
 
     // Compute bounding box coordinates in Lat/Lon for bounds restriction
-    const sw = mercatorToLonLat(metadata.left, metadata.bottom); // [lat, lon]
-    const ne = mercatorToLonLat(metadata.right, metadata.top); // [lat, lon]
+    const sw = mercatorToLonLat(metadata.left, metadata.bottom);
+    const ne = mercatorToLonLat(metadata.right, metadata.top);
 
-    map.addSource('radar-raster', {
+    map.addSource(sourceId, {
         type: 'raster',
         tiles: [urlTemplate],
         tileSize: 256,
@@ -300,30 +320,75 @@ function setupRadarSourceAndLayer() {
         maxzoom: CONFIG.map.maxZoom
     });
 
-    const opacity = parseFloat(opacitySlider.value) / 100;
-
     map.addLayer({
-        id: 'radar-layer',
+        id: layerId,
         type: 'raster',
-        source: 'radar-raster',
+        source: sourceId,
         paint: {
-            'raster-opacity': opacity
+            'raster-opacity': 0 // Start hidden
         }
     });
 }
 
-// Update the map TileOverlay by changing setTiles
+// Update the radar layers using a sliding-window cache
 function updateRadarOverlay() {
     if (!metadata || !map || !map.isStyleLoaded()) return;
 
     const timeVal = metadata.times[currentTimeIndex];
-    const urlTemplate = `${window.location.origin}/api/map/${currentEns}/${timeVal}/{z}/{x}/{y}?v=${metadata.version || 0}`;
+    const opacity = parseFloat(opacitySlider.value) / 100;
+    activeTimeVal = timeVal;
 
-    const source = map.getSource('radar-raster');
-    if (source) {
-        source.setTiles([urlTemplate]);
-    } else {
-        setupRadarSourceAndLayer();
+    // 1. Ensure the active frame's source and layer are loaded
+    const activeSourceId = `radar-source-${timeVal}`;
+    const activeLayerId = `radar-layer-${timeVal}`;
+    if (!map.getSource(activeSourceId)) {
+        setupRadarSourceAndLayer(timeVal);
+    }
+
+    // 2. Set the active layer to the current opacity, and make it visible
+    if (map.getLayer(activeLayerId)) {
+        map.setPaintProperty(activeLayerId, 'raster-opacity', opacity);
+    }
+
+    // 3. Hide all other layers
+    for (const tVal of metadata.times) {
+        if (tVal !== timeVal) {
+            const otherLayerId = `radar-layer-${tVal}`;
+            if (map.getLayer(otherLayerId)) {
+                map.setPaintProperty(otherLayerId, 'raster-opacity', 0);
+            }
+        }
+    }
+
+    // 4. Preload future frames
+    const len = metadata.times.length;
+    for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
+        const nextIndex = (currentTimeIndex + i) % len;
+        const nextTimeVal = metadata.times[nextIndex];
+        const nextSourceId = `radar-source-${nextTimeVal}`;
+        if (!map.getSource(nextSourceId)) {
+            setupRadarSourceAndLayer(nextTimeVal);
+        }
+    }
+
+    // 5. Sliding-window Garbage Collection: prune layers outside the window
+    const keepIndices = new Set();
+    for (let i = CONFIG.cache.keepWindowStart; i <= CONFIG.cache.keepWindowEnd; i++) {
+        const idx = (currentTimeIndex + i + len) % len;
+        keepIndices.add(metadata.times[idx]);
+    }
+
+    for (const tVal of metadata.times) {
+        if (!keepIndices.has(tVal)) {
+            const oldLayerId = `radar-layer-${tVal}`;
+            const oldSourceId = `radar-source-${tVal}`;
+            if (map.getLayer(oldLayerId)) {
+                map.removeLayer(oldLayerId);
+            }
+            if (map.getSource(oldSourceId)) {
+                map.removeSource(oldSourceId);
+            }
+        }
     }
 }
 
@@ -388,8 +453,11 @@ timeSlider.addEventListener('input', (e) => {
 opacitySlider.addEventListener('input', (e) => {
     const val = e.target.value;
     opacityValue.textContent = `${val}%`;
-    if (map && map.getLayer('radar-layer')) {
-        map.setPaintProperty('radar-layer', 'raster-opacity', parseFloat(val) / 100);
+    if (activeTimeVal) {
+        const activeLayerId = `radar-layer-${activeTimeVal}`;
+        if (map && map.getLayer(activeLayerId)) {
+            map.setPaintProperty(activeLayerId, 'raster-opacity', parseFloat(val) / 100);
+        }
     }
 });
 
