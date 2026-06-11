@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+
+# Added by cargo
+/target
+
+# Datasets
+*.nc
+
+# Temporary scratch space
+/scratch/

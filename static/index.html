@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KNMI Weather Radar Ensemble Viewer</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Main Map Container -->
+    <div id="map"></div>
+
+    <!-- Hover Panel (Value at Cursor) -->
+    <div id="hover-panel" class="glass-panel hidden">
+        <div class="hover-label">PRECIPITATION</div>
+        <div id="hover-value" class="hover-value">-- mm/h</div>
+        <div id="hover-coords" class="hover-coords">lat: --, lon: --</div>
+    </div>
+
+    <!-- Main Dashboard Control Panel -->
+    <div id="control-panel" class="glass-panel">
+        <header>
+            <div class="logo">
+                <i class="fa-solid fa-cloud-showers-heavy rain-icon"></i>
+                <h1>BuienRadar <span class="badge">Ensemble</span></h1>
+            </div>
+            <div class="ref-time">
+                <span class="label">Reference Time:</span>
+                <span id="ref-time-value" class="value">Loading...</span>
+            </div>
+        </header>
+
+        <!-- Timeline Display -->
+        <div class="timeline-display">
+            <div id="current-time-step" class="time-step">Loading forecast step...</div>
+            <div id="time-step-relative" class="time-relative">+0m</div>
+        </div>
+
+        <!-- Timeline Slider -->
+        <div class="slider-container">
+            <input type="range" id="time-slider" min="0" max="0" value="0" step="1">
+            <div class="slider-ticks" id="slider-ticks"></div>
+        </div>
+
+        <!-- Control Row -->
+        <div class="control-row">
+            <!-- Player Controls -->
+            <div class="player-controls">
+                <button id="btn-prev" title="Step Back"><i class="fa-solid fa-backward-step"></i></button>
+                <button id="btn-play" class="btn-primary" title="Play Animation"><i class="fa-solid fa-play"></i></button>
+                <button id="btn-next" title="Step Forward"><i class="fa-solid fa-forward-step"></i></button>
+            </div>
+
+            <!-- Speed Control -->
+            <div class="setting-group speed-setting">
+                <label for="speed-slider"><i class="fa-solid fa-gauge-high"></i> Speed</label>
+                <input type="range" id="speed-slider" min="1" max="10" value="3" step="1">
+                <span id="speed-value" class="setting-val">3 fps</span>
+            </div>
+
+            <!-- Opacity Control -->
+            <div class="setting-group opacity-setting">
+                <label for="opacity-slider"><i class="fa-solid fa-eye-slash"></i> Opacity</label>
+                <input type="range" id="opacity-slider" min="0" max="100" value="70" step="5">
+                <span id="opacity-value" class="setting-val">70%</span>
+            </div>
+        </div>
+
+        <!-- Ensemble & Layer Controls -->
+        <div class="bottom-row">
+            <!-- Ensemble Select -->
+            <div class="ensemble-select-container">
+                <label class="section-label">Ensemble Member</label>
+                <div class="ensemble-grid" id="ensemble-grid">
+                    <!-- Ensemble buttons injected by JS -->
+                </div>
+            </div>
+
+            <!-- Legend Panel -->
+            <div class="legend-container">
+                <label class="section-label">Rainfall Rate (mm/h)</label>
+                <div class="legend-bar">
+                    <span style="background: rgba(120, 200, 255, 0.5);"></span>
+                    <span style="background: rgba(0, 100, 255, 0.7);"></span>
+                    <span style="background: rgba(0, 200, 0, 0.7);"></span>
+                    <span style="background: rgba(255, 230, 0, 0.8);"></span>
+                    <span style="background: rgba(255, 120, 0, 0.9);"></span>
+                    <span style="background: rgba(255, 0, 0, 0.95);"></span>
+                    <span style="background: rgba(200, 0, 200, 1.0);"></span>
+                    <span style="background: rgba(255, 255, 255, 1.0);"></span>
+                </div>
+                <div class="legend-labels">
+                    <span>0.05</span>
+                    <span>0.2</span>
+                    <span>1</span>
+                    <span>5</span>
+                    <span>15</span>
+                    <span>30</span>
+                    <span>100</span>
+                    <span>250+</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+    <script src="app.js"></script>
+</body>
+</html>
