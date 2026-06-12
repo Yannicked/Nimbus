@@ -158,11 +158,25 @@ function formatAbsoluteTime(refTimeStr, secondsOffset) {
 
 // Initialize MapLibre Map
 function initMap() {
+    // Parse URL query parameters for initial viewport
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialLat = parseFloat(urlParams.get('lat'));
+    const initialLon = parseFloat(urlParams.get('lon'));
+    const initialZoom = parseFloat(urlParams.get('zoom'));
+
+    const center = (!isNaN(initialLat) && !isNaN(initialLon)) 
+        ? [initialLon, initialLat] // lon, lat for MapLibre!
+        : CONFIG.map.defaultCenter;
+
+    const zoom = !isNaN(initialZoom) 
+        ? initialZoom 
+        : CONFIG.map.defaultZoom;
+
     map = new maplibregl.Map({
         container: 'map',
         style: CONFIG.map.styles.dark,
-        center: CONFIG.map.defaultCenter,
-        zoom: CONFIG.map.defaultZoom,
+        center: center,
+        zoom: zoom,
         minZoom: CONFIG.map.minZoom,
         maxZoom: CONFIG.map.maxZoom
     });
@@ -183,6 +197,19 @@ function initMap() {
     map.on('mousemove', handleMapMouseMove);
     map.on('mouseout', handleMapMouseLeave);
     map.on('click', handleMapClick);
+
+    // Sync viewport state to URL query parameters
+    map.on('moveend', () => {
+        const center = map.getCenter();
+        const zoom = map.getZoom();
+        
+        const url = new URL(window.location.href);
+        url.searchParams.set('lat', center.lat.toFixed(4));
+        url.searchParams.set('lon', center.lng.toFixed(4));
+        url.searchParams.set('zoom', zoom.toFixed(1));
+        
+        window.history.replaceState({}, '', url.pathname + url.search);
+    });
 }
 
 // Fetch Metadata and Load App
