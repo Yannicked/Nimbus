@@ -87,6 +87,7 @@ struct AppState {
     /// Key: (ens, time), value: PNG data image bytes
     data_cache: DashMap<(String, i64), Vec<u8>>,
     metadata: RwLock<Option<Metadata>>,
+    projection_lut: Vec<(f32, f32)>,
 }
 
 /// Query parameters for the `/api/value` endpoint.
@@ -200,6 +201,28 @@ fn raw_to_value(raw: u16) -> f64 {
         raw as f64 * SCALE_FACTOR
     }
 }
+/// Initializes the coordinate projection lookup table.
+fn init_projection_lut() -> Vec<(f32, f32)> {
+    let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
+    for row in 0..GRID_H {
+        for col in 0..GRID_W {
+            let col_frac = (col as f64 + 0.5) / GRID_W as f64;
+            let row_frac = (row as f64 + 0.5) / GRID_H as f64;
+            
+            let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
+            let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
+
+            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
+            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
+
+            let fx = ((px - KNMI_X0) / KNMI_DX) as f32;
+            let fy = ((py - KNMI_Y0) / KNMI_DY) as f32;
+            lut.push((fx, fy));
+        }
+    }
+    lut
+}
+
 
 /// Precalculates all packed PNG data in the background.
 async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
@@ -243,25 +266,17 @@ async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             );
         }
 
-        // Read all ensemble member slices for this time step from the file
-        let mut member_slices = Vec::with_capacity(num_ensembles);
-        let mut read_failed = false;
-        for ens_idx in 0..num_ensembles {
-            match read_netcdf_slice(&file_path, ens_idx, time_idx) {
-                Ok(slice) => member_slices.push(slice),
-                Err(e) => {
-                    eprintln!(
-                        "Error reading ensemble slice {} for time index {}: {}",
-                        ens_idx, time_idx, e
-                    );
-                    read_failed = true;
-                    break;
-                }
+        // Read all ensemble member slices for this time step in a single sequential I/O read call
+        let all_members_data = match read_netcdf_all_ensembles(&file_path, time_idx, num_ensembles) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!(
+                    "Error reading all ensemble slices for time index {}: {}",
+                    time_idx, e
+                );
+                continue;
             }
-        }
-        if read_failed {
-            continue;
-        }
+        };
 
         // Compute stats: med, max, prob
         let grid_size = KNMI_GRID_H * KNMI_GRID_W;
@@ -271,45 +286,22 @@ async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
 
         let mut vals_buf = vec![0u16; num_ensembles];
         let mut vals_med = vec![0u16; num_ensembles];
+        let mut vals_max = vec![0u16; num_ensembles];
+        let mut vals_prob = vec![0u16; num_ensembles];
 
         for i in 0..grid_size {
             for ens_idx in 0..num_ensembles {
-                vals_buf[ens_idx] = member_slices[ens_idx][i];
+                vals_buf[ens_idx] = all_members_data[ens_idx * grid_size + i];
             }
 
-            // Maximum
-            if vals_buf.is_empty() || vals_buf[0] == NODATA {
-                max_slice[i] = NODATA;
-            } else {
-                let max_val = vals_buf
-                    .iter()
-                    .copied()
-                    .filter(|&v| v != NODATA)
-                    .max()
-                    .unwrap_or(0);
-                max_slice[i] = max_val;
-            }
+            vals_med.copy_from_slice(&vals_buf);
+            med_slice[i] = reduce_ensemble(&EnsembleStat::Median, &mut vals_med);
 
-            // Probability
-            if vals_buf.is_empty() || vals_buf[0] == NODATA {
-                prob_slice[i] = NODATA;
-            } else {
-                let rain_count = vals_buf
-                    .iter()
-                    .copied()
-                    .filter(|&v| v != NODATA && v >= RAIN_THRESHOLD)
-                    .count();
-                prob_slice[i] = ((rain_count * 100) / num_ensembles) as u16;
-            }
+            vals_max.copy_from_slice(&vals_buf);
+            max_slice[i] = reduce_ensemble(&EnsembleStat::Maximum, &mut vals_max);
 
-            // Median
-            if vals_buf.is_empty() || vals_buf[0] == NODATA {
-                med_slice[i] = NODATA;
-            } else {
-                vals_med.copy_from_slice(&vals_buf);
-                vals_med.sort_unstable();
-                med_slice[i] = vals_med[num_ensembles / 2];
-            }
+            vals_prob.copy_from_slice(&vals_buf);
+            prob_slice[i] = reduce_ensemble(&EnsembleStat::Probability, &mut vals_prob);
         }
 
         // Insert stats into grid_cache
@@ -323,7 +315,9 @@ async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
 
         // Insert individual member slices into grid_cache
         for (ens_idx, &ens_num) in meta.ensembles.iter().enumerate() {
-            let slice = member_slices[ens_idx].clone();
+            let start = ens_idx * grid_size;
+            let end = start + grid_size;
+            let slice = all_members_data[start..end].to_vec();
             state.grid_cache.insert((ens_num.to_string(), time_val), Arc::new(slice));
         }
 
@@ -342,25 +336,11 @@ async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
-                let png_bytes = render_data_png_bytes(&slice);
+                let png_bytes = render_data_png_bytes(&slice, &state_clone.projection_lut);
                 state_clone.data_cache.insert((ens_str_clone, time_val_clone), png_bytes);
             });
         }
 
-        // Render PNGs for individual ensemble members
-        for (ens_idx, &ens_num) in meta.ensembles.iter().enumerate() {
-            let slice = Arc::new(member_slices[ens_idx].clone());
-            let state_clone = state.clone();
-            let sem = semaphore.clone();
-            let ens_str = ens_num.to_string();
-            let time_val_clone = time_val;
-
-            tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
-                let png_bytes = render_data_png_bytes(&slice);
-                state_clone.data_cache.insert((ens_str, time_val_clone), png_bytes);
-            });
-        }
 
         // Yield control back to executor to let other tasks run
         tokio::task::yield_now().await;
@@ -411,6 +391,7 @@ async fn main() {
         grid_cache: DashMap::new(),
         data_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val.clone()),
+        projection_lut: init_projection_lut(),
     });
 
     if let Some(ref meta) = metadata_val {
@@ -586,6 +567,25 @@ fn read_netcdf_slice(
     Ok(slice)
 }
 
+/// Reads all ensemble slices for a given time index from a NetCDF file in a single I/O call.
+fn read_netcdf_all_ensembles(
+    file_path: &str,
+    time_idx: usize,
+    num_ensembles: usize,
+) -> Result<Vec<u16>, Box<dyn std::error::Error + Send + Sync>> {
+    let file = netcdf::open(file_path)?;
+    let var = file
+        .variable(PRECIP_VAR)
+        .ok_or("precip_intensity variable not found")?;
+
+    let values = var.get_values::<u16, _>((
+        &[0, time_idx, 0, 0][..],
+        &[num_ensembles, 1, KNMI_GRID_H, KNMI_GRID_W][..],
+    ))?;
+    Ok(values)
+}
+
+
 /// Bilinear interpolation of a raw u16 grid value at fractional grid coordinates.
 ///
 /// Returns [`NODATA`] when the query point falls entirely outside the grid or
@@ -734,8 +734,8 @@ async fn get_metadata(
 
 
 /// Renders the entire KNMI radar grid for a timeframe as a 700x765 Web Mercator projected
-/// lossless PNG. The u16 raw values are packed into the Red (high byte) and Green (low byte) channels.
-fn render_data_png_bytes(raw_slice: &[u16]) -> Vec<u8> {
+/// lossless PNG using a coordinate lookup table (LUT). The u16 raw values are packed into the Red (high byte) and Green (low byte) channels.
+fn render_data_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
     use image::{ImageBuffer, ImageFormat};
     use std::io::Cursor;
     
@@ -743,20 +743,10 @@ fn render_data_png_bytes(raw_slice: &[u16]) -> Vec<u8> {
 
     for row in 0..GRID_H {
         for col in 0..GRID_W {
-            let col_frac = (col as f64 + 0.5) / GRID_W as f64;
-            let row_frac = (row as f64 + 0.5) / GRID_H as f64;
-            
-            // Map pixel coordinates to the overall Web Mercator bounds
-            let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
-            let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
+            let idx = (row * GRID_W + col) as usize;
+            let (fx, fy) = lut[idx];
 
-            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
-            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
-
-            let fx = (px - KNMI_X0) / KNMI_DX;
-            let fy = (py - KNMI_Y0) / KNMI_DY;
-
-            let val_raw = interpolate_bilinear(fx, fy, raw_slice);
+            let val_raw = interpolate_bilinear(fx as f64, fy as f64, raw_slice);
             let packed_val = if val_raw == NODATA { 0 } else { val_raw };
 
             // Pack the u16 value into the Red (high byte) and Green (low byte) channels
@@ -806,8 +796,8 @@ async fn get_data_image(
         arc
     };
 
-    // Render data png bytes
-    let png_bytes = render_data_png_bytes(&raw_slice);
+    // Render data png bytes using LUT
+    let png_bytes = render_data_png_bytes(&raw_slice, &state.projection_lut);
 
     // Cache results
     state
