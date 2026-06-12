@@ -308,6 +308,20 @@ function getOrLoadTexture(gl, timeVal) {
         return entry.texture;
     }
     
+    // Keep cache size bounded to prevent memory bloat
+    const keys = Object.keys(textureCache);
+    if (keys.length > 250) {
+        const oldestKey = keys[0];
+        const oldestEntry = textureCache[oldestKey];
+        if (oldestEntry) {
+            console.log(`Evicting cached texture: ${oldestKey}`);
+            if (gl && oldestEntry.texture) {
+                gl.deleteTexture(oldestEntry.texture);
+            }
+            delete textureCache[oldestKey];
+        }
+    }
+
     // Create texture slot and load image asynchronously
     const texture = gl.createTexture();
     const entry = {
@@ -852,6 +866,7 @@ function startMetadataPolling() {
 
             if (metadata && newMetadata.version !== metadata.version) {
                 console.log("New NetCDF file detected! Reloading metadata and invalidating cache...");
+                clearRadarLayers();
                 metadata = newMetadata;
 
                 // Re-render timeline slider (just in case the number of times changed)
