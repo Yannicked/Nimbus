@@ -804,10 +804,11 @@ fn render_data_png_bytes(raw_slice: &[u16]) -> Vec<u8> {
             let fy = (py - KNMI_Y0) / KNMI_DY;
 
             let val_raw = interpolate_bilinear(fx, fy, raw_slice);
+            let packed_val = if val_raw == NODATA { 0 } else { val_raw };
 
             // Pack the u16 value into the Red (high byte) and Green (low byte) channels
-            let r = (val_raw >> 8) as u8;
-            let g = (val_raw & 0xFF) as u8;
+            let r = (packed_val >> 8) as u8;
+            let g = (packed_val & 0xFF) as u8;
 
             img.put_pixel(col, row, image::Rgba([r, g, 0, 255]));
         }
