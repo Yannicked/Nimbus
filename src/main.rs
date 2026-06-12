@@ -837,6 +837,22 @@ async fn get_value(
         }));
     }
 
+    // Try reading from cache first
+    if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+        let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
+        let (status_out, value_out) = if q.ens == "prob" {
+            ("probability".to_string(), val_raw as f64)
+        } else {
+            let val_mmh = raw_to_value(val_raw);
+            let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
+            (status.to_string(), val_mmh)
+        };
+        return Ok(axum::Json(ValueResponse {
+            status: status_out,
+            value: Some(value_out),
+        }));
+    }
+
     // Read value based on query type
     let file = netcdf::open(&file_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -935,6 +951,37 @@ async fn get_timeseries(
             ens: q.ens,
             times: Vec::new(),
             values: Vec::new(),
+        }));
+    }
+
+    // Try reading all times from cache first
+    let mut all_cached = true;
+    for &time_val in &meta.times {
+        if !state.grid_cache.contains_key(&(q.ens.clone(), time_val)) {
+            all_cached = false;
+            break;
+        }
+    }
+
+    if all_cached {
+        let mut values = Vec::with_capacity(meta.times.len());
+        for &time_val in &meta.times {
+            if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+                let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
+                if q.ens == "prob" {
+                    values.push(val_raw as f64);
+                } else {
+                    values.push(raw_to_value(val_raw));
+                }
+            }
+        }
+        return Ok(axum::Json(TimeseriesResponse {
+            status: "ok".to_string(),
+            lat: q.lat,
+            lon: q.lon,
+            ens: q.ens,
+            times: meta.times.clone(),
+            values,
         }));
     }
 
