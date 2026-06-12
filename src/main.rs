@@ -465,6 +465,7 @@ async fn main() {
 
     // 5. Configure Router
     let app = Router::new()
+        .route("/favicon.ico", get(favicon))
         .route("/api/metadata", get(get_metadata))
         .route("/api/data/:ens/:time", get(get_data_image))
         .route("/api/value", get(get_value))
@@ -717,6 +718,11 @@ fn compute_raw_slice(
 // ---------------------------------------------------------------------------
 // API handlers
 // ---------------------------------------------------------------------------
+
+/// Serves an empty favicon response to prevent 404 console errors.
+async fn favicon() -> impl IntoResponse {
+    StatusCode::NO_CONTENT
+}
 
 /// Returns the current dataset metadata as JSON.
 async fn get_metadata(

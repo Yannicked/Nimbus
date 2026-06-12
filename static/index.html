@@ -58,89 +58,109 @@
                 <i class="fa-solid fa-cloud-showers-heavy rain-icon"></i>
                 <h1>Nimbus <span class="badge">Ensemble</span></h1>
             </div>
-            <div class="ref-time">
-                <span class="label">Reference Time:</span>
-                <span id="ref-time-value" class="value">Loading...</span>
+            <div class="header-right">
+                <div class="ref-time">
+                    <span class="label">Reference Time:</span>
+                    <span id="ref-time-value" class="value">Loading...</span>
+                </div>
+                <button id="btn-settings-toggle" class="header-btn" title="Toggle Settings and Layers">
+                    <i class="fa-solid fa-sliders"></i>
+                </button>
             </div>
         </header>
 
-        <!-- Timeline Display -->
-        <div class="timeline-display">
-            <div id="current-time-step" class="time-step">Loading forecast step...</div>
-            <div id="time-step-relative" class="time-relative">+0m</div>
-        </div>
+        <!-- Always Visible Playback Controls & Timeline -->
+        <div class="main-controls">
+            <!-- Timeline Display -->
+            <div class="timeline-display">
+                <div id="current-time-step" class="time-step">Loading forecast step...</div>
+                <div id="time-step-relative" class="time-relative">+0m</div>
+            </div>
 
-        <!-- Timeline Slider -->
-        <div class="slider-container">
-            <input type="range" id="time-slider" min="0" max="0" value="0" step="1">
-            <div class="slider-ticks" id="slider-ticks"></div>
-        </div>
+            <!-- Timeline Slider -->
+            <div class="slider-container">
+                <input type="range" id="time-slider" min="0" max="0" value="0" step="1">
+                <div class="slider-ticks" id="slider-ticks"></div>
+            </div>
 
-        <!-- Control Row -->
-        <div class="control-row">
             <!-- Player Controls -->
-            <div class="player-controls">
-                <button id="btn-prev" title="Step Back"><i class="fa-solid fa-backward-step"></i></button>
-                <button id="btn-play" class="btn-primary" title="Play Animation"><i class="fa-solid fa-play"></i></button>
-                <button id="btn-next" title="Step Forward"><i class="fa-solid fa-forward-step"></i></button>
-            </div>
+            <div class="player-row">
+                <!-- Quick View Selector -->
+                <div class="view-selector" data-active="0">
+                    <button class="view-btn" data-view="med" title="Median Forecast">Med</button>
+                    <button class="view-btn" data-view="max" title="Maximum Forecast">Max</button>
+                    <button class="view-btn" data-view="prob" title="Rain Probability">Prob</button>
+                </div>
 
-            <!-- Speed Control -->
-            <div class="setting-group speed-setting">
-                <label for="speed-slider"><i class="fa-solid fa-gauge-high"></i> Speed</label>
-                <input type="range" id="speed-slider" min="1" max="10" value="3" step="1">
-                <span id="speed-value" class="setting-val">3 fps</span>
-            </div>
-
-            <!-- Opacity Control -->
-            <div class="setting-group opacity-setting">
-                <label for="opacity-slider"><i class="fa-solid fa-eye-slash"></i> Opacity</label>
-                <input type="range" id="opacity-slider" min="0" max="100" value="70" step="5">
-                <span id="opacity-value" class="setting-val">70%</span>
+                <div class="player-controls">
+                    <button id="btn-prev" title="Step Back"><i class="fa-solid fa-backward-step"></i></button>
+                    <button id="btn-play" class="btn-primary" title="Play Animation"><i class="fa-solid fa-play"></i></button>
+                    <button id="btn-next" title="Step Forward"><i class="fa-solid fa-forward-step"></i></button>
+                </div>
             </div>
         </div>
 
-        <!-- Ensemble & Layer Controls -->
-        <div class="bottom-row">
-            <!-- Ensemble Select -->
-            <div class="ensemble-select-container">
-                <label class="section-label">Data Layer / Ensemble</label>
-                <select id="ensemble-select" class="glass-select">
-                    <!-- Options injected by JS -->
-                </select>
-            </div>
-
-            <!-- Map Theme Select -->
-            <div class="theme-select-container">
-                <label class="section-label">Map Style</label>
-                <select id="theme-select" class="glass-select">
-                    <option value="dark">Dark Theme</option>
-                    <option value="osm">OpenStreetMap</option>
-                </select>
-            </div>
-
-            <!-- Legend Panel -->
-            <div class="legend-container">
-                <label class="section-label">Rainfall Rate (mm/h)</label>
-                <div class="legend-bar">
-                    <span style="background: rgba(120, 200, 255, 0.5);"></span>
-                    <span style="background: rgba(0, 100, 255, 0.7);"></span>
-                    <span style="background: rgba(0, 200, 0, 0.7);"></span>
-                    <span style="background: rgba(255, 230, 0, 0.8);"></span>
-                    <span style="background: rgba(255, 120, 0, 0.9);"></span>
-                    <span style="background: rgba(255, 0, 0, 0.95);"></span>
-                    <span style="background: rgba(200, 0, 200, 1.0);"></span>
-                    <span style="background: rgba(255, 255, 255, 1.0);"></span>
+        <!-- Collapsible Settings & Legend Drawer -->
+        <div id="settings-content" class="settings-content">
+            <!-- Settings Grid (Sliders) -->
+            <div class="settings-grid">
+                <!-- Speed Control -->
+                <div class="setting-group speed-setting">
+                    <label for="speed-slider"><i class="fa-solid fa-gauge-high"></i> Speed</label>
+                    <input type="range" id="speed-slider" min="1" max="10" value="3" step="1">
+                    <span id="speed-value" class="setting-val">3 fps</span>
                 </div>
-                <div class="legend-labels">
-                    <span>0.05</span>
-                    <span>0.2</span>
-                    <span>1</span>
-                    <span>5</span>
-                    <span>15</span>
-                    <span>30</span>
-                    <span>100</span>
-                    <span>250+</span>
+
+                <!-- Opacity Control -->
+                <div class="setting-group opacity-setting">
+                    <label for="opacity-slider"><i class="fa-solid fa-eye-slash"></i> Opacity</label>
+                    <input type="range" id="opacity-slider" min="0" max="100" value="70" step="5">
+                    <span id="opacity-value" class="setting-val">70%</span>
+                </div>
+            </div>
+
+            <!-- Ensemble & Layer Controls -->
+            <div class="bottom-row">
+                <!-- Ensemble Select -->
+                <div class="ensemble-select-container">
+                    <label for="ensemble-select" class="section-label">Data Layer / Ensemble</label>
+                    <select id="ensemble-select" class="glass-select">
+                        <!-- Options injected by JS -->
+                    </select>
+                </div>
+
+                <!-- Map Theme Select -->
+                <div class="theme-select-container">
+                    <label for="theme-select" class="section-label">Map Style</label>
+                    <select id="theme-select" class="glass-select">
+                        <option value="dark">Dark Theme</option>
+                        <option value="osm">OpenStreetMap</option>
+                    </select>
+                </div>
+
+                <!-- Legend Panel -->
+                <div class="legend-container">
+                    <label class="section-label">Rainfall Rate (mm/h)</label>
+                    <div class="legend-bar">
+                        <span style="background: rgba(120, 200, 255, 0.5);"></span>
+                        <span style="background: rgba(0, 100, 255, 0.7);"></span>
+                        <span style="background: rgba(0, 200, 0, 0.7);"></span>
+                        <span style="background: rgba(255, 230, 0, 0.8);"></span>
+                        <span style="background: rgba(255, 120, 0, 0.9);"></span>
+                        <span style="background: rgba(255, 0, 0, 0.95);"></span>
+                        <span style="background: rgba(200, 0, 200, 1.0);"></span>
+                        <span style="background: rgba(255, 255, 255, 1.0);"></span>
+                    </div>
+                    <div class="legend-labels">
+                        <span>0.05</span>
+                        <span>0.2</span>
+                        <span>1</span>
+                        <span>5</span>
+                        <span>15</span>
+                        <span>30</span>
+                        <span>100</span>
+                        <span>250+</span>
+                    </div>
                 </div>
             </div>
         </div>
