@@ -287,40 +287,49 @@ function getOrLoadTexture(gl, timeVal) {
     const cacheKey = `${currentEns}-${timeVal}-${metadata.version}`;
     
     if (textureCache[cacheKey]) {
-        return textureCache[cacheKey].loaded ? textureCache[cacheKey].texture : null;
+        const entry = textureCache[cacheKey];
+        if (!entry.loaded) {
+            return null; // Still loading the image
+        }
+        if (!entry.uploaded) {
+            console.log(`Uploading texture to GPU for ${cacheKey}...`);
+            gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, entry.image);
+            
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            
+            entry.uploaded = true;
+            console.log(`Texture uploaded successfully for ${cacheKey}.`);
+        }
+        return entry.texture;
     }
     
-    // Create temporary 1x1 empty texture slot
+    // Create texture slot and load image asynchronously
     const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
-    
-    textureCache[cacheKey] = {
+    const entry = {
         texture: texture,
-        loaded: false
+        loaded: false,
+        uploaded: false,
+        image: null
     };
+    textureCache[cacheKey] = entry;
     
-    // Load PNG containing raw data in R and G channels
+    console.log(`Starting image load for ${cacheKey}...`);
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-        
-        // Lossless bilinear interpolation filter parameters
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        
-        textureCache[cacheKey].loaded = true;
-        
-        // Trigger map repaint so newly loaded data draws immediately
+        console.log(`Image loaded successfully for ${cacheKey}.`);
+        entry.image = img;
+        entry.loaded = true;
         if (map) map.triggerRepaint();
     };
-    
+    img.onerror = (err) => {
+        console.error(`Failed to load image for ${cacheKey}:`, err);
+    };
     img.src = `${window.location.origin}/api/data/${currentEns}/${timeVal}?v=${metadata.version}`;
     
     return null;
@@ -330,9 +339,11 @@ function getOrLoadTexture(gl, timeVal) {
 const webglRadarLayer = {
     id: 'radar-webgl-layer',
     type: 'custom',
+    renderingMode: '2d',
     
     onAdd: function (mapInstance, gl) {
         glContext = gl;
+        console.log("Initializing WebGL Radar Layer shaders and buffers...");
         
         // 1. Compile Shaders
         const vertexShaderSource = `
@@ -351,8 +362,8 @@ const webglRadarLayer = {
             varying vec2 v_texcoord;
             uniform sampler2D u_texture;
             uniform float u_opacity;
-            uniform vec4 u_colors[9];
-            uniform float u_values[9];
+            uniform vec4 u_colors[8];
+            uniform float u_values[8];
             
             vec4 getColor(float val) {
                 if (val < u_values[0]) return vec4(0.0);
@@ -384,11 +395,7 @@ const webglRadarLayer = {
                     float t = (val - u_values[6]) / (u_values[7] - u_values[6]);
                     return mix(u_colors[6], u_colors[7], t);
                 }
-                if (val <= u_values[8]) {
-                    float t = (val - u_values[7]) / (u_values[8] - u_values[7]);
-                    return mix(u_colors[7], u_colors[8], t);
-                }
-                return u_colors[8];
+                return u_colors[7];
             }
             
             void main() {
@@ -414,7 +421,6 @@ const webglRadarLayer = {
             gl.compileShader(shader);
             if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
                 console.error("Shader compilation error:", gl.getShaderInfoLog(shader));
-                return null;
             }
             return shader;
         }
@@ -445,28 +451,28 @@ const webglRadarLayer = {
         const TR = toMerc(1210000.0, 7560000.0);
         const TL = toMerc(0.0, 7560000.0);
         
-        // Define two triangles forming a quad
+        // Define two triangles forming a quad (counter-clockwise order)
         const vertices = new Float32Array([
-            BL[0], BL[1],
-            BR[0], BR[1],
-            TL[0], TL[1],
-            TL[0], TL[1],
-            BR[0], BR[1],
-            TR[0], TR[1]
+            BL[0], BL[1], // SW
+            BR[0], BR[1], // SE
+            TL[0], TL[1], // NW
+            TL[0], TL[1], // NW
+            BR[0], BR[1], // SE
+            TR[0], TR[1]  // NE
         ]);
         
         positionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
         
-        // Texture Coordinates
+        // Texture Coordinates (corrected to match UNPACK_FLIP_Y_WEBGL=true orientation)
         const texcoords = new Float32Array([
-            0, 1,
-            1, 1,
-            0, 0,
-            0, 0,
-            1, 1,
-            1, 0
+            0, 0, // BL
+            1, 0, // BR
+            0, 1, // TL
+            0, 1, // TL
+            1, 0, // BR
+            1, 1  // TR
         ]);
         
         texcoordBuffer = gl.createBuffer();
@@ -482,6 +488,17 @@ const webglRadarLayer = {
         if (!texture) return; // Wait for texture load
         
         gl.useProgram(radarProgram);
+        
+        // 1. Save and disable depth test to ensure it always renders on top of the base map
+        const depthTestEnabled = gl.isEnabled(gl.DEPTH_TEST);
+        if (depthTestEnabled) {
+            gl.disable(gl.DEPTH_TEST);
+        }
+        
+        // 2. Bind default VAO to prevent mutating MapLibre's internal VAO state in WebGL 2
+        if (gl.bindVertexArray) {
+            gl.bindVertexArray(null);
+        }
         
         // Bind position attribute
         const aPosition = gl.getAttribLocation(radarProgram, 'a_position');
@@ -513,20 +530,18 @@ const webglRadarLayer = {
         
         if (isProb) {
             colors = [
-                [0, 0, 0, 0],
                 [180/255, 200/255, 220/255, 0.35],
                 [100/255, 160/255, 255/255, 0.5],
                 [0/255, 100/255, 255/255, 0.65],
                 [0/255, 200/255, 100/255, 0.75],
                 [220/255, 0/255, 220/255, 0.85],
                 [255/255, 255/255, 255/255, 0.95],
-                [255/255, 255/255, 255/255, 0.95],
-                [255/255, 255/255, 255/255, 0.95]
+                [255/255, 255/255, 255/255, 0.95], // padding
+                [255/255, 255/255, 255/255, 0.95]  // padding
             ];
-            values = [10.0, 30.0, 50.0, 70.0, 90.0, 100.0, 100.0, 100.0, 99999.0];
+            values = [0.10, 0.30, 0.50, 0.70, 0.90, 1.00, 1.00, 1.00];
         } else {
             colors = [
-                [0, 0, 0, 0],
                 [120/255, 200/255, 255/255, 0.5],
                 [0/255, 100/255, 255/255, 0.7],
                 [0/255, 200/255, 0/255, 0.7],
@@ -536,20 +551,28 @@ const webglRadarLayer = {
                 [200/255, 0/255, 200/255, 1.0],
                 [255/255, 255/255, 255/255, 1.0]
             ];
-            values = [0.05, 0.2, 1.0, 5.0, 15.0, 30.0, 100.0, 250.0, 99999.0];
+            values = [0.05, 0.2, 1.0, 5.0, 15.0, 30.0, 100.0, 250.0];
         }
         
         const flatColors = new Float32Array(colors.reduce((acc, val) => acc.concat(val), []));
         const flatValues = new Float32Array(values);
         
-        gl.uniform4fv(gl.getUniformLocation(radarProgram, 'u_colors'), flatColors);
-        gl.uniform1fv(gl.getUniformLocation(radarProgram, 'u_values'), flatValues);
+        gl.uniform4fv(gl.getUniformLocation(radarProgram, 'u_colors[0]'), flatColors);
+        gl.uniform1fv(gl.getUniformLocation(radarProgram, 'u_values[0]'), flatValues);
         
         // Alpha Blending config
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         
         gl.drawArrays(gl.TRIANGLES, 0, 6);
+        
+        // 3. Cleanup state to prevent leaks
+        gl.disableVertexAttribArray(aPosition);
+        gl.disableVertexAttribArray(aTexcoord);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        if (depthTestEnabled) {
+            gl.enable(gl.DEPTH_TEST);
+        }
     },
     
     onRemove: function (map, gl) {
@@ -568,8 +591,15 @@ const webglRadarLayer = {
     }
 };
 
-// Clear cached textures
+// Clear cached textures and release GPU memory
 function clearRadarLayers() {
+    if (glContext) {
+        for (const cacheKey in textureCache) {
+            if (textureCache[cacheKey].texture) {
+                glContext.deleteTexture(textureCache[cacheKey].texture);
+            }
+        }
+    }
     textureCache = {};
     if (map) map.triggerRepaint();
 }
