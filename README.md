@@ -18,7 +18,7 @@ Built with Rust · Powered by [KNMI Open Data](https://developer.dataplatform.kn
 - **Animated timeline** — Scrub through 6 hours of 5-minute forecast steps with adjustable playback speed
 - **Interactive trend charts** — Click anywhere on the map to see a location-specific rainfall forecast graph
 - **Live updates via MQTT** — Automatically syncs new forecast data from the KNMI notification service
-- **Smooth tile rendering** — On-the-fly WebP tile generation with bilinear interpolation and caching
+- **GPU-accelerated rendering** — Fast client-side color-mapping and projection using WebGL
 
 ## 🏗️ Architecture
 
@@ -26,24 +26,24 @@ Built with Rust · Powered by [KNMI Open Data](https://developer.dataplatform.kn
 KNMI MQTT ──► Download Pipeline ──► NetCDF on disk
                                         │
                                         ▼
-Browser ◄──── Axum HTTP Server ◄── Tile Renderer
+Browser ◄──── Axum HTTP Server ◄── Data Server
    │              │                     │
-   │         /api/metadata         Polar Stereo
-   │         /api/map/:ens/:t/…    → Web Mercator
-   │         /api/value            projection
+   │         /api/metadata         Raw grid data
+   │         /api/data/:ens/:t     as packed PNG
+   │         /api/value
    │         /api/timeseries
    │
    ▼
-Leaflet + Chart.js
+MapLibre + WebGL + Chart.js
 ```
 
 | Component | Technology |
 |-----------|-----------|
 | Server | Rust, Axum, Tokio |
 | Data | NetCDF (HDF5), KNMI Pysteps Blend |
-| Tiles | WebP, bilinear interpolation |
+| Data rendering | WebGL GPU-accelerated on-the-fly projection |
 | Live sync | MQTT over WebSocket (rumqttc) |
-| Frontend | Vanilla JS, Leaflet, Chart.js |
+| Frontend | Vanilla JS, MapLibre GL JS, Chart.js |
 
 ## 🚀 Quick Start
 
@@ -77,7 +77,7 @@ Open **http://localhost:8080** in your browser.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/metadata` | Dataset dimensions, times, ensemble members |
-| `GET /api/map/:ens/:time/:z/:x/:y` | WebP radar tile (Leaflet-compatible) |
+| `GET /api/data/:ens/:time` | Raw packed radar data PNG (high byte -> Red, low byte -> Green) |
 | `GET /api/value?ens=med&time=300&lat=52.1&lon=5.2` | Point value query |
 | `GET /api/timeseries?ens=med&lat=52.1&lon=5.2` | Full forecast time series |
 

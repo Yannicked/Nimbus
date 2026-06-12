@@ -82,9 +82,6 @@ struct Metadata {
 /// Shared application state accessible from all request handlers.
 struct AppState {
     file_path: RwLock<String>,
-    empty_tile: Vec<u8>,
-    /// Key: (ens, time, z, x, y)
-    tile_cache: DashMap<(String, i64, u32, u32, u32), Vec<u8>>,
     /// Key: (ens, time), value: raw grid slice
     grid_cache: DashMap<(String, i64), Arc<Vec<u16>>>,
     /// Key: (ens, time), value: PNG data image bytes
@@ -204,80 +201,175 @@ fn raw_to_value(raw: u16) -> f64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Color mapping helpers
-// ---------------------------------------------------------------------------
+/// Precalculates all packed PNG data in the background.
+async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
+    let target_version = meta.version;
+    let file_path = state.file_path.read().await.clone();
+    let num_times = meta.times.len();
+    let num_ensembles = meta.ensembles.len();
 
-/// An anchor point in a piecewise-linear colour ramp.
-struct ColorAnchor {
-    value: f64,
-    color: [u8; 4],
-}
+    println!(
+        "Starting background precalculation for NetCDF version {} ({} times, {} ensembles)...",
+        target_version, num_times, num_ensembles
+    );
 
-/// Linearly interpolates an RGBA colour from a sorted list of anchor points.
-fn interpolate_color(value: f64, anchors: &[ColorAnchor]) -> [u8; 4] {
-    if value <= anchors[0].value {
-        return anchors[0].color;
-    }
-    if value >= anchors[anchors.len() - 1].value {
-        return anchors[anchors.len() - 1].color;
-    }
-    for i in 0..anchors.len() - 1 {
-        let a1 = &anchors[i];
-        let a2 = &anchors[i + 1];
-        if value >= a1.value && value <= a2.value {
-            let t = (value - a1.value) / (a2.value - a1.value);
-            return [
-                (a1.color[0] as f64 + t * (a2.color[0] as f64 - a1.color[0] as f64)) as u8,
-                (a1.color[1] as f64 + t * (a2.color[1] as f64 - a1.color[1] as f64)) as u8,
-                (a1.color[2] as f64 + t * (a2.color[2] as f64 - a1.color[2] as f64)) as u8,
-                (a1.color[3] as f64 + t * (a2.color[3] as f64 - a1.color[3] as f64)) as u8,
-            ];
+    // Limit concurrency of rendering tasks to the number of CPU cores (min 2)
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+
+    // Loop over time steps
+    for (time_idx, &time_val) in meta.times.iter().enumerate() {
+        // Check for cancellation
+        {
+            let current_meta = state.metadata.read().await;
+            if current_meta.as_ref().map(|m| m.version) != Some(target_version) {
+                println!(
+                    "Precalculation for version {} cancelled.",
+                    target_version
+                );
+                return;
+            }
         }
+
+        if time_idx % 10 == 0 || time_idx == num_times - 1 {
+            println!(
+                "Precalculating version {}... {}% done ({}/{})",
+                target_version,
+                (time_idx * 100) / num_times,
+                time_idx + 1,
+                num_times
+            );
+        }
+
+        // Read all ensemble member slices for this time step from the file
+        let mut member_slices = Vec::with_capacity(num_ensembles);
+        let mut read_failed = false;
+        for ens_idx in 0..num_ensembles {
+            match read_netcdf_slice(&file_path, ens_idx, time_idx) {
+                Ok(slice) => member_slices.push(slice),
+                Err(e) => {
+                    eprintln!(
+                        "Error reading ensemble slice {} for time index {}: {}",
+                        ens_idx, time_idx, e
+                    );
+                    read_failed = true;
+                    break;
+                }
+            }
+        }
+        if read_failed {
+            continue;
+        }
+
+        // Compute stats: med, max, prob
+        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+        let mut med_slice = vec![NODATA; grid_size];
+        let mut max_slice = vec![NODATA; grid_size];
+        let mut prob_slice = vec![NODATA; grid_size];
+
+        let mut vals_buf = vec![0u16; num_ensembles];
+        let mut vals_med = vec![0u16; num_ensembles];
+
+        for i in 0..grid_size {
+            for ens_idx in 0..num_ensembles {
+                vals_buf[ens_idx] = member_slices[ens_idx][i];
+            }
+
+            // Maximum
+            if vals_buf.is_empty() || vals_buf[0] == NODATA {
+                max_slice[i] = NODATA;
+            } else {
+                let max_val = vals_buf
+                    .iter()
+                    .copied()
+                    .filter(|&v| v != NODATA)
+                    .max()
+                    .unwrap_or(0);
+                max_slice[i] = max_val;
+            }
+
+            // Probability
+            if vals_buf.is_empty() || vals_buf[0] == NODATA {
+                prob_slice[i] = NODATA;
+            } else {
+                let rain_count = vals_buf
+                    .iter()
+                    .copied()
+                    .filter(|&v| v != NODATA && v >= RAIN_THRESHOLD)
+                    .count();
+                prob_slice[i] = ((rain_count * 100) / num_ensembles) as u16;
+            }
+
+            // Median
+            if vals_buf.is_empty() || vals_buf[0] == NODATA {
+                med_slice[i] = NODATA;
+            } else {
+                vals_med.copy_from_slice(&vals_buf);
+                vals_med.sort_unstable();
+                med_slice[i] = vals_med[num_ensembles / 2];
+            }
+        }
+
+        // Insert stats into grid_cache
+        let arc_med = Arc::new(med_slice);
+        let arc_max = Arc::new(max_slice);
+        let arc_prob = Arc::new(prob_slice);
+
+        state.grid_cache.insert(("med".to_string(), time_val), arc_med.clone());
+        state.grid_cache.insert(("max".to_string(), time_val), arc_max.clone());
+        state.grid_cache.insert(("prob".to_string(), time_val), arc_prob.clone());
+
+        // Insert individual member slices into grid_cache
+        for (ens_idx, &ens_num) in meta.ensembles.iter().enumerate() {
+            let slice = member_slices[ens_idx].clone();
+            state.grid_cache.insert((ens_num.to_string(), time_val), Arc::new(slice));
+        }
+
+        // Render PNGs for stats (med, max, prob)
+        let render_items = vec![
+            ("med".to_string(), arc_med),
+            ("max".to_string(), arc_max),
+            ("prob".to_string(), arc_prob),
+        ];
+
+        for (ens_str, slice) in render_items {
+            let state_clone = state.clone();
+            let sem = semaphore.clone();
+            let ens_str_clone = ens_str.clone();
+            let time_val_clone = time_val;
+            
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let png_bytes = render_data_png_bytes(&slice);
+                state_clone.data_cache.insert((ens_str_clone, time_val_clone), png_bytes);
+            });
+        }
+
+        // Render PNGs for individual ensemble members
+        for (ens_idx, &ens_num) in meta.ensembles.iter().enumerate() {
+            let slice = Arc::new(member_slices[ens_idx].clone());
+            let state_clone = state.clone();
+            let sem = semaphore.clone();
+            let ens_str = ens_num.to_string();
+            let time_val_clone = time_val;
+
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let png_bytes = render_data_png_bytes(&slice);
+                state_clone.data_cache.insert((ens_str, time_val_clone), png_bytes);
+            });
+        }
+
+        // Yield control back to executor to let other tasks run
+        tokio::task::yield_now().await;
     }
-    [0, 0, 0, 0]
-}
 
-/// Maps a raw u16 precipitation value to an interpolated RGBA colour.
-fn get_color(val_raw: u16) -> [u8; 4] {
-    if val_raw == NODATA {
-        return [0, 0, 0, 0];
-    }
-    let val = val_raw as f64 * SCALE_FACTOR;
-    if val < 0.05 {
-        return [0, 0, 0, 0]; // Ignore extremely light values (noise)
-    }
-
-    let anchors = [
-        ColorAnchor { value: 0.05,  color: [120, 200, 255, 120] }, // Very light blue
-        ColorAnchor { value: 0.2,   color: [0, 100, 255, 170] },   // Blue
-        ColorAnchor { value: 1.0,   color: [0, 200, 0, 190] },     // Green
-        ColorAnchor { value: 5.0,   color: [255, 230, 0, 210] },   // Yellow
-        ColorAnchor { value: 15.0,  color: [255, 120, 0, 230] },   // Orange
-        ColorAnchor { value: 30.0,  color: [255, 0, 0, 240] },     // Red
-        ColorAnchor { value: 100.0, color: [200, 0, 200, 255] },   // Purple
-        ColorAnchor { value: 250.0, color: [255, 255, 255, 255] }, // White
-    ];
-
-    interpolate_color(val, &anchors)
-}
-
-/// Maps a probability percentage (0–100) to an interpolated RGBA colour.
-fn get_probability_color(p: u16) -> [u8; 4] {
-    if p == NODATA || p < 10 {
-        return [0, 0, 0, 0];
-    }
-
-    let anchors = [
-        ColorAnchor { value: 10.0,  color: [180, 200, 220, 80] },  // Very light grey-blue
-        ColorAnchor { value: 30.0,  color: [100, 160, 255, 120] }, // Light blue
-        ColorAnchor { value: 50.0,  color: [0, 100, 255, 160] },   // Blue
-        ColorAnchor { value: 70.0,  color: [0, 200, 100, 180] },   // Teal
-        ColorAnchor { value: 90.0,  color: [220, 0, 220, 220] },   // Magenta-purple
-        ColorAnchor { value: 100.0, color: [255, 255, 255, 240] }, // White
-    ];
-
-    interpolate_color(p as f64, &anchors)
+    println!(
+        "Background precalculation completed for NetCDF version {}.",
+        target_version
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -305,10 +397,7 @@ async fn main() {
     };
     println!("Found initial NetCDF file: {}", initial_file);
 
-    // 2. Generate the empty transparent tile
-    let empty_tile = generate_empty_tile();
-
-    // 3. Load initial metadata
+    // 2. Load initial metadata
     let metadata_val = match load_metadata(&initial_file) {
         Ok(m) => Some(m),
         Err(e) => {
@@ -319,12 +408,18 @@ async fn main() {
 
     let state = Arc::new(AppState {
         file_path: RwLock::new(initial_file.clone()),
-        empty_tile,
-        tile_cache: DashMap::new(),
         grid_cache: DashMap::new(),
         data_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val.clone()),
     });
+
+    if let Some(ref meta) = metadata_val {
+        let state_clone = state.clone();
+        let meta_clone = meta.clone();
+        tokio::spawn(async move {
+            precalculate_all_data(state_clone, meta_clone).await;
+        });
+    }
 
     // Spawn MQTT client to listen for updates from KNMI
     let state_clone_mqtt = state.clone();
@@ -368,10 +463,15 @@ async fn main() {
                             let mut meta_write = state_clone.metadata.write().await;
                             *meta_write = Some(meta.clone());
 
-                            state_clone.tile_cache.clear();
                             state_clone.grid_cache.clear();
                             state_clone.data_cache.clear();
                             println!("Successfully reloaded metadata and cleared caches.");
+
+                            let state_clone2 = state_clone.clone();
+                            let meta_clone = meta.clone();
+                            tokio::spawn(async move {
+                                precalculate_all_data(state_clone2, meta_clone).await;
+                            });
                         }
                         Err(e) => {
                             eprintln!("Failed to load new NetCDF metadata: {}", e);
@@ -385,7 +485,6 @@ async fn main() {
     // 5. Configure Router
     let app = Router::new()
         .route("/api/metadata", get(get_metadata))
-        .route("/api/map/:ens/:time/:z/:x/:y", get(get_tile))
         .route("/api/data/:ens/:time", get(get_data_image))
         .route("/api/value", get(get_value))
         .route("/api/timeseries", get(get_timeseries))
@@ -468,16 +567,6 @@ fn load_metadata(file_path: &str) -> Result<Metadata, Box<dyn std::error::Error 
     })
 }
 
-/// Generates a 256×256 fully-transparent WebP image used for empty / out-of-bounds tiles.
-fn generate_empty_tile() -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
-    use std::io::Cursor;
-    let img = ImageBuffer::from_pixel(256, 256, image::Rgba([0_u8, 0_u8, 0_u8, 0_u8]));
-    let mut webp_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut webp_bytes);
-    img.write_to(&mut cursor, ImageFormat::WebP).unwrap();
-    webp_bytes
-}
 
 /// Reads a 2D slice `(y, x)` for a given ensemble and time index from a NetCDF file.
 fn read_netcdf_slice(
@@ -624,50 +713,6 @@ fn compute_raw_slice(
     }
 }
 
-/// Renders a 256×256 WebP tile by projecting each pixel from Web Mercator into
-/// the KNMI Polar Stereographic grid and applying the appropriate colour ramp.
-fn render_tile_webp_bytes(
-    left: f64,
-    right: f64,
-    top: f64,
-    bottom: f64,
-    raw_slice: &[u16],
-    is_prob: bool,
-) -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
-    use std::io::Cursor;
-    let mut img = ImageBuffer::new(256, 256);
-
-    for row in 0..256 {
-        for col in 0..256 {
-            let col_frac = (col as f64 + 0.5) / 256.0;
-            let row_frac = (row as f64 + 0.5) / 256.0;
-            let x_merc = left + col_frac * (right - left);
-            let y_merc = top - row_frac * (top - bottom);
-
-            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
-            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
-
-            let fx = (px - KNMI_X0) / KNMI_DX;
-            let fy = (py - KNMI_Y0) / KNMI_DY;
-
-            let val_raw = interpolate_bilinear(fx, fy, raw_slice);
-
-            let color = if is_prob {
-                get_probability_color(val_raw)
-            } else {
-                get_color(val_raw)
-            };
-
-            img.put_pixel(col, row, image::Rgba(color));
-        }
-    }
-
-    let mut webp_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut webp_bytes);
-    img.write_to(&mut cursor, ImageFormat::WebP).unwrap();
-    webp_bytes
-}
 
 // ---------------------------------------------------------------------------
 // API handlers
@@ -687,108 +732,6 @@ async fn get_metadata(
     }
 }
 
-/// Serves a Web Mercator projected, colour-mapped WebP overlay tile.
-async fn get_tile(
-    Path((ens_str, time, z, x, y)): Path<(String, i64, u32, u32, u32)>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Check cache
-    if let Some(cached_tile) = state.tile_cache.get(&(ens_str.clone(), time, z, x, y)) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "public, max-age=300")
-            .body(axum::body::Body::from(cached_tile.value().clone()))
-            .unwrap());
-    }
-
-    // 1. Calculate the Web Mercator bounds of the tile
-    const MAP_LIMIT: f64 = std::f64::consts::PI * 6378137.0; // 20037508.342789244
-    let n = 2.0_f64.powi(z as i32);
-    let tile_size = (2.0 * MAP_LIMIT) / n;
-    let left = -MAP_LIMIT + (x as f64) * tile_size;
-    let right = left + tile_size;
-    let top = MAP_LIMIT - (y as f64) * tile_size;
-    let bottom = top - tile_size;
-
-    // 2. Convert the 4 corners to Polar Stereographic to verify overlap
-    let corners = [
-        (left, top),
-        (right, top),
-        (left, bottom),
-        (right, bottom),
-    ];
-    let mut ps_coords = Vec::with_capacity(4);
-    for (cx, cy) in corners {
-        let (lon, lat) = projection::mercator_to_lonlat(cx, cy);
-        let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
-        ps_coords.push((px, py));
-    }
-
-    let min_px = ps_coords.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
-    let max_px = ps_coords
-        .iter()
-        .map(|c| c.0)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let min_py = ps_coords.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
-    let max_py = ps_coords
-        .iter()
-        .map(|c| c.1)
-        .fold(f64::NEG_INFINITY, f64::max);
-
-    // Bounding Box of KNMI grid in Polar Stereographic
-    const KNMI_X_MIN: f64 = 500.0 - 50000.0;
-    const KNMI_X_MAX: f64 = 700500.0 + 50000.0;
-    const KNMI_Y_MIN: f64 = -4415495.4 - 50000.0;
-    const KNMI_Y_MAX: f64 = -3650495.4 + 50000.0;
-
-    let overlap = max_px >= KNMI_X_MIN
-        && min_px <= KNMI_X_MAX
-        && max_py >= KNMI_Y_MIN
-        && min_py <= KNMI_Y_MAX;
-
-    if !overlap {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "public, max-age=300")
-            .body(axum::body::Body::from(state.empty_tile.clone()))
-            .unwrap());
-    }
-
-    // Get current file path and metadata
-    let file_path = state.file_path.read().await.clone();
-    let meta = state.metadata.read().await.clone().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Metadata not available".to_string(),
-    ))?;
-
-    let is_prob = ens_str == "prob";
-
-    // 3. Retrieve or compute raw slice (cached in memory)
-    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
-        cached.value().clone()
-    } else {
-        let computed = compute_raw_slice(&file_path, &meta, &ens_str, time)?;
-        let arc = Arc::new(computed);
-        state
-            .grid_cache
-            .insert((ens_str.clone(), time), arc.clone());
-        arc
-    };
-
-    // Render tile image dynamically using WebP
-    let webp_bytes = render_tile_webp_bytes(left, right, top, bottom, &raw_slice, is_prob);
-
-    // Cache results
-    state
-        .tile_cache
-        .insert((ens_str, time, z, x, y), webp_bytes.clone());
-
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "public, max-age=300")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
-}
 
 /// Renders the entire KNMI radar grid for a timeframe as a 700x765 Web Mercator projected
 /// lossless PNG. The u16 raw values are packed into the Red (high byte) and Green (low byte) channels.
