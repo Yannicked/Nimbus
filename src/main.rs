@@ -290,9 +290,19 @@ async fn main() {
     dotenvy::dotenv().ok();
     println!("Starting Weather Radar service...");
 
-    // 1. Find the latest netcdf file in the current directory
-    let initial_file =
-        find_latest_nc_file(".").expect("No NetCDF (.nc) files found in workspace root!");
+    // 1. Find the latest netcdf file in the current directory, or download it if none exists
+    let initial_file = match find_latest_nc_file(".") {
+        Some(f) => f,
+        None => {
+            println!("No NetCDF (.nc) files found in workspace root. Fetching latest file from KNMI Open Data API...");
+            match fetch_latest_nc_file(".").await {
+                Ok(f) => f,
+                Err(e) => {
+                    panic!("Failed to download initial NetCDF file on startup: {}", e);
+                }
+            }
+        }
+    };
     println!("Found initial NetCDF file: {}", initial_file);
 
     // 2. Generate the empty transparent tile
@@ -1258,4 +1268,100 @@ async fn download_and_update_nc_file(
     }
 
     Ok(())
+}
+
+/// Fetches the latest NetCDF filename from the KNMI listing endpoint and downloads it.
+async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
+        .map_err(|_| "KNMI_OPEN_DATA_API_KEY environment variable missing")?;
+
+    let client = reqwest::Client::new();
+    
+    // 1. Query the list endpoint to find the latest file
+    let list_url = "https://api.dataplatform.knmi.nl/open-data/v1/datasets/seamless_precipitation_ensemble_forecast_members/versions/1.0/files?maxKeys=1&sorting=desc";
+    let list_res = client
+        .get(list_url)
+        .header("Authorization", &api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send file listing request: {}", e))?;
+
+    if !list_res.status().is_success() {
+        return Err(format!("Failed to list files, HTTP status: {}", list_res.status()).into());
+    }
+
+    #[derive(Deserialize)]
+    struct KnmiFileEntry {
+        filename: String,
+    }
+
+    #[derive(Deserialize)]
+    struct KnmiListResponse {
+        files: Vec<KnmiFileEntry>,
+    }
+
+    let list_data: KnmiListResponse = list_res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse file listing JSON: {}", e))?;
+    let entry = list_data.files.first().ok_or("No files returned by KNMI API")?;
+    let filename = &entry.filename;
+
+    println!("Latest file on KNMI API: {}", filename);
+
+    // 2. Request download URL for this file
+    let url_endpoint = format!(
+        "https://api.dataplatform.knmi.nl/open-data/v1/datasets/{}/versions/1.0/files/{}/url",
+        KNMI_DATASET, filename
+    );
+    let url_res = client
+        .get(&url_endpoint)
+        .header("Authorization", &api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to request download URL: {}", e))?;
+
+    if !url_res.status().is_success() {
+        return Err(format!("Failed to get download URL, HTTP status: {}", url_res.status()).into());
+    }
+
+    #[derive(Deserialize)]
+    struct FileUrlResponse {
+        #[serde(rename = "temporaryDownloadUrl")]
+        temporary_download_url: String,
+    }
+
+    let url_resp: FileUrlResponse = url_res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse download URL JSON: {}", e))?;
+    let download_url = url_resp.temporary_download_url;
+
+    // 3. Download and save the file
+    println!("Downloading file: {}...", filename);
+    let file_res = client
+        .get(&download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send download request: {}", e))?;
+    if !file_res.status().is_success() {
+        return Err(format!("Failed to download file content, HTTP status: {}", file_res.status()).into());
+    }
+
+    let bytes = file_res
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read file bytes: {}", e))?;
+    let temp_path = format!("{}/temp_knmi_download.nc", dest_dir);
+    tokio::fs::write(&temp_path, &bytes)
+        .await
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    let final_path = format!("{}/{}", dest_dir, filename);
+    tokio::fs::rename(&temp_path, &final_path)
+        .await
+        .map_err(|e| format!("Failed to rename final file: {}", e))?;
+    println!("Successfully downloaded and saved initial file: {}", final_path);
+
+    Ok(final_path)
 }

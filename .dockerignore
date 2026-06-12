@@ -1,0 +1,9 @@
+target/
+.env
+*.nc
+scratch/
+.git
+.gitignore
+.idea/
+.vscode/
+temp_knmi_download.nc
