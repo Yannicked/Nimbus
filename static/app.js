@@ -117,6 +117,8 @@ const chartCoords = document.getElementById('chart-coords');
 const chartStatPeak = document.getElementById('chart-stat-peak');
 const chartStatTotal = document.getElementById('chart-stat-total');
 const themeSelect = document.getElementById('theme-select');
+const btnSettingsToggle = document.getElementById('btn-settings-toggle');
+const settingsContent = document.getElementById('settings-content');
 
 // Web Mercator to Lat/Lon Projection
 function mercatorToLonLat(x, y) {
@@ -220,7 +222,7 @@ async function loadApp() {
         metadata = await response.json();
         
         // Display reference time
-        refTimeVal.textContent = metadata.reference_time_str;
+        refTimeVal.textContent = formatAbsoluteTime(metadata.reference_time_str, 0);
 
         // Create Ensemble Selector Options Grouped by Category
         ensembleSelect.innerHTML = '';
@@ -710,6 +712,16 @@ function selectEnsemble(ens) {
     if (ensembleSelect.value !== ens.toString()) {
         ensembleSelect.value = ens.toString();
     }
+
+    // Update quick selector buttons active state and sliding indicator
+    const viewMap = { 'med': '0', 'max': '1', 'prob': '2' };
+    document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === ens.toString());
+    });
+    const selector = document.querySelector('.view-selector');
+    if (selector && viewMap[ens] !== undefined) {
+        selector.dataset.active = viewMap[ens];
+    }
     
     updateRadarOverlay();
     updateLegend();
@@ -907,7 +919,7 @@ function startMetadataPolling() {
                 updateRadarOverlay();
 
                 // Update reference time display
-                refTimeVal.textContent = metadata.reference_time_str;
+                refTimeVal.textContent = formatAbsoluteTime(metadata.reference_time_str, 0);
             }
         } catch (e) {
             console.error("Failed to check for metadata update:", e);
@@ -1115,6 +1127,27 @@ window.addEventListener('DOMContentLoaded', () => {
     opacitySlider.value = CONFIG.defaults.opacity;
     opacityValue.textContent = `${CONFIG.defaults.opacity}%`;
 
+    // Restore settings drawer state
+    const savedExpanded = localStorage.getItem('nimbus_settings_expanded');
+    const isMobile = window.innerWidth <= 768;
+    if (savedExpanded === 'true' && !isMobile) {
+        settingsContent.classList.add('expanded');
+        btnSettingsToggle.classList.add('active');
+    } else {
+        settingsContent.classList.remove('expanded');
+        btnSettingsToggle.classList.remove('active');
+    }
+
+    // Set initial quick view selector state
+    const viewMap = { 'med': '0', 'max': '1', 'prob': '2' };
+    document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === currentEns.toString());
+    });
+    const viewSelector = document.querySelector('.view-selector');
+    if (viewSelector && viewMap[currentEns] !== undefined) {
+        viewSelector.dataset.active = viewMap[currentEns];
+    }
+
     initMap();
     loadApp();
     startMetadataPolling();
@@ -1124,5 +1157,18 @@ window.addEventListener('DOMContentLoaded', () => {
 
     themeSelect.addEventListener('change', (e) => {
         switchMapStyle(e.target.value);
+    });
+
+    btnSettingsToggle.addEventListener('click', () => {
+        const isExpanded = settingsContent.classList.toggle('expanded');
+        btnSettingsToggle.classList.toggle('active', isExpanded);
+        localStorage.setItem('nimbus_settings_expanded', isExpanded);
+    });
+
+    // Attach quick view toggle event listeners
+    document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            selectEnsemble(btn.dataset.view);
+        });
     });
 });
