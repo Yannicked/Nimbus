@@ -55,6 +55,30 @@ export const CONFIG = {
                 "rgba(255, 255, 255, 1.0)"
             ],
             labels: ["0.05", "0.2", "1", "5", "15", "30", "100", "250+"]
+        },
+        spread: {
+            title: "Rain Uncertainty (mm/h)",
+            colors: [
+                "rgba(99, 102, 241, 0.0)",
+                "rgba(99, 102, 241, 0.4)",
+                "rgba(168, 85, 247, 0.6)",
+                "rgba(236, 72, 153, 0.75)",
+                "rgba(244, 63, 94, 0.9)",
+                "rgba(255, 255, 255, 0.95)"
+            ],
+            labels: ["0.05", "0.2", "1.0", "5.0", "15.0", "30.0+"]
+        },
+        solar: {
+            title: "Solar Radiation (W/m²)",
+            colors: [
+                "rgba(0, 0, 0, 0.0)",
+                "rgba(253, 224, 71, 0.3)",
+                "rgba(250, 204, 21, 0.5)",
+                "rgba(234, 179, 8, 0.7)",
+                "rgba(249, 115, 22, 0.85)",
+                "rgba(239, 68, 68, 0.95)"
+            ],
+            labels: ["10", "100", "250", "500", "750", "1000+"]
         }
     },
     // Chart options
@@ -72,6 +96,18 @@ export const CONFIG = {
             rate: {
                 border: "#38bdf8",
                 background: "rgba(56, 189, 248, 0.15)"
+            },
+            spread: {
+                border: "#ec4899",
+                background: "rgba(236, 72, 153, 0.15)"
+            },
+            temp: {
+                border: "#10b981",
+                background: "rgba(16, 185, 129, 0.15)"
+            },
+            solar: {
+                border: "#f59e0b",
+                background: "rgba(245, 158, 11, 0.15)"
             }
         }
     }

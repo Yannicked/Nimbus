@@ -4,6 +4,7 @@ export async function fetchMetadata(layerMode) {
     const endpoints = {
         'temp': '/api/metadata/temp',
         'wind': '/api/metadata/wind',
+        'solar': '/api/metadata/solar',
         'rain': '/api/metadata'
     };
     
@@ -15,6 +16,7 @@ export async function fetchMetadata(layerMode) {
 export async function fetchHoverValue(layerMode, ens, time, lat, lon) {
     let url = `/api/value?ens=${ens}&time=${time}&lat=${lat}&lon=${lon}`;
     if (layerMode === 'temp') url = `/api/value/temp?time=${time}&lat=${lat}&lon=${lon}`;
+    if (layerMode === 'solar') url = `/api/value/solar?time=${time}&lat=${lat}&lon=${lon}`;
     if (layerMode === 'wind') {
         const h = state.selectedWindHeight || 10;
         url = `/api/value/wind?time=${time}&lat=${lat}&lon=${lon}&height=${h}`;
@@ -28,6 +30,7 @@ export async function fetchHoverValue(layerMode, ens, time, lat, lon) {
 export async function fetchTimeseries(layerMode, ens, lat, lon) {
     let url = `/api/timeseries?ens=${ens}&lat=${lat}&lon=${lon}`;
     if (layerMode === 'temp') url = `/api/timeseries/temp?lat=${lat}&lon=${lon}`;
+    if (layerMode === 'solar') url = `/api/timeseries/solar?lat=${lat}&lon=${lon}`;
     if (layerMode === 'wind') {
         const h = state.selectedWindHeight || 10;
         url = `/api/timeseries/wind?lat=${lat}&lon=${lon}&height=${h}`;

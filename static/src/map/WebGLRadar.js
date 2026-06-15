@@ -4,15 +4,20 @@ import { DOM } from '../ui/dom.js';
 import { getOrLoadTexture } from './index.js';
 
 export class WebGLRadarLayer {
-    constructor() {
-        this.id = 'radar-webgl-layer';
+    constructor(id = 'radar-webgl-layer', isCompare = false) {
+        this.id = id;
+        this.isCompare = isCompare;
         this.type = 'custom';
         this.renderingMode = '2d';
     }
 
     onAdd(mapInstance, gl) {
-        state.glContext = gl;
-        console.log("Initializing WebGL Radar Layer shaders and buffers...");
+        if (this.isCompare) {
+            state.glContextRight = gl;
+        } else {
+            state.glContext = gl;
+        }
+        console.log(`Initializing WebGL Radar Layer (${this.id}) shaders and buffers...`);
         
         // 1. Compile Shaders
         const vertexShaderSource = `
@@ -87,6 +92,8 @@ export class WebGLRadarLayer {
                 float val;
                 if (u_layer_mode == 1) {
                     val = raw_val / 10.0 - 273.15;
+                } else if (u_layer_mode == 2) {
+                    val = raw_val;
                 } else {
                     val = raw_val * 0.01;
                 }
@@ -111,13 +118,19 @@ export class WebGLRadarLayer {
         const vs = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
         const fs = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
         
-        state.radarProgram = gl.createProgram();
-        gl.attachShader(state.radarProgram, vs);
-        gl.attachShader(state.radarProgram, fs);
-        gl.linkProgram(state.radarProgram);
+        const program = gl.createProgram();
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
         
-        if (!gl.getProgramParameter(state.radarProgram, gl.LINK_STATUS)) {
-            console.error("Program linking error:", gl.getProgramInfoLog(state.radarProgram));
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error("Program linking error:", gl.getProgramInfoLog(program));
+        }
+        
+        if (this.isCompare) {
+            state.radarProgramRight = program;
+        } else {
+            state.radarProgram = program;
         }
         
         // 2. Set up Mercator projection vertex buffer
@@ -144,8 +157,8 @@ export class WebGLRadarLayer {
             TR[0], TR[1]  // NE
         ]);
         
-        state.positionBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.positionBuffer);
+        const posBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
         
         // Texture Coordinates (corrected to match UNPACK_FLIP_Y_WEBGL=true orientation)
@@ -158,19 +171,31 @@ export class WebGLRadarLayer {
             1, 1  // TR
         ]);
         
-        state.texcoordBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.texcoordBuffer);
+        const texBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, texBuf);
         gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.STATIC_DRAW);
+
+        if (this.isCompare) {
+            state.positionBufferRight = posBuf;
+            state.texcoordBufferRight = texBuf;
+        } else {
+            state.positionBuffer = posBuf;
+            state.texcoordBuffer = texBuf;
+        }
     }
     
     render(gl, matrix) {
-        if (!state.metadata || !state.radarProgram) return;
+        if (!state.metadata) return;
+        const program = this.isCompare ? state.radarProgramRight : state.radarProgram;
+        const posBuf = this.isCompare ? state.positionBufferRight : state.positionBuffer;
+        const texBuf = this.isCompare ? state.texcoordBufferRight : state.texcoordBuffer;
+        if (!program) return;
         
         const timeVal = state.metadata.times[state.currentTimeIndex];
-        const texture = getOrLoadTexture(gl, timeVal);
+        const texture = getOrLoadTexture(gl, timeVal, this.isCompare);
         if (!texture) return; // Wait for texture load
         
-        gl.useProgram(state.radarProgram);
+        gl.useProgram(program);
         
         // 1. Save and disable depth test to ensure it always renders on top of the base map
         const depthTestEnabled = gl.isEnabled(gl.DEPTH_TEST);
@@ -184,37 +209,49 @@ export class WebGLRadarLayer {
         }
         
         // Bind position attribute
-        const aPosition = gl.getAttribLocation(state.radarProgram, 'a_position');
+        const aPosition = gl.getAttribLocation(program, 'a_position');
         gl.enableVertexAttribArray(aPosition);
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.positionBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
         gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
         
         // Bind texture coordinates attribute
-        const aTexcoord = gl.getAttribLocation(state.radarProgram, 'a_texcoord');
+        const aTexcoord = gl.getAttribLocation(program, 'a_texcoord');
         gl.enableVertexAttribArray(aTexcoord);
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.texcoordBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, texBuf);
         gl.vertexAttribPointer(aTexcoord, 2, gl.FLOAT, false, 0, 0);
         
         // Set projection matrix
-        gl.uniformMatrix4fv(gl.getUniformLocation(state.radarProgram, 'u_matrix'), false, matrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_matrix'), false, matrix);
         
         // Bind texture sampler
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.uniform1i(gl.getUniformLocation(state.radarProgram, 'u_texture'), 0);
+        gl.uniform1i(gl.getUniformLocation(program, 'u_texture'), 0);
         
         // Opacity uniform
         const opacity = parseFloat(DOM.opacitySlider.value) / 100;
-        gl.uniform1f(gl.getUniformLocation(state.radarProgram, 'u_opacity'), opacity);
+        gl.uniform1f(gl.getUniformLocation(program, 'u_opacity'), opacity);
         
         // u_layer_mode uniform
-        gl.uniform1i(gl.getUniformLocation(state.radarProgram, 'u_layer_mode'), state.currentLayerMode === 'temp' ? 1 : 0);
+        const layerMode = this.isCompare ? state.compareLayerMode : state.currentLayerMode;
+        const ens = this.isCompare ? state.compareEns : state.currentEns;
+
+        let modeInt = 0;
+        if (layerMode === 'temp') {
+            modeInt = 1;
+        } else if (layerMode === 'solar') {
+            modeInt = 2;
+        } else if (ens === 'spread') {
+            modeInt = 3;
+        }
+        gl.uniform1i(gl.getUniformLocation(program, 'u_layer_mode'), modeInt);
         
         // Dynamic color stops uniform configuration
-        const isProb = state.currentEns === 'prob';
+        const isProb = ens === 'prob';
+        const isSpread = ens === 'spread';
         let colors, values;
         
-        if (state.currentLayerMode === 'temp') {
+        if (layerMode === 'temp') {
             colors = [
                 [0/255, 43/255, 128/255, 0.8],
                 [0/255, 204/255, 255/255, 0.8],
@@ -226,6 +263,18 @@ export class WebGLRadarLayer {
                 [153/255, 0/255, 77/255, 1.0]
             ];
             values = [-10.0, 0.0, 10.0, 20.0, 25.0, 30.0, 35.0, 40.0];
+        } else if (layerMode === 'solar') {
+            colors = [
+                [0/255, 0/255, 0/255, 0.0],
+                [253/255, 224/255, 71/255, 0.3],
+                [250/255, 204/255, 21/255, 0.5],
+                [234/255, 179/255, 8/255, 0.7],
+                [249/255, 115/255, 22/255, 0.85],
+                [239/255, 68/255, 68/255, 0.95],
+                [239/255, 68/255, 68/255, 0.95], // padding
+                [239/255, 68/255, 68/255, 0.95]  // padding
+            ];
+            values = [10.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 1000.0, 1000.0];
         } else if (isProb) {
             colors = [
                 [180/255, 200/255, 220/255, 0.0],
@@ -238,6 +287,18 @@ export class WebGLRadarLayer {
                 [255/255, 255/255, 255/255, 0.95]  // padding
             ];
             values = [0.10, 0.30, 0.50, 0.70, 0.90, 1.00, 1.00, 1.00];
+        } else if (isSpread) {
+            colors = [
+                [99/255, 102/255, 241/255, 0.0],
+                [99/255, 102/255, 241/255, 0.4],
+                [168/255, 85/255, 247/255, 0.6],
+                [236/255, 72/255, 153/255, 0.75],
+                [244/255, 63/255, 94/255, 0.9],
+                [255/255, 255/255, 255/255, 0.95],
+                [255/255, 255/255, 255/255, 0.95], // padding
+                [255/255, 255/255, 255/255, 0.95]  // padding
+            ];
+            values = [0.05, 0.2, 1.0, 5.0, 15.0, 30.0, 30.0, 30.0];
         } else {
             colors = [
                 [120/255, 200/255, 255/255, 0.0],
@@ -255,8 +316,8 @@ export class WebGLRadarLayer {
         const flatColors = new Float32Array(colors.reduce((acc, val) => acc.concat(val), []));
         const flatValues = new Float32Array(values);
         
-        gl.uniform4fv(gl.getUniformLocation(state.radarProgram, 'u_colors[0]'), flatColors);
-        gl.uniform1fv(gl.getUniformLocation(state.radarProgram, 'u_values[0]'), flatValues);
+        gl.uniform4fv(gl.getUniformLocation(program, 'u_colors[0]'), flatColors);
+        gl.uniform1fv(gl.getUniformLocation(program, 'u_values[0]'), flatValues);
         
         // Alpha Blending config
         gl.enable(gl.BLEND);
@@ -274,17 +335,21 @@ export class WebGLRadarLayer {
     }
     
     onRemove(map, gl) {
-        if (state.radarProgram) {
-            gl.deleteProgram(state.radarProgram);
-            state.radarProgram = null;
+        const program = this.isCompare ? state.radarProgramRight : state.radarProgram;
+        const posBuf = this.isCompare ? state.positionBufferRight : state.positionBuffer;
+        const texBuf = this.isCompare ? state.texcoordBufferRight : state.texcoordBuffer;
+
+        if (program) {
+            gl.deleteProgram(program);
+            if (this.isCompare) state.radarProgramRight = null; else state.radarProgram = null;
         }
-        if (state.positionBuffer) {
-            gl.deleteBuffer(state.positionBuffer);
-            state.positionBuffer = null;
+        if (posBuf) {
+            gl.deleteBuffer(posBuf);
+            if (this.isCompare) state.positionBufferRight = null; else state.positionBuffer = null;
         }
-        if (state.texcoordBuffer) {
-            gl.deleteBuffer(state.texcoordBuffer);
-            state.texcoordBuffer = null;
+        if (texBuf) {
+            gl.deleteBuffer(texBuf);
+            if (this.isCompare) state.texcoordBufferRight = null; else state.texcoordBuffer = null;
         }
     }
 }

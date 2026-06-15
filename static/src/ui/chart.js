@@ -66,6 +66,14 @@ export async function showTimeseriesChart(lat, lon) {
             DOM.statBox1Label.textContent = "Max Temp";
             DOM.statBox2Label.textContent = "Min Temp";
             DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-temperature-half chart-header-icon"></i> Temperature Forecast Trend';
+        } else if (state.currentLayerMode === 'solar') {
+            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            DOM.chartStatPeak.textContent = `${Math.round(peakVal)} W/m²`;
+            DOM.chartStatTotal.textContent = `${Math.round(avgVal)} W/m² (avg)`;
+            
+            DOM.statBox1Label.textContent = "Peak Radiation";
+            DOM.statBox2Label.textContent = "Avg Radiation";
+            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-sun chart-header-icon"></i> Solar Forecast Trend';
         } else if (state.currentLayerMode === 'wind') {
             const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(1)} m/s`;
@@ -82,6 +90,14 @@ export async function showTimeseriesChart(lat, lon) {
             DOM.statBox1Label.textContent = "Peak Probability";
             DOM.statBox2Label.textContent = "Avg Probability";
             DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend';
+        } else if (state.currentEns === 'spread') {
+            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            DOM.chartStatPeak.textContent = `${peakVal.toFixed(2)} mm/h`;
+            DOM.chartStatTotal.textContent = `${avgVal.toFixed(2)} mm/h (avg)`;
+            
+            DOM.statBox1Label.textContent = "Max Uncertainty";
+            DOM.statBox2Label.textContent = "Avg Uncertainty";
+            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Forecast Uncertainty Trend';
         } else {
             // total_mm = sum(rates) / 12 (5 mins intervals)
             totalVal = chartValues.reduce((a, b) => a + b, 0) / 12.0;
@@ -95,11 +111,10 @@ export async function showTimeseriesChart(lat, lon) {
         
         const labels = data.times.map(secs => {
             const timeStr = formatAbsoluteTime(state.metadata.reference_time_str, secs);
-            if (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind') {
-                // Include day for multi-day temperature and wind forecasts, e.g. "Mon 08:00"
+            if (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind' || state.currentLayerMode === 'solar') {
+                // Include day for multi-day forecasts, e.g. "Mon 08:00"
                 const match = timeStr.match(/(\d{2})\s+(\w+).*?(\d{2}:\d{2})/);
                 if (match) {
-                    // Parse to get short weekday name
                     const refMatch = state.metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
                     if (refMatch) {
                         const refDate = new Date(`${refMatch[1]}T${refMatch[2]}Z`);
@@ -115,16 +130,25 @@ export async function showTimeseriesChart(lat, lon) {
         });
         
         const isProb = state.currentEns === 'prob';
+        const isSpread = state.currentEns === 'spread';
         let labelText, borderColor, backgroundColor;
         
         if (state.currentLayerMode === 'temp') {
             labelText = "2m Temperature (°C)";
             borderColor = "#f87171"; // Warm red
             backgroundColor = "rgba(248, 113, 113, 0.15)";
+        } else if (state.currentLayerMode === 'solar') {
+            labelText = "Solar Radiation (W/m²)";
+            borderColor = CONFIG.chart.colors.solar.border;
+            backgroundColor = CONFIG.chart.colors.solar.background;
         } else if (state.currentLayerMode === 'wind') {
             labelText = `${state.selectedWindHeight}m Wind Speed (m/s)`;
             borderColor = "#22d3ee"; // Neon cyan
             backgroundColor = "rgba(34, 211, 238, 0.15)";
+        } else if (isSpread) {
+            labelText = "Rain Uncertainty (mm/h)";
+            borderColor = CONFIG.chart.colors.spread.border;
+            backgroundColor = CONFIG.chart.colors.spread.background;
         } else {
             labelText = isProb ? CONFIG.radarVisualization.prob.title + " (%)" : CONFIG.radarVisualization.rate.title;
             const chartColors = isProb ? CONFIG.chart.colors.prob : CONFIG.chart.colors.rate;
@@ -141,8 +165,8 @@ export async function showTimeseriesChart(lat, lon) {
             state.chartInstance.data.datasets[0].borderColor = borderColor;
             state.chartInstance.data.datasets[0].backgroundColor = backgroundColor;
             state.chartInstance.options.scales.y.title.text = labelText;
-            state.chartInstance.options.scales.y.max = (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind') ? undefined : (isProb ? 100 : undefined);
-            state.chartInstance.options.scales.y.min = (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind') ? undefined : 0;
+            state.chartInstance.options.scales.y.max = (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind' || state.currentLayerMode === 'solar') ? undefined : (isProb ? 100 : undefined);
+            state.chartInstance.options.scales.y.min = (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind' || state.currentLayerMode === 'solar') ? undefined : 0;
             state.chartInstance.update();
         } else {
             state.chartInstance = new Chart(ctx, {
@@ -180,8 +204,12 @@ export async function showTimeseriesChart(lat, lon) {
                                 label: function(context) {
                                     if (state.currentLayerMode === 'temp') {
                                         return ` ${context.parsed.y.toFixed(1)} °C`;
+                                    } else if (state.currentLayerMode === 'solar') {
+                                        return ` ${Math.round(context.parsed.y)} W/m²`;
                                     } else if (state.currentLayerMode === 'wind') {
                                         return ` ${context.parsed.y.toFixed(1)} m/s (${mpsToBeaufort(context.parsed.y)} Bft)`;
+                                    } else if (state.currentEns === 'spread') {
+                                        return ` ±${context.parsed.y.toFixed(2)} mm/h`;
                                     }
                                     return ` ${context.parsed.y.toFixed(2)}${isProb ? '%' : ' mm/h'}`;
                                 }
