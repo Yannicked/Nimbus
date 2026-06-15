@@ -82,6 +82,7 @@ let map;
 let metadata = null;
 let rainMetadata = null;
 let tempMetadata = null;
+let windMetadata = null;
 let currentLayerMode = 'rain';
 let currentEns = CONFIG.defaults.ensemble;
 let currentTimeIndex = CONFIG.defaults.timeIndex;
@@ -97,6 +98,18 @@ let positionBuffer = null;
 let texcoordBuffer = null;
 let glContext = null;
 let textureCache = {};
+
+// WebGL Wind Layer variables
+let windProgram = null;
+let windPositionBuffer = null;
+let windTexcoordBuffer = null;
+let particleProgram = null;
+let particleBuffer = null;
+let windPixelData = null; // Uint8ClampedArray for CPU particle lookups
+const maxParticles = 3000;
+const TRAIL_LENGTH = 24;
+let particles = [];
+let lastAnimTime = 0;
 
 // DOM Elements
 const refTimeVal = document.getElementById('ref-time-value');
@@ -131,6 +144,161 @@ function mercatorToLonLat(x, y) {
     return [lat, lon];
 }
 
+// Lat/Lon to Web Mercator Projection
+function lonLatToMercator(lat, lon) {
+    const r_major = 6378137.0;
+    const x = lon * (Math.PI / 180.0) * r_major;
+    const y = Math.log(Math.tan((Math.PI / 4.0) + (lat * (Math.PI / 360.0)))) * r_major;
+    return [x, y];
+}
+
+// Update Wind Pixel Data cache from loaded PNG image
+function updateWindPixelData(img) {
+    console.log("Extracting wind pixel data for CPU simulation...");
+    const canvas = document.createElement('canvas');
+    canvas.width = 700;
+    canvas.height = 1530;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, 700, 1530);
+    windPixelData = imageData.data;
+}
+
+// Sample u and v velocities at a Mercator coordinate
+function getWindVelocity(mx, my) {
+    if (!windPixelData) return [0, 0];
+    
+    // Bounding box: MERCATOR_LEFT: 0.0, MERCATOR_RIGHT: 1210000.0, MERCATOR_BOTTOM: 6250000.0, MERCATOR_TOP: 7560000.0
+    const col = Math.floor((mx - 0.0) / 1210000.0 * 700);
+    const row = Math.floor((7560000.0 - my) / (7560000.0 - 6250000.0) * 765);
+    
+    if (col < 0 || col >= 700 || row < 0 || row >= 765) {
+        return [0, 0];
+    }
+    
+    // Sample u (top half)
+    const idx_u = (row * 700 + col) * 4;
+    const r_u = windPixelData[idx_u];
+    const g_u = windPixelData[idx_u + 1];
+    const raw_u = r_u * 256 + g_u;
+    if (raw_u >= 65535 || raw_u === 0) return [0, 0];
+    const u = raw_u / 100.0 - 100.0;
+    
+    // Sample v (bottom half)
+    const idx_v = (((row + 765) * 700) + col) * 4;
+    const r_v = windPixelData[idx_v];
+    const g_v = windPixelData[idx_v + 1];
+    const raw_v = r_v * 256 + g_v;
+    if (raw_v >= 65535 || raw_v === 0) return [0, 0];
+    const v = raw_v / 100.0 - 100.0;
+    
+    return [u, v];
+}
+
+// Convert wind speed to Beaufort scale
+function mpsToBeaufort(mps) {
+    if (mps < 0.3) return 0;
+    if (mps < 1.6) return 1;
+    if (mps < 3.4) return 2;
+    if (mps < 5.5) return 3;
+    if (mps < 8.0) return 4;
+    if (mps < 10.8) return 5;
+    if (mps < 13.9) return 6;
+    if (mps < 17.2) return 7;
+    if (mps < 20.8) return 8;
+    if (mps < 24.5) return 9;
+    if (mps < 28.5) return 10;
+    if (mps < 32.7) return 11;
+    return 12;
+}
+
+// Convert wind direction in degrees to cardinal direction
+function degreesToCardinal(deg) {
+    const index = Math.round(deg / 45) % 8;
+    const cardinals = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    return cardinals[index];
+}
+
+// Generate a random particle
+function randomParticle() {
+    const mx = Math.random() * 1210000.0;
+    const my = 6250000.0 + Math.random() * (7560000.0 - 6250000.0);
+    const maxAge = 150 + Math.random() * 150;
+    const age = Math.random() * maxAge;
+    const history = [];
+    for (let i = 0; i < TRAIL_LENGTH; i++) {
+        history.push({ mx: mx, my: my });
+    }
+    return {
+        mx: mx,
+        my: my,
+        age: age,
+        maxAge: maxAge,
+        history: history,
+        activeLength: 1,
+        lastBreadcrumb: { mx: mx, my: my }
+    };
+}
+
+// Initialize the particle list
+function initParticles() {
+    particles = [];
+    for (let i = 0; i < maxParticles; i++) {
+        particles.push(randomParticle());
+    }
+}
+
+// Update particle positions based on wind velocities
+function updateParticles(dt, minDistance) {
+    const speedFactor = 2.5; // Controls the movement speed of particles
+    
+    for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        p.age += dt * 60; // Age in frames
+        
+        if (p.age >= p.maxAge) {
+            particles[i] = randomParticle();
+            particles[i].age = 0; // Reborn particles start at age 0 to fade in smoothly
+            continue;
+        }
+        
+        const [u, v] = getWindVelocity(p.mx, p.my);
+        
+        // Update positions using velocity (meters per second)
+        p.mx += u * dt * speedFactor * 1200.0;
+        p.my += v * dt * speedFactor * 1200.0;
+        
+        // Bounds checking
+        if (p.mx < 0.0 || p.mx > 1210000.0 || p.my < 6250000.0 || p.my > 7560000.0) {
+            particles[i] = randomParticle();
+            particles[i].age = 0; // Reborn particles start at age 0 to fade in smoothly
+            continue;
+        }
+        
+        // Overwrite the head position to the current position
+        p.history[0] = { mx: p.mx, my: p.my };
+        
+        // Push a new trail point if the head has moved far enough from the last recorded breadcrumb
+        const dx = p.mx - p.lastBreadcrumb.mx;
+        const dy = p.my - p.lastBreadcrumb.my;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist >= minDistance) {
+            p.history.splice(1, 0, { mx: p.mx, my: p.my });
+            p.activeLength = Math.min(p.activeLength + 1, TRAIL_LENGTH);
+            p.lastBreadcrumb = { mx: p.mx, my: p.my };
+            if (p.history.length > TRAIL_LENGTH) {
+                p.history.pop();
+            }
+        }
+        
+        // Collapse unused history points to the head position so they don't form a dot at the start
+        for (let j = p.activeLength; j < TRAIL_LENGTH; j++) {
+            p.history[j] = { mx: p.mx, my: p.my };
+        }
+    }
+}
+
 // Format relative time step
 function formatRelativeTime(seconds) {
     const mins = Math.round(seconds / 60);
@@ -158,7 +326,7 @@ function formatAbsoluteTime(refTimeStr, secondsOffset) {
         hour: '2-digit',
         minute: '2-digit',
         hour12: false
-    }) + ' (NL Time)';
+    });
 }
 
 // Initialize MapLibre Map
@@ -229,9 +397,38 @@ async function loadApp() {
         const responseTemp = await fetch('/api/metadata/temp');
         if (!responseTemp.ok) throw new Error("Temp metadata request failed");
         tempMetadata = await responseTemp.json();
+
+        // Fetch wind metadata
+        const responseWind = await fetch('/api/metadata/wind');
+        if (!responseWind.ok) throw new Error("Wind metadata request failed");
+        windMetadata = await responseWind.json();
         
         // Default active metadata
-        metadata = currentLayerMode === 'temp' ? tempMetadata : rainMetadata;
+        if (currentLayerMode === 'temp') {
+            metadata = tempMetadata;
+        } else if (currentLayerMode === 'wind') {
+            metadata = windMetadata;
+        } else {
+            metadata = rainMetadata;
+        }
+        
+        // Find index closest to current system time
+        const refMatch = metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+        let refTimeMs = Date.now();
+        if (refMatch) {
+            refTimeMs = new Date(`${refMatch[1]}T${refMatch[2]}Z`).getTime();
+        }
+        const targetOffset = (Date.now() - refTimeMs) / 1000;
+        let closestIndex = 0;
+        let minDiff = Infinity;
+        for (let i = 0; i < metadata.times.length; i++) {
+            const diff = Math.abs(metadata.times[i] - targetOffset);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = i;
+            }
+        }
+        currentTimeIndex = closestIndex;
         
         // Display reference time
         refTimeVal.textContent = formatAbsoluteTime(metadata.reference_time_str, 0);
@@ -322,6 +519,7 @@ function drawSliderTicks() {
 }
 
 // Helper to load/bind WebGL textures asynchronously
+let activeWindCacheKey = null;
 function getOrLoadTexture(gl, timeVal) {
     if (!metadata) return null;
     
@@ -331,6 +529,12 @@ function getOrLoadTexture(gl, timeVal) {
         const entry = textureCache[cacheKey];
         if (!entry.loaded) {
             return null; // Still loading the image
+        }
+        if (currentLayerMode === 'wind' && timeVal === metadata.times[currentTimeIndex]) {
+            if (windPixelData === null || activeWindCacheKey !== cacheKey) {
+                activeWindCacheKey = cacheKey;
+                updateWindPixelData(entry.image);
+            }
         }
         if (!entry.uploaded) {
             console.log(`Uploading texture to GPU for ${cacheKey}...`);
@@ -380,6 +584,10 @@ function getOrLoadTexture(gl, timeVal) {
         console.log(`Image loaded successfully for ${cacheKey}.`);
         entry.image = img;
         entry.loaded = true;
+        if (currentLayerMode === 'wind' && timeVal === metadata.times[currentTimeIndex]) {
+            activeWindCacheKey = cacheKey;
+            updateWindPixelData(img);
+        }
         if (map) map.triggerRepaint();
     };
     img.onerror = (err) => {
@@ -387,7 +595,7 @@ function getOrLoadTexture(gl, timeVal) {
     };
     const srcPath = currentLayerMode === 'temp'
         ? `/api/data/temp/${timeVal}`
-        : `/api/data/${currentEns}/${timeVal}`;
+        : (currentLayerMode === 'wind' ? `/api/data/wind/${timeVal}` : `/api/data/${currentEns}/${timeVal}`);
     img.src = `${window.location.origin}${srcPath}?v=${metadata.version}`;
     
     return null;
@@ -670,6 +878,368 @@ const webglRadarLayer = {
     }
 };
 
+// Custom MapLibre WebGL Layer Interface for Wind
+const webglWindLayer = {
+    id: 'wind-webgl-layer',
+    type: 'custom',
+    renderingMode: '2d',
+    
+    onAdd: function (mapInstance, gl) {
+        glContext = gl;
+        console.log("Initializing WebGL Wind Layer shaders and buffers...");
+        
+        // 1. Compile background color shader
+        const vertexShaderSource = `
+            attribute vec2 a_position;
+            attribute vec2 a_texcoord;
+            varying vec2 v_texcoord;
+            uniform mat4 u_matrix;
+            void main() {
+                gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
+                v_texcoord = a_texcoord;
+            }
+        `;
+        
+        const fragmentShaderSource = `
+            precision mediump float;
+            varying vec2 v_texcoord;
+            uniform sampler2D u_texture;
+            uniform float u_opacity;
+            
+            vec4 getColor(float val) {
+                if (val < 0.0) return vec4(0.0);
+                if (val <= 2.0) {
+                    float t = val / 2.0;
+                    return mix(vec4(96.0/255.0, 165.0/255.0, 250.0/255.0, 0.02), vec4(34.0/255.0, 211.0/255.0, 238.0/255.0, 0.35), t);
+                }
+                if (val <= 5.0) {
+                    float t = (val - 2.0) / 3.0;
+                    return mix(vec4(34.0/255.0, 211.0/255.0, 238.0/255.0, 0.35), vec4(74.0/255.0, 222.0/255.0, 128.0/255.0, 0.55), t);
+                }
+                if (val <= 10.0) {
+                    float t = (val - 5.0) / 5.0;
+                    return mix(vec4(74.0/255.0, 222.0/255.0, 128.0/255.0, 0.55), vec4(250.0/255.0, 204.0/255.0, 21.0/255.0, 0.7), t);
+                }
+                if (val <= 15.0) {
+                    float t = (val - 10.0) / 5.0;
+                    return mix(vec4(250.0/255.0, 204.0/255.0, 21.0/255.0, 0.7), vec4(251.0/255.0, 146.0/255.0, 60.0/255.0, 0.8), t);
+                }
+                if (val <= 20.0) {
+                    float t = (val - 15.0) / 5.0;
+                    return mix(vec4(251.0/255.0, 146.0/255.0, 60.0/255.0, 0.8), vec4(248.0/255.0, 113.0/255.0, 113.0/255.0, 0.85), t);
+                }
+                if (val <= 25.0) {
+                    float t = (val - 20.0) / 5.0;
+                    return mix(vec4(248.0/255.0, 113.0/255.0, 113.0/255.0, 0.85), vec4(236.0/255.0, 72.0/255.0, 153.0/255.0, 0.9), t);
+                }
+                return vec4(236.0/255.0, 72.0/255.0, 153.0/255.0, 0.9);
+            }
+            
+            void main() {
+                // Top half: u-component, Bottom half: v-component
+                vec2 texcoord_u = vec2(v_texcoord.x, v_texcoord.y * 0.5 + 0.5);
+                vec2 texcoord_v = vec2(v_texcoord.x, v_texcoord.y * 0.5);
+                
+                vec4 tex_u = texture2D(u_texture, texcoord_u);
+                float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
+                
+                vec4 tex_v = texture2D(u_texture, texcoord_v);
+                float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
+                
+                if (u_raw >= 65535.0 || v_raw >= 65535.0 || u_raw == 0.0 || v_raw == 0.0) {
+                    discard;
+                }
+                
+                float u = u_raw / 100.0 - 100.0;
+                float v = v_raw / 100.0 - 100.0;
+                float speed = sqrt(u * u + v * v);
+                
+                vec4 c = getColor(speed);
+                gl_FragColor = vec4(c.rgb, c.a * u_opacity);
+            }
+        `;
+        
+        function compileShader(source, type) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error("Wind shader compilation error:", gl.getShaderInfoLog(shader));
+            }
+            return shader;
+        }
+        
+        const vs = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
+        const fs = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+        
+        windProgram = gl.createProgram();
+        gl.attachShader(windProgram, vs);
+        gl.attachShader(windProgram, fs);
+        gl.linkProgram(windProgram);
+        if (!gl.getProgramParameter(windProgram, gl.LINK_STATUS)) {
+            console.error("Wind program linking error:", gl.getProgramInfoLog(windProgram));
+        }
+        
+        // 2. Compile particle (arrows) shader program
+        const particleVsSource = `
+            attribute vec2 a_position;
+            attribute float a_fade;
+            attribute float a_trail;
+            varying float v_fade;
+            varying float v_trail;
+            uniform mat4 u_matrix;
+            uniform float u_point_size;
+            void main() {
+                gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
+                gl_PointSize = u_point_size * (0.3 + 0.7 * a_trail);
+                v_fade = a_fade;
+                v_trail = a_trail;
+            }
+        `;
+        
+        const particleFsSource = `
+            precision mediump float;
+            varying float v_fade;
+            varying float v_trail;
+            uniform float u_arrow_opacity;
+            
+            void main() {
+                vec2 p = gl_PointCoord - vec2(0.5);
+                float dist = length(p);
+                if (dist > 0.5) {
+                    discard;
+                }
+                float edgeAlpha = smoothstep(0.5, 0.25, dist);
+                float opacity = edgeAlpha * v_fade * v_trail * u_arrow_opacity;
+                gl_FragColor = vec4(1.0, 1.0, 1.0, opacity);
+            }
+        `;
+        
+        const pVs = compileShader(particleVsSource, gl.VERTEX_SHADER);
+        const pFs = compileShader(particleFsSource, gl.FRAGMENT_SHADER);
+        
+        particleProgram = gl.createProgram();
+        gl.attachShader(particleProgram, pVs);
+        gl.attachShader(particleProgram, pFs);
+        gl.linkProgram(particleProgram);
+        if (!gl.getProgramParameter(particleProgram, gl.LINK_STATUS)) {
+            console.error("Particle program linking error:", gl.getProgramInfoLog(particleProgram));
+        }
+        
+        // 3. Set up Mercator quad buffers
+        const MAP_LIMIT = 20037508.342789244;
+        function toMerc(x, y) {
+            const ux = (x + MAP_LIMIT) / (2.0 * MAP_LIMIT);
+            const uy = (MAP_LIMIT - y) / (2.0 * MAP_LIMIT);
+            return [ux, uy];
+        }
+        
+        const BL = toMerc(0.0, 6250000.0);
+        const BR = toMerc(1210000.0, 6250000.0);
+        const TR = toMerc(1210000.0, 7560000.0);
+        const TL = toMerc(0.0, 7560000.0);
+        
+        const vertices = new Float32Array([
+            BL[0], BL[1], // SW
+            BR[0], BR[1], // SE
+            TL[0], TL[1], // NW
+            TL[0], TL[1], // NW
+            BR[0], BR[1], // SE
+            TR[0], TR[1]  // NE
+        ]);
+        
+        windPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, windPositionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        
+        const texcoords = new Float32Array([
+            0, 0, // BL
+            1, 0, // BR
+            0, 1, // TL
+            0, 1, // TL
+            1, 0, // BR
+            1, 1  // TR
+        ]);
+        
+        windTexcoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, windTexcoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.STATIC_DRAW);
+        
+        // 4. Set up dynamic buffer for particles
+        particleBuffer = gl.createBuffer();
+        
+        // Seed particles on startup
+        initParticles();
+        lastAnimTime = performance.now();
+    },
+    
+    render: function (gl, matrix) {
+        if (!metadata || !windProgram || !particleProgram) return;
+        
+        const timeVal = metadata.times[currentTimeIndex];
+        const texture = getOrLoadTexture(gl, timeVal);
+        if (!texture) return; // Wait for texture load
+        
+        // 1. Update Particle positions on CPU
+        const now = performance.now();
+        let dt = (now - lastAnimTime) / 1000.0;
+        if (dt > 0.1) dt = 0.1; // Cap dt to prevent warp jumps
+        lastAnimTime = now;
+        
+        const zoom = map ? map.getZoom() : 6;
+        const lat = 52.0;
+        const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+        const minDistance = 1.2 * metersPerPixel;
+        
+        if (windPixelData) {
+            updateParticles(dt, minDistance);
+        }
+        
+        // Disable depth test
+        const depthTestEnabled = gl.isEnabled(gl.DEPTH_TEST);
+        if (depthTestEnabled) {
+            gl.disable(gl.DEPTH_TEST);
+        }
+        if (gl.bindVertexArray) {
+            gl.bindVertexArray(null);
+        }
+        
+        // -------------------------------------------------------------
+        // Step A: Draw Background Vector Speed Field Overlay
+        // -------------------------------------------------------------
+        gl.useProgram(windProgram);
+        
+        // Bind position quad attributes
+        const aPosition = gl.getAttribLocation(windProgram, 'a_position');
+        gl.enableVertexAttribArray(aPosition);
+        gl.bindBuffer(gl.ARRAY_BUFFER, windPositionBuffer);
+        gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+        
+        const aTexcoord = gl.getAttribLocation(windProgram, 'a_texcoord');
+        gl.enableVertexAttribArray(aTexcoord);
+        gl.bindBuffer(gl.ARRAY_BUFFER, windTexcoordBuffer);
+        gl.vertexAttribPointer(aTexcoord, 2, gl.FLOAT, false, 0, 0);
+        
+        // Set uniforms
+        gl.uniformMatrix4fv(gl.getUniformLocation(windProgram, 'u_matrix'), false, matrix);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(gl.getUniformLocation(windProgram, 'u_texture'), 0);
+        
+        const opacity = parseFloat(opacitySlider.value) / 100;
+        gl.uniform1f(gl.getUniformLocation(windProgram, 'u_opacity'), opacity);
+        
+        // Blend mode configuration
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        
+        gl.disableVertexAttribArray(aPosition);
+        gl.disableVertexAttribArray(aTexcoord);
+        
+        // -------------------------------------------------------------
+        // Step B: Draw Moving Particles (Arrows) on Top
+        // -------------------------------------------------------------
+        gl.useProgram(particleProgram);
+        
+        // Helper to convert Mercator meters to normalized coordinate space [0, 1]
+        const MAP_LIMIT = 20037508.342789244;
+        function toMerc(x, y) {
+            const ux = (x + MAP_LIMIT) / (2.0 * MAP_LIMIT);
+            const uy = (MAP_LIMIT - y) / (2.0 * MAP_LIMIT);
+            return [ux, uy];
+        }
+        
+        // Pack active particle variables: positions, fade, trail factor
+        const bufferData = new Float32Array(maxParticles * TRAIL_LENGTH * 4);
+        let offset = 0;
+        for (let i = 0; i < maxParticles; i++) {
+            const p = particles[i];
+            
+            // Calculate fade envelope (sinusoidal fade in/out)
+            const progress = Math.min(Math.max(p.age / p.maxAge, 0.0), 1.0);
+            const fade = Math.sin(progress * Math.PI);
+            
+            for (let j = 0; j < TRAIL_LENGTH; j++) {
+                const pos = p.history[j];
+                const [ux, uy] = toMerc(pos.mx, pos.my);
+                const trailFactor = 1.0 - (j / (TRAIL_LENGTH - 1));
+                
+                bufferData[offset++] = ux;
+                bufferData[offset++] = uy;
+                bufferData[offset++] = fade;
+                bufferData[offset++] = trailFactor;
+            }
+        }
+        
+        // Upload dynamic particle buffer data to VBO
+        gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, bufferData, gl.DYNAMIC_DRAW);
+        
+        // Set attributes
+        const stride = 16; // 4 floats * 4 bytes/float = 16
+        const aPartPos = gl.getAttribLocation(particleProgram, 'a_position');
+        gl.enableVertexAttribArray(aPartPos);
+        gl.vertexAttribPointer(aPartPos, 2, gl.FLOAT, false, stride, 0);
+        
+        const aPartFade = gl.getAttribLocation(particleProgram, 'a_fade');
+        gl.enableVertexAttribArray(aPartFade);
+        gl.vertexAttribPointer(aPartFade, 1, gl.FLOAT, false, stride, 8);
+        
+        const aPartTrail = gl.getAttribLocation(particleProgram, 'a_trail');
+        gl.enableVertexAttribArray(aPartTrail);
+        gl.vertexAttribPointer(aPartTrail, 1, gl.FLOAT, false, stride, 12);
+        
+        // Set uniforms
+        gl.uniformMatrix4fv(gl.getUniformLocation(particleProgram, 'u_matrix'), false, matrix);
+        // Base streak point size: 7.5px for the head
+        gl.uniform1f(gl.getUniformLocation(particleProgram, 'u_point_size'), 7.5);
+        gl.uniform1f(gl.getUniformLocation(particleProgram, 'u_arrow_opacity'), 0.85);
+        
+        // Draw particle arrays
+        gl.drawArrays(gl.POINTS, 0, maxParticles * TRAIL_LENGTH);
+        
+        // Clean attributes
+        gl.disableVertexAttribArray(aPartPos);
+        gl.disableVertexAttribArray(aPartFade);
+        gl.disableVertexAttribArray(aPartTrail);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        
+        if (depthTestEnabled) {
+            gl.enable(gl.DEPTH_TEST);
+        }
+        
+        // Trigger repaint to run animation loop if Wind is the active layer
+        if (currentLayerMode === 'wind' && map) {
+            map.triggerRepaint();
+        }
+    },
+    
+    onRemove: function (map, gl) {
+        if (windProgram) {
+            gl.deleteProgram(windProgram);
+            windProgram = null;
+        }
+        if (particleProgram) {
+            gl.deleteProgram(particleProgram);
+            particleProgram = null;
+        }
+        if (windPositionBuffer) {
+            gl.deleteBuffer(windPositionBuffer);
+            windPositionBuffer = null;
+        }
+        if (windTexcoordBuffer) {
+            gl.deleteBuffer(windTexcoordBuffer);
+            windTexcoordBuffer = null;
+        }
+        if (particleBuffer) {
+            gl.deleteBuffer(particleBuffer);
+            particleBuffer = null;
+        }
+    }
+};
+
 // Clear cached textures and release GPU memory
 function clearRadarLayers() {
     if (glContext) {
@@ -690,8 +1260,18 @@ function setupRadarSourceAndLayer() {
     if (map.getLayer('radar-webgl-layer')) {
         map.removeLayer('radar-webgl-layer');
     }
+    if (map.getLayer('wind-webgl-layer')) {
+        map.removeLayer('wind-webgl-layer');
+    }
 
-    map.addLayer(webglRadarLayer);
+    if (currentLayerMode === 'wind') {
+        map.addLayer(webglWindLayer);
+        initParticles();
+        lastAnimTime = performance.now();
+        map.triggerRepaint();
+    } else {
+        map.addLayer(webglRadarLayer);
+    }
 }
 
 // Trigger map repaint and preload future frames
@@ -920,6 +1500,36 @@ async function triggerHoverQuery() {
             hoverValue.textContent = "Error";
             hoverValue.style.color = "#f87171";
         }
+    } else if (currentLayerMode === 'wind') {
+        try {
+            const response = await fetch(`/api/value/wind?time=${timeVal}&lat=${lastLat}&lon=${lastLon}`);
+            if (!response.ok) throw new Error("Wind value query failed");
+            const res = await response.json();
+
+            if (res.status === "out_of_bounds") {
+                hoverValue.textContent = "Out of Grid";
+                hoverValue.style.color = "var(--text-secondary)";
+            } else if (res.speed === null) {
+                hoverValue.textContent = "No Data";
+                hoverValue.style.color = "var(--text-secondary)";
+            } else {
+                const bft = mpsToBeaufort(res.speed);
+                const cardinal = degreesToCardinal(res.direction);
+                hoverValue.textContent = `${res.speed.toFixed(1)} m/s (${bft} Bft) ${cardinal}`;
+                
+                // Color code wind speed
+                if (res.speed < 2.0) hoverValue.style.color = "#94a3b8"; // Calm: blue-gray
+                else if (res.speed < 5.0) hoverValue.style.color = "#22d3ee"; // Light: cyan
+                else if (res.speed < 10.0) hoverValue.style.color = "#4ade80"; // Moderate: green
+                else if (res.speed < 15.0) hoverValue.style.color = "#facc15"; // Strong: yellow
+                else if (res.speed < 20.0) hoverValue.style.color = "#fb923c"; // Gale: orange
+                else hoverValue.style.color = "#f87171"; // Storm: red
+            }
+        } catch (e) {
+            console.error("Wind Hover error:", e);
+            hoverValue.textContent = "Error";
+            hoverValue.style.color = "#f87171";
+        }
     } else {
         try {
             const response = await fetch(`/api/value?ens=${currentEns}&time=${timeVal}&lat=${lastLat}&lon=${lastLon}`);
@@ -964,12 +1574,17 @@ async function triggerHoverQuery() {
 function startMetadataPolling() {
     setInterval(async () => {
         try {
-            const endpoint = currentLayerMode === 'temp' ? '/api/metadata/temp' : '/api/metadata';
+            const endpoint = currentLayerMode === 'temp' 
+                ? '/api/metadata/temp' 
+                : (currentLayerMode === 'wind' ? '/api/metadata/wind' : '/api/metadata');
             const response = await fetch(endpoint);
             if (!response.ok) return;
             const newMetadata = await response.json();
 
-            let targetMetadata = currentLayerMode === 'temp' ? tempMetadata : rainMetadata;
+            let targetMetadata = currentLayerMode === 'temp' 
+                ? tempMetadata 
+                : (currentLayerMode === 'wind' ? windMetadata : rainMetadata);
+                
             if (targetMetadata && newMetadata.version !== targetMetadata.version) {
                 console.log(`New ${currentLayerMode} forecast run detected! Reloading...`);
                 clearRadarLayers();
@@ -977,6 +1592,11 @@ function startMetadataPolling() {
                 if (currentLayerMode === 'temp') {
                     tempMetadata = newMetadata;
                     metadata = tempMetadata;
+                } else if (currentLayerMode === 'wind') {
+                    windMetadata = newMetadata;
+                    metadata = windMetadata;
+                    windPixelData = null;
+                    activeWindCacheKey = null;
                 } else {
                     rainMetadata = newMetadata;
                     metadata = rainMetadata;
@@ -1013,15 +1633,16 @@ async function showTimeseriesChart(lat, lon) {
     try {
         const url = currentLayerMode === 'temp'
             ? `/api/timeseries/temp?lat=${lat}&lon=${lon}`
-            : `/api/timeseries?ens=${currentEns}&lat=${lat}&lon=${lon}`;
+            : (currentLayerMode === 'wind' ? `/api/timeseries/wind?lat=${lat}&lon=${lon}` : `/api/timeseries?ens=${currentEns}&lat=${lat}&lon=${lon}`);
         const res = await fetch(url);
         if (!res.ok) throw new Error("Timeseries request failed");
         const data = await res.json();
         
-        if (data.status === "out_of_bounds" || data.values.length === 0) {
+        const chartValues = currentLayerMode === 'wind' ? data.speeds : data.values;
+        if (data.status === "out_of_bounds" || chartValues.length === 0) {
             chartCoords.textContent = currentLayerMode === 'temp'
                 ? "Selected point is out of bounds"
-                : "Selected point is out of radar bounds";
+                : (currentLayerMode === 'wind' ? "Selected point is out of wind bounds" : "Selected point is out of radar bounds");
             if (chartInstance) {
                 chartInstance.destroy();
                 chartInstance = null;
@@ -1031,20 +1652,28 @@ async function showTimeseriesChart(lat, lon) {
             return;
         }
         
-        const peakVal = Math.max(...data.values);
+        const peakVal = Math.max(...chartValues);
         let totalVal = 0.0;
         
         if (currentLayerMode === 'temp') {
-            const minVal = Math.min(...data.values);
+            const minVal = Math.min(...chartValues);
             chartStatPeak.textContent = `${peakVal.toFixed(1)} °C`;
             chartStatTotal.textContent = `${minVal.toFixed(1)} °C`;
             
             document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Max Temp";
             document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Min Temp";
             document.querySelector('#chart-panel h3').innerHTML = '<i class="fa-solid fa-temperature-half chart-header-icon"></i> Temperature Forecast Trend';
+        } else if (currentLayerMode === 'wind') {
+            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            chartStatPeak.textContent = `${peakVal.toFixed(1)} m/s`;
+            chartStatTotal.textContent = `${avgVal.toFixed(1)} m/s`;
+            
+            document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Max Wind";
+            document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Avg Wind";
+            document.querySelector('#chart-panel h3').innerHTML = '<i class="fa-solid fa-wind chart-header-icon"></i> Wind Speed Forecast Trend';
         } else if (currentEns === 'prob') {
             chartStatPeak.textContent = `${Math.round(peakVal)}%`;
-            const avgVal = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
             chartStatTotal.textContent = `${Math.round(avgVal)}% (avg)`;
             
             document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Peak Probability";
@@ -1052,7 +1681,7 @@ async function showTimeseriesChart(lat, lon) {
             document.querySelector('#chart-panel h3').innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend';
         } else {
             // total_mm = sum(rates) / 12 (5 mins intervals)
-            totalVal = data.values.reduce((a, b) => a + b, 0) / 12.0;
+            totalVal = chartValues.reduce((a, b) => a + b, 0) / 12.0;
             chartStatPeak.textContent = `${peakVal.toFixed(2)} mm/h`;
             chartStatTotal.textContent = `${totalVal.toFixed(2)} mm`;
             
@@ -1063,8 +1692,8 @@ async function showTimeseriesChart(lat, lon) {
         
         const labels = data.times.map(secs => {
             const timeStr = formatAbsoluteTime(metadata.reference_time_str, secs);
-            if (currentLayerMode === 'temp') {
-                // Include day for multi-day temperature forecasts, e.g. "Mon 08:00"
+            if (currentLayerMode === 'temp' || currentLayerMode === 'wind') {
+                // Include day for multi-day temperature and wind forecasts, e.g. "Mon 08:00"
                 const match = timeStr.match(/(\d{2})\s+(\w+).*?(\d{2}:\d{2})/);
                 if (match) {
                     // Parse to get short weekday name
@@ -1089,6 +1718,10 @@ async function showTimeseriesChart(lat, lon) {
             labelText = "2m Temperature (°C)";
             borderColor = "#f87171"; // Warm red
             backgroundColor = "rgba(248, 113, 113, 0.15)";
+        } else if (currentLayerMode === 'wind') {
+            labelText = "10m Wind Speed (m/s)";
+            borderColor = "#22d3ee"; // Neon cyan
+            backgroundColor = "rgba(34, 211, 238, 0.15)";
         } else {
             labelText = isProb ? CONFIG.radarVisualization.prob.title + " (%)" : CONFIG.radarVisualization.rate.title;
             const chartColors = isProb ? CONFIG.chart.colors.prob : CONFIG.chart.colors.rate;
@@ -1101,12 +1734,12 @@ async function showTimeseriesChart(lat, lon) {
         if (chartInstance) {
             chartInstance.data.labels = labels;
             chartInstance.data.datasets[0].label = labelText;
-            chartInstance.data.datasets[0].data = data.values;
+            chartInstance.data.datasets[0].data = chartValues;
             chartInstance.data.datasets[0].borderColor = borderColor;
             chartInstance.data.datasets[0].backgroundColor = backgroundColor;
             chartInstance.options.scales.y.title.text = labelText;
-            chartInstance.options.scales.y.max = (currentLayerMode === 'temp') ? undefined : (isProb ? 100 : undefined);
-            chartInstance.options.scales.y.min = (currentLayerMode === 'temp') ? undefined : 0;
+            chartInstance.options.scales.y.max = (currentLayerMode === 'temp' || currentLayerMode === 'wind') ? undefined : (isProb ? 100 : undefined);
+            chartInstance.options.scales.y.min = (currentLayerMode === 'temp' || currentLayerMode === 'wind') ? undefined : 0;
             chartInstance.update();
         } else {
             chartInstance = new Chart(ctx, {
@@ -1115,7 +1748,7 @@ async function showTimeseriesChart(lat, lon) {
                     labels: labels,
                     datasets: [{
                         label: labelText,
-                        data: data.values,
+                        data: chartValues,
                         borderColor: borderColor,
                         backgroundColor: backgroundColor,
                         borderWidth: CONFIG.chart.borderWidth,
@@ -1144,6 +1777,8 @@ async function showTimeseriesChart(lat, lon) {
                                 label: function(context) {
                                     if (currentLayerMode === 'temp') {
                                         return ` ${context.parsed.y.toFixed(1)} °C`;
+                                    } else if (currentLayerMode === 'wind') {
+                                        return ` ${context.parsed.y.toFixed(1)} m/s (${mpsToBeaufort(context.parsed.y)} Bft)`;
                                     }
                                     return ` ${context.parsed.y.toFixed(2)}${isProb ? '%' : ' mm/h'}`;
                                 }
@@ -1182,8 +1817,8 @@ async function showTimeseriesChart(lat, lon) {
                                     weight: 'bold'
                                 }
                             },
-                            min: currentLayerMode === 'temp' ? undefined : 0,
-                            max: currentLayerMode === 'temp' ? undefined : (isProb ? 100 : undefined)
+                            min: (currentLayerMode === 'temp' || currentLayerMode === 'wind') ? undefined : 0,
+                            max: (currentLayerMode === 'temp' || currentLayerMode === 'wind') ? undefined : (isProb ? 100 : undefined)
                         }
                     }
                 }
@@ -1227,7 +1862,7 @@ function handleMapClick(e) {
     showTimeseriesChart(lat, lon);
 }
 
-// Select Layer Mode (Rain vs Temp)
+// Select Layer Mode (Rain vs Temp vs Wind)
 function selectLayerMode(mode) {
     if (mode === currentLayerMode) return;
     currentLayerMode = mode;
@@ -1239,7 +1874,7 @@ function selectLayerMode(mode) {
     
     const selector = document.querySelector('.layer-selector');
     if (selector) {
-        selector.dataset.active = mode === 'rain' ? '0' : '1';
+        selector.dataset.active = mode === 'rain' ? '0' : (mode === 'temp' ? '1' : '2');
     }
     
     // Toggle UI visibility depending on layer mode
@@ -1247,41 +1882,68 @@ function selectLayerMode(mode) {
     const ensembleContainer = document.querySelector('.ensemble-select-container');
     const legendRain = document.getElementById('legend-rain');
     const legendTemp = document.getElementById('legend-temp');
+    const legendWind = document.getElementById('legend-wind');
     
     if (mode === 'temp') {
         if (viewSelector) viewSelector.classList.add('hidden');
         if (ensembleContainer) ensembleContainer.classList.add('hidden');
         if (legendRain) legendRain.classList.add('hidden');
+        if (legendWind) legendWind.classList.add('hidden');
         if (legendTemp) legendTemp.classList.remove('hidden');
         
         metadata = tempMetadata;
+    } else if (mode === 'wind') {
+        if (viewSelector) viewSelector.classList.add('hidden');
+        if (ensembleContainer) ensembleContainer.classList.add('hidden');
+        if (legendRain) legendRain.classList.add('hidden');
+        if (legendTemp) legendTemp.classList.add('hidden');
+        if (legendWind) legendWind.classList.remove('hidden');
+        
+        metadata = windMetadata;
     } else {
         if (viewSelector) viewSelector.classList.remove('hidden');
         if (ensembleContainer) ensembleContainer.classList.remove('hidden');
         if (legendRain) legendRain.classList.remove('hidden');
         if (legendTemp) legendTemp.classList.add('hidden');
+        if (legendWind) legendWind.classList.add('hidden');
         
         metadata = rainMetadata;
     }
     
-    // Re-initialize slider
+    // Re-initialize slider and select index closest to current time
     if (metadata) {
         timeSlider.max = metadata.times.length - 1;
-        if (currentTimeIndex >= metadata.times.length) {
-            currentTimeIndex = 0;
+        
+        const refMatch = metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+        let refTimeMs = Date.now();
+        if (refMatch) {
+            refTimeMs = new Date(`${refMatch[1]}T${refMatch[2]}Z`).getTime();
         }
+        const targetOffset = (Date.now() - refTimeMs) / 1000;
+        let closestIndex = 0;
+        let minDiff = Infinity;
+        for (let i = 0; i < metadata.times.length; i++) {
+            const diff = Math.abs(metadata.times[i] - targetOffset);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = i;
+            }
+        }
+        currentTimeIndex = closestIndex;
+        
         timeSlider.value = currentTimeIndex;
         drawSliderTicks();
         updateTimeStepDisplay();
     }
     
     clearRadarLayers();
+    setupRadarSourceAndLayer();
     updateRadarOverlay();
     
     // Update hover panel label
     const hoverLabel = document.getElementById('hover-label');
     if (hoverLabel) {
-        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : 'PRECIPITATION';
+        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : (mode === 'wind' ? '10M WIND' : 'PRECIPITATION');
     }
     
     // Update hover panel & trend chart if open

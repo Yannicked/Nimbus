@@ -89,6 +89,7 @@
                 <div class="layer-selector" data-active="0">
                     <button class="layer-btn active" data-mode="rain" title="Precipitation Radar"><i class="fa-solid fa-cloud-showers-heavy"></i> Rain</button>
                     <button class="layer-btn" data-mode="temp" title="2m Temperature"><i class="fa-solid fa-temperature-half"></i> Temp</button>
+                    <button class="layer-btn" data-mode="wind" title="10m Wind"><i class="fa-solid fa-wind"></i> Wind</button>
                 </div>
 
                 <!-- Quick View Selector -->
@@ -180,6 +181,21 @@
                         <span>20</span>
                         <span>30</span>
                         <span>35+</span>
+                    </div>
+                </div>
+
+                <!-- Wind Legend Panel -->
+                <div id="legend-wind" class="legend-container hidden">
+                    <label class="section-label">10m Wind Speed (m/s / Bft)</label>
+                    <div class="legend-bar wind-gradient"></div>
+                    <div class="legend-labels">
+                        <span>0 (0)</span>
+                        <span>2 (2)</span>
+                        <span>5 (3)</span>
+                        <span>10 (5)</span>
+                        <span>15 (7)</span>
+                        <span>20 (8)</span>
+                        <span>25+ (10)</span>
                     </div>
                 </div>
             </div>
