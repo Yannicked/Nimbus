@@ -8,154 +8,64 @@ export class WebGLWindLayer {
         this.id = 'wind-webgl-layer';
         this.type = 'custom';
         this.renderingMode = '2d';
+
+        // GPU Simulation Settings
+        this.numParticles = 2048;
+        this.trailLength = 48;
+        this.currentStateIndex = 0;
+
+        // WebGL resources owned by this layer
+        this.stateTextures = [null, null];
+        this.stateFBOs = [null, null];
+        this.updateProgram = null;
+        this.quadBuffer = null;
+        this.particleUVBuffer = null;
     }
 
-    // Update Wind Pixel Data cache from loaded PNG image
+    // Keep this for MapLibre/index.js callbacks, but make it CPU-overhead-free
     updateWindPixelData(img) {
-        console.log("Extracting wind pixel data for CPU simulation...");
-        const canvas = document.createElement('canvas');
-        canvas.width = 700;
-        canvas.height = 1530;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const imageData = ctx.getImageData(0, 0, 700, 1530);
-        state.windPixelData = imageData.data;
+        state.windPixelData = true;
     }
 
-    // Sample u and v velocities at a Mercator coordinate
     getWindVelocity(mx, my) {
-        if (!state.windPixelData) return [0, 0];
-        
-        // Bounding box: MERCATOR_LEFT: 0.0, MERCATOR_RIGHT: 1210000.0, MERCATOR_BOTTOM: 6250000.0, MERCATOR_TOP: 7560000.0
-        const col = Math.floor((mx - 0.0) / 1210000.0 * 700);
-        const row = Math.floor((7560000.0 - my) / (7560000.0 - 6250000.0) * 765);
-        
-        if (col < 0 || col >= 700 || row < 0 || row >= 765) {
-            return [0, 0];
-        }
-        
-        // Sample u (top half)
-        const idx_u = (row * 700 + col) * 4;
-        const r_u = state.windPixelData[idx_u];
-        const g_u = state.windPixelData[idx_u + 1];
-        const raw_u = r_u * 256 + g_u;
-        if (raw_u >= 65535 || raw_u === 0) return [0, 0];
-        const u = raw_u / 100.0 - 100.0;
-        
-        // Sample v (bottom half)
-        const idx_v = (((row + 765) * 700) + col) * 4;
-        const r_v = state.windPixelData[idx_v];
-        const g_v = state.windPixelData[idx_v + 1];
-        const raw_v = r_v * 256 + g_v;
-        if (raw_v >= 65535 || raw_v === 0) return [0, 0];
-        const v = raw_v / 100.0 - 100.0;
-        
-        return [u, v];
+        return [0, 0]; // No longer used for CPU particle rendering
     }
 
-    // Generate a random particle
-    randomParticle() {
-        const mx = Math.random() * 1210000.0;
-        const my = 6250000.0 + Math.random() * (7560000.0 - 6250000.0);
-        const maxAge = 150 + Math.random() * 150;
-        const age = Math.random() * maxAge;
-        const history = [];
-        for (let i = 0; i < state.TRAIL_LENGTH; i++) {
-            history.push({ mx: mx, my: my });
-        }
-        return {
-            mx: mx,
-            my: my,
-            age: age,
-            maxAge: maxAge,
-            history: history,
-            activeLength: 1,
-            lastBreadcrumb: { mx: mx, my: my }
-        };
-    }
-
-    // Reset particle properties in place to avoid GC churn
-    resetParticle(p) {
-        const mx = Math.random() * 1210000.0;
-        const my = 6250000.0 + Math.random() * (7560000.0 - 6250000.0);
-        const maxAge = 150 + Math.random() * 150;
-        
-        p.mx = mx;
-        p.my = my;
-        p.age = 0;
-        p.maxAge = maxAge;
-        p.activeLength = 1;
-        p.lastBreadcrumb.mx = mx;
-        p.lastBreadcrumb.my = my;
-        
-        for (let i = 0; i < state.TRAIL_LENGTH; i++) {
-            p.history[i].mx = mx;
-            p.history[i].my = my;
-        }
-    }
-
-    // Initialize the particle list
     initParticles() {
-        state.particles = [];
-        for (let i = 0; i < state.maxParticles; i++) {
-            state.particles.push(this.randomParticle());
-        }
+        // No-op on CPU since we initialize fully on GPU inside onAdd
     }
 
-    // Update particle positions based on wind velocities
-    updateParticles(dt, minDistance) {
-        const speedFactor = 2.5; // Controls the movement speed of particles
-        
-        for (let i = 0; i < state.particles.length; i++) {
-            const p = state.particles[i];
-            p.age += dt * 60; // Age in frames
-            
-            if (p.age >= p.maxAge) {
-                this.resetParticle(p);
-                continue;
-            }
-            
-            const [u, v] = this.getWindVelocity(p.mx, p.my);
-            
-            // Update positions using velocity (meters per second)
-            p.mx += u * dt * speedFactor * 1200.0;
-            p.my += v * dt * speedFactor * 1200.0;
-            
-            // Bounds checking
-            if (p.mx < 0.0 || p.mx > 1210000.0 || p.my < 6250000.0 || p.my > 7560000.0) {
-                this.resetParticle(p);
-                continue;
-            }
-            
-            // Overwrite the head position to the current position
-            p.history[0] = { mx: p.mx, my: p.my };
-            
-            // Push a new trail point if the head has moved far enough from the last recorded breadcrumb
-            const dx = p.mx - p.lastBreadcrumb.mx;
-            const dy = p.my - p.lastBreadcrumb.my;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            
-            if (dist >= minDistance) {
-                p.history.splice(1, 0, { mx: p.mx, my: p.my });
-                p.activeLength = Math.min(p.activeLength + 1, state.TRAIL_LENGTH);
-                p.lastBreadcrumb = { mx: p.mx, my: p.my };
-                if (p.history.length > state.TRAIL_LENGTH) {
-                    p.history.pop();
-                }
-            }
-            
-            // Collapse unused history points to the head position so they don't form a dot at the start
-            for (let j = p.activeLength; j < state.TRAIL_LENGTH; j++) {
-                p.history[j] = { mx: p.mx, my: p.my };
-            }
+    // Helper to compile shaders and link program
+    _createProgram(gl, vsSource, fsSource) {
+        const vs = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vs, vsSource);
+        gl.compileShader(vs);
+        if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+            console.error("Shader VS compile error:", gl.getShaderInfoLog(vs));
         }
+
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, fsSource);
+        gl.compileShader(fs);
+        if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+            console.error("Shader FS compile error:", gl.getShaderInfoLog(fs));
+        }
+
+        const program = gl.createProgram();
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error("Program link error:", gl.getProgramInfoLog(program));
+        }
+        return program;
     }
 
     onAdd(mapInstance, gl) {
         state.glContext = gl;
-        console.log("Initializing WebGL Wind Layer shaders and buffers...");
-        
-        // 1. Compile background color shader
+        console.log("Initializing WebGL Wind Layer fully on GPU...");
+
+        // 1. Compile background heat map overlay shader
         const vertexShaderSource = `
             attribute vec2 a_position;
             attribute vec2 a_texcoord;
@@ -166,7 +76,7 @@ export class WebGLWindLayer {
                 v_texcoord = a_texcoord;
             }
         `;
-        
+
         const fragmentShaderSource = `
             precision mediump float;
             varying vec2 v_texcoord;
@@ -203,11 +113,9 @@ export class WebGLWindLayer {
             }
             
             void main() {
-                // Avoid border/interpolation artifacts by clamping coordinates to pixel centers
                 float clamped_x = 0.5 / 700.0 + v_texcoord.x * (699.0 / 700.0);
                 float clamped_y = 0.5 / 765.0 + v_texcoord.y * (764.0 / 765.0);
                 
-                // Top half: u-component, Bottom half: v-component
                 vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
                 vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
                 
@@ -233,45 +141,218 @@ export class WebGLWindLayer {
                 gl_FragColor = vec4(c.rgb, c.a * u_opacity);
             }
         `;
-        
-        function compileShader(source, type) {
-            const shader = gl.createShader(type);
-            gl.shaderSource(shader, source);
-            gl.compileShader(shader);
-            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                console.error("Wind shader compilation error:", gl.getShaderInfoLog(shader));
-            }
-            return shader;
-        }
-        
-        const vs = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
-        const fs = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
-        
-        state.windProgram = gl.createProgram();
-        gl.attachShader(state.windProgram, vs);
-        gl.attachShader(state.windProgram, fs);
-        gl.linkProgram(state.windProgram);
-        if (!gl.getProgramParameter(state.windProgram, gl.LINK_STATUS)) {
-            console.error("Wind program linking error:", gl.getProgramInfoLog(state.windProgram));
-        }
-        
-        // 2. Compile particle (arrows) shader program
-        const particleVsSource = `
+
+        state.windProgram = this._createProgram(gl, vertexShaderSource, fragmentShaderSource);
+
+        // 2. Compile GPU simulation update program
+        const updateVsSource = `
             attribute vec2 a_position;
-            attribute float a_fade;
-            attribute float a_trail;
-            varying float v_fade;
-            varying float v_trail;
-            uniform mat4 u_matrix;
-            uniform float u_point_size;
+            varying vec2 v_texcoord;
             void main() {
-                gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
-                gl_PointSize = u_point_size * (0.3 + 0.7 * a_trail);
-                v_fade = a_fade;
-                v_trail = a_trail;
+                gl_Position = vec4(a_position, 0.0, 1.0);
+                v_texcoord = a_position * 0.5 + 0.5;
             }
         `;
-        
+
+        const updateFsSource = `
+            precision mediump float;
+            varying vec2 v_texcoord;
+            uniform sampler2D u_state_texture;
+            uniform sampler2D u_wind_texture;
+            uniform float u_dt;
+            uniform float u_speed_factor;
+            uniform float u_rand_seed;
+            uniform vec2 u_tex_size;
+
+             float rand(vec2 co) {
+                 return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+             }
+
+             float rand2(vec2 co) {
+                 return fract(sin(dot(co, vec2(43.2312, 113.8213))) * 43758.5453);
+             }
+
+            float unpack12_X(vec4 color) {
+                float r = floor(color.r * 255.0 + 0.5);
+                float g = floor(color.g * 255.0 + 0.5);
+                float hi = r;
+                float lo = floor(g / 16.0);
+                return (hi * 16.0 + lo) / 4095.0;
+            }
+
+            float unpack12_Y(vec4 color) {
+                float g = floor(color.g * 255.0 + 0.5);
+                float b = floor(color.b * 255.0 + 0.5);
+                float hi = b;
+                float lo = mod(g, 16.0);
+                return (hi * 16.0 + lo) / 4095.0;
+            }
+
+            vec4 pack12(float x, float y, float age) {
+                float x_val = floor(x * 4095.0 + 0.5);
+                float y_val = floor(y * 4095.0 + 0.5);
+                
+                float x_hi = floor(x_val / 16.0);
+                float x_lo = mod(x_val, 16.0);
+                
+                float y_hi = floor(y_val / 16.0);
+                float y_lo = mod(y_val, 16.0);
+                
+                float r = x_hi / 255.0;
+                float g = (x_lo * 16.0 + y_lo) / 255.0;
+                float b = y_hi / 255.0;
+                float a = age;
+                
+                return vec4(r, g, b, a);
+            }
+
+            void main() {
+                vec2 pixel = v_texcoord * u_tex_size;
+                float col = floor(pixel.x);
+                float row = floor(pixel.y);
+
+                if (row == 0.0) {
+                    // Head particle update
+                    vec2 head_uv = vec2((col + 0.5) / u_tex_size.x, 0.5 / u_tex_size.y);
+                    vec4 state_col = texture2D(u_state_texture, head_uv);
+
+                    float x = unpack12_X(state_col);
+                    float y = unpack12_Y(state_col);
+                    float age = state_col.a;
+
+                    bool reset = false;
+                    if (age >= 0.99 || age <= 0.0) {
+                        reset = true;
+                    }
+
+                    // Re-add a very small continuous random drop rate (0.1% per frame) to gently dissolve long-term sinks/clustering
+                    float drop_rand = rand(vec2(col / u_tex_size.x, u_rand_seed + 9.876));
+                    if (drop_rand < 0.0001) {
+                        reset = true;
+                    }
+
+                    float clamped_x = 0.5 / 700.0 + x * (699.0 / 700.0);
+                    float clamped_y = 0.5 / 765.0 + (1.0 - y) * (764.0 / 765.0);
+
+                    vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
+                    vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
+
+                    vec4 tex_u = texture2D(u_wind_texture, texcoord_u);
+                    vec4 tex_v = texture2D(u_wind_texture, texcoord_v);
+
+                    float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
+                    float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
+
+                    if (u_raw >= 65535.0 || v_raw >= 65535.0 || u_raw == 0.0 || v_raw == 0.0) {
+                        reset = true;
+                    }
+
+                    if (reset) {
+                        float rx = rand(vec2(col / u_tex_size.x, u_rand_seed));
+                        float ry = rand2(vec2(col / u_tex_size.x, u_rand_seed));
+                        float rand_age = rand(vec2(rx, ry)) * 0.5;
+                        gl_FragColor = pack12(rx, ry, rand_age);
+                    } else {
+                        float u = u_raw / 100.0 - 100.0;
+                        float v = v_raw / 100.0 - 100.0;
+
+                        float dx_norm = (u * u_dt * u_speed_factor * 1200.0) / 1210000.0;
+                        float dy_norm = -(v * u_dt * u_speed_factor * 1200.0) / 1310000.0;
+
+                        x += dx_norm*5.0;
+                        y += dy_norm*5.0;
+
+                        if (x < 0.0 || x > 1.0 || y < 0.0 || y > 1.0) {
+                            float rx = rand(vec2(col / u_tex_size.x, u_rand_seed + 1.123));
+                            float ry = rand2(vec2(col / u_tex_size.x, u_rand_seed + 2.345));
+                            gl_FragColor = pack12(rx, ry, 0.0);
+                        } else {
+                            float max_age_frames = 400.0 + rand(vec2(col / u_tex_size.x, 7.89)) * 400.0;
+                            float age_step = (u_dt * 60.0) / max_age_frames;
+                            age += age_step;
+                            gl_FragColor = pack12(x, y, age);
+                        }
+                    }
+                } else {
+                    // Shift trail history (copy previous row)
+                    vec2 prev_row_uv = vec2((col + 0.5) / u_tex_size.x, (row - 0.5) / u_tex_size.y);
+                    gl_FragColor = texture2D(u_state_texture, prev_row_uv);
+                }
+            }
+        `;
+
+        this.updateProgram = this._createProgram(gl, updateVsSource, updateFsSource);
+
+        // 3. Compile particle rendering program
+        const particleVsSource = `
+            attribute vec2 a_particle_uv;
+            varying float v_fade;
+            varying float v_trail;
+            uniform sampler2D u_state_texture;
+            uniform sampler2D u_wind_texture;
+            uniform mat4 u_matrix;
+            uniform float u_point_size;
+
+            float unpack12_X(vec4 color) {
+                float r = floor(color.r * 255.0 + 0.5);
+                float g = floor(color.g * 255.0 + 0.5);
+                float hi = r;
+                float lo = floor(g / 16.0);
+                return (hi * 16.0 + lo) / 4095.0;
+            }
+
+            float unpack12_Y(vec4 color) {
+                float g = floor(color.g * 255.0 + 0.5);
+                float b = floor(color.b * 255.0 + 0.5);
+                float hi = b;
+                float lo = mod(g, 16.0);
+                return (hi * 16.0 + lo) / 4095.0;
+            }
+
+            void main() {
+                vec4 state_col = texture2D(u_state_texture, a_particle_uv);
+                
+                float x_norm = unpack12_X(state_col);
+                float y_norm = unpack12_Y(state_col);
+                float age = state_col.a;
+
+                float mx = x_norm * 1210000.0;
+                float my = 7560000.0 - y_norm * 1310000.0;
+
+                const float MAP_LIMIT = 20037508.342789244;
+                float ux = (mx + MAP_LIMIT) / (2.0 * MAP_LIMIT);
+                float uy = (MAP_LIMIT - my) / (2.0 * MAP_LIMIT);
+
+                gl_Position = u_matrix * vec4(ux, uy, 0.0, 1.0);
+                
+                // Sample wind speed to fade out stationary particles smoothly
+                float clamped_x = 0.5 / 700.0 + x_norm * (699.0 / 700.0);
+                float clamped_y = 0.5 / 765.0 + (1.0 - y_norm) * (764.0 / 765.0);
+
+                vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
+                vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
+
+                vec4 tex_u = texture2D(u_wind_texture, texcoord_u);
+                vec4 tex_v = texture2D(u_wind_texture, texcoord_v);
+
+                float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
+                float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
+
+                float speed = 0.0;
+                if (u_raw < 65535.0 && v_raw < 65535.0 && u_raw > 0.0 && v_raw > 0.0) {
+                    float u = u_raw / 100.0 - 100.0;
+                    float v = v_raw / 100.0 - 100.0;
+                    speed = sqrt(u * u + v * v);
+                }
+
+                float speed_fade = smoothstep(0.5, 2.0, speed);
+                v_fade = smoothstep(0.0, 0.45, age) * smoothstep(1.0, 0.55, age) * speed_fade;
+                v_trail = 1.0 - a_particle_uv.y;
+
+                gl_PointSize = u_point_size * (0.3 + 0.7 * v_trail);
+            }
+        `;
+
         const particleFsSource = `
             precision mediump float;
             varying float v_fade;
@@ -289,31 +370,22 @@ export class WebGLWindLayer {
                 gl_FragColor = vec4(1.0, 1.0, 1.0, opacity);
             }
         `;
-        
-        const pVs = compileShader(particleVsSource, gl.VERTEX_SHADER);
-        const pFs = compileShader(particleFsSource, gl.FRAGMENT_SHADER);
-        
-        state.particleProgram = gl.createProgram();
-        gl.attachShader(state.particleProgram, pVs);
-        gl.attachShader(state.particleProgram, pFs);
-        gl.linkProgram(state.particleProgram);
-        if (!gl.getProgramParameter(state.particleProgram, gl.LINK_STATUS)) {
-            console.error("Particle program linking error:", gl.getProgramInfoLog(state.particleProgram));
-        }
-        
-        // 3. Set up Mercator quad buffers
+
+        state.particleProgram = this._createProgram(gl, particleVsSource, particleFsSource);
+
+        // 4. Set up Mercator quad buffers (background speed field overlay)
         const MAP_LIMIT = 20037508.342789244;
         function toMerc(x, y) {
             const ux = (x + MAP_LIMIT) / (2.0 * MAP_LIMIT);
             const uy = (MAP_LIMIT - y) / (2.0 * MAP_LIMIT);
             return [ux, uy];
         }
-        
+
         const BL = toMerc(0.0, 6250000.0);
         const BR = toMerc(1210000.0, 6250000.0);
         const TR = toMerc(1210000.0, 7560000.0);
         const TL = toMerc(0.0, 7560000.0);
-        
+
         const vertices = new Float32Array([
             BL[0], BL[1], // SW
             BR[0], BR[1], // SE
@@ -322,11 +394,11 @@ export class WebGLWindLayer {
             BR[0], BR[1], // SE
             TR[0], TR[1]  // NE
         ]);
-        
+
         state.windPositionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, state.windPositionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-        
+
         const texcoords = new Float32Array([
             0, 0, // BL
             1, 0, // BR
@@ -335,42 +407,104 @@ export class WebGLWindLayer {
             1, 0, // BR
             1, 1  // TR
         ]);
-        
+
         state.windTexcoordBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, state.windTexcoordBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.STATIC_DRAW);
-        
-        // 4. Set up dynamic buffer for particles
-        state.particleBuffer = gl.createBuffer();
-        
-        // Seed particles on startup
-        this.initParticles();
+
+        // 5. Create screen-aligned quad buffer for FBO updates
+        const quadVertices = new Float32Array([
+            -1, -1,
+             1, -1,
+            -1,  1,
+            -1,  1,
+             1, -1,
+             1,  1
+        ]);
+        this.quadBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, quadVertices, gl.STATIC_DRAW);
+
+        // 6. Set up static particle lookup coordinate buffer (UVs)
+        const uvData = new Float32Array(this.numParticles * this.trailLength * 2);
+        let idx = 0;
+        for (let col = 0; col < this.numParticles; col++) {
+            for (let row = 0; row < this.trailLength; row++) {
+                uvData[idx++] = (col + 0.5) / this.numParticles;
+                uvData[idx++] = (row + 0.5) / this.trailLength;
+            }
+        }
+        this.particleUVBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.particleUVBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, uvData, gl.STATIC_DRAW);
+
+        // 7. Initialize Ping-Pong FBOs & State textures
+        function pack12_JS(x, y, age) {
+            const x_val = Math.floor(x * 4095.0 + 0.5);
+            const y_val = Math.floor(y * 4095.0 + 0.5);
+            
+            const x_hi = Math.floor(x_val / 16.0);
+            const x_lo = x_val % 16;
+            
+            const y_hi = Math.floor(y_val / 16.0);
+            const y_lo = y_val % 16;
+            
+            const r = x_hi;
+            const g = (x_lo * 16) + y_lo;
+            const b = y_hi;
+            const a = Math.floor(age * 255.0 + 0.5);
+            
+            return [r, g, b, a];
+        }
+
+        const data = new Uint8Array(this.numParticles * this.trailLength * 4);
+        for (let col = 0; col < this.numParticles; col++) {
+            const x = Math.random();
+            const y = Math.random();
+            const age = Math.random() * 0.8;
+            
+            const [r, g, b, a] = pack12_JS(x, y, age);
+            for (let row = 0; row < this.trailLength; row++) {
+                const pixelIdx = (row * this.numParticles + col) * 4;
+                data[pixelIdx]     = r;
+                data[pixelIdx + 1] = g;
+                data[pixelIdx + 2] = b;
+                data[pixelIdx + 3] = a;
+            }
+        }
+
+        for (let i = 0; i < 2; i++) {
+            this.stateTextures[i] = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[i]);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.numParticles, this.trailLength, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+            this.stateFBOs[i] = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFBOs[i]);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.stateTextures[i], 0);
+        }
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
         state.lastAnimTime = performance.now();
     }
-    
+
     render(gl, matrix) {
-        if (!state.metadata || !state.windProgram || !state.particleProgram) return;
-        
+        if (!state.metadata || !state.windProgram || !state.particleProgram || !this.updateProgram) return;
+
         const timeVal = state.metadata.times[state.currentTimeIndex];
-        const texture = getOrLoadTexture(gl, timeVal);
-        if (!texture) return; // Wait for texture load
-        
-        // 1. Update Particle positions on CPU
+        const windTexture = getOrLoadTexture(gl, timeVal);
+        if (!windTexture) return; // Wait for texture load
+
         const now = performance.now();
         let dt = (now - state.lastAnimTime) / 1000.0;
-        if (dt > 0.1) dt = 0.1; // Cap dt to prevent warp jumps
+        if (dt > 0.1) dt = 0.1;
         state.lastAnimTime = now;
-        
-        const zoom = state.map ? state.map.getZoom() : 6;
-        const lat = 52.0;
-        const metersPerPixel = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
-        const minDistance = 1.2 * metersPerPixel;
-        
-        if (state.windPixelData) {
-            this.updateParticles(dt, minDistance);
-        }
-        
-        // Disable depth test
+
         const depthTestEnabled = gl.isEnabled(gl.DEPTH_TEST);
         if (depthTestEnabled) {
             gl.disable(gl.DEPTH_TEST);
@@ -378,119 +512,135 @@ export class WebGLWindLayer {
         if (gl.bindVertexArray) {
             gl.bindVertexArray(null);
         }
-        
+
         // -------------------------------------------------------------
-        // Step A: Draw Background Vector Speed Field Overlay
+        // Step A: GPU Simulation Update Pass (Ping-Pong FBO)
+        // -------------------------------------------------------------
+        const blendEnabled = gl.isEnabled(gl.BLEND);
+        if (blendEnabled) {
+            gl.disable(gl.BLEND);
+        }
+
+        const srcTex = this.stateTextures[this.currentStateIndex];
+        const dstFBO = this.stateFBOs[1 - this.currentStateIndex];
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, dstFBO);
+        gl.viewport(0, 0, this.numParticles, this.trailLength);
+
+        gl.useProgram(this.updateProgram);
+
+        // Bind update quad position attribute
+        const aUpdatePos = gl.getAttribLocation(this.updateProgram, 'a_position');
+        gl.enableVertexAttribArray(aUpdatePos);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+        gl.vertexAttribPointer(aUpdatePos, 2, gl.FLOAT, false, 0, 0);
+
+        // Set state textures
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, srcTex);
+        gl.uniform1i(gl.getUniformLocation(this.updateProgram, 'u_state_texture'), 0);
+
+        // Set wind velocity texture
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, windTexture);
+        gl.uniform1i(gl.getUniformLocation(this.updateProgram, 'u_wind_texture'), 1);
+
+        // Set update uniforms
+        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_dt'), dt);
+        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_speed_factor'), 2.5);
+        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_rand_seed'), Math.random());
+        gl.uniform2f(gl.getUniformLocation(this.updateProgram, 'u_tex_size'), this.numParticles, this.trailLength);
+
+        // Execute update pass
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        // Clean up update pass
+        gl.disableVertexAttribArray(aUpdatePos);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        // Swap ping-pong FBOs
+        this.currentStateIndex = 1 - this.currentStateIndex;
+        const currentUpdatedTex = this.stateTextures[this.currentStateIndex];
+
+        // Restore original screen viewport size
+        gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+        // Restore blend state if it was enabled
+        if (blendEnabled) {
+            gl.enable(gl.BLEND);
+        }
+
+        // -------------------------------------------------------------
+        // Step B: Draw Background Vector Speed Field Overlay
         // -------------------------------------------------------------
         gl.useProgram(state.windProgram);
-        
-        // Bind position quad attributes
+
         const aPosition = gl.getAttribLocation(state.windProgram, 'a_position');
         gl.enableVertexAttribArray(aPosition);
         gl.bindBuffer(gl.ARRAY_BUFFER, state.windPositionBuffer);
         gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
-        
+
         const aTexcoord = gl.getAttribLocation(state.windProgram, 'a_texcoord');
         gl.enableVertexAttribArray(aTexcoord);
         gl.bindBuffer(gl.ARRAY_BUFFER, state.windTexcoordBuffer);
         gl.vertexAttribPointer(aTexcoord, 2, gl.FLOAT, false, 0, 0);
-        
-        // Set uniforms
+
         gl.uniformMatrix4fv(gl.getUniformLocation(state.windProgram, 'u_matrix'), false, matrix);
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.bindTexture(gl.TEXTURE_2D, windTexture);
         gl.uniform1i(gl.getUniformLocation(state.windProgram, 'u_texture'), 0);
-        
+
         const opacity = parseFloat(DOM.opacitySlider.value) / 100;
         gl.uniform1f(gl.getUniformLocation(state.windProgram, 'u_opacity'), opacity);
-        
-        // Blend mode configuration
+
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        
+
         gl.drawArrays(gl.TRIANGLES, 0, 6);
-        
+
         gl.disableVertexAttribArray(aPosition);
         gl.disableVertexAttribArray(aTexcoord);
-        
+
         // -------------------------------------------------------------
-        // Step B: Draw Moving Particles (Arrows) on Top
+        // Step C: Draw Particle Trails from GPU State Texture
         // -------------------------------------------------------------
         gl.useProgram(state.particleProgram);
-        
-        // Helper to convert Mercator meters to normalized coordinate space [0, 1]
-        const MAP_LIMIT = 20037508.342789244;
-        function toMercNormalized(x, y) {
-            const ux = (x + MAP_LIMIT) / (2.0 * MAP_LIMIT);
-            const uy = (MAP_LIMIT - y) / (2.0 * MAP_LIMIT);
-            return [ux, uy];
-        }
-        
-        // Pack active particle variables: positions, fade, trail factor
-        const bufferData = new Float32Array(state.maxParticles * state.TRAIL_LENGTH * 4);
-        let offset = 0;
-        for (let i = 0; i < state.maxParticles; i++) {
-            const p = state.particles[i];
-            
-            // Calculate fade envelope (sinusoidal fade in/out)
-            const progress = Math.min(Math.max(p.age / p.maxAge, 0.0), 1.0);
-            const fade = Math.sin(progress * Math.PI);
-            
-            for (let j = 0; j < state.TRAIL_LENGTH; j++) {
-                const pos = p.history[j];
-                const [ux, uy] = toMercNormalized(pos.mx, pos.my);
-                const trailFactor = 1.0 - (j / (state.TRAIL_LENGTH - 1));
-                
-                bufferData[offset++] = ux;
-                bufferData[offset++] = uy;
-                bufferData[offset++] = fade;
-                bufferData[offset++] = trailFactor;
-            }
-        }
-        
-        // Upload dynamic particle buffer data to VBO
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.particleBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, bufferData, gl.DYNAMIC_DRAW);
-        
-        // Set attributes
-        const stride = 16; // 4 floats * 4 bytes/float = 16
-        const aPartPos = gl.getAttribLocation(state.particleProgram, 'a_position');
-        gl.enableVertexAttribArray(aPartPos);
-        gl.vertexAttribPointer(aPartPos, 2, gl.FLOAT, false, stride, 0);
-        
-        const aPartFade = gl.getAttribLocation(state.particleProgram, 'a_fade');
-        gl.enableVertexAttribArray(aPartFade);
-        gl.vertexAttribPointer(aPartFade, 1, gl.FLOAT, false, stride, 8);
-        
-        const aPartTrail = gl.getAttribLocation(state.particleProgram, 'a_trail');
-        gl.enableVertexAttribArray(aPartTrail);
-        gl.vertexAttribPointer(aPartTrail, 1, gl.FLOAT, false, stride, 12);
-        
-        // Set uniforms
+
+        const aPartUV = gl.getAttribLocation(state.particleProgram, 'a_particle_uv');
+        gl.enableVertexAttribArray(aPartUV);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.particleUVBuffer);
+        gl.vertexAttribPointer(aPartUV, 2, gl.FLOAT, false, 0, 0);
+
         gl.uniformMatrix4fv(gl.getUniformLocation(state.particleProgram, 'u_matrix'), false, matrix);
-        // Base streak point size: 7.5px for the head
-        gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_point_size'), 7.5);
+
+        // Bind current state texture to look up coordinates in vertex shader
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, currentUpdatedTex);
+        gl.uniform1i(gl.getUniformLocation(state.particleProgram, 'u_state_texture'), 0);
+
+        // Bind wind texture to look up velocity/speed in vertex shader
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, windTexture);
+        gl.uniform1i(gl.getUniformLocation(state.particleProgram, 'u_wind_texture'), 1);
+
+        gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_point_size'), 5.5);
         gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_arrow_opacity'), 0.85);
-        
-        // Draw particle arrays
-        gl.drawArrays(gl.POINTS, 0, state.maxParticles * state.TRAIL_LENGTH);
-        
-        // Clean attributes
-        gl.disableVertexAttribArray(aPartPos);
-        gl.disableVertexAttribArray(aPartFade);
-        gl.disableVertexAttribArray(aPartTrail);
+
+        gl.drawArrays(gl.POINTS, 0, this.numParticles * this.trailLength);
+
+        gl.disableVertexAttribArray(aPartUV);
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
-        
+
         if (depthTestEnabled) {
             gl.enable(gl.DEPTH_TEST);
         }
-        
-        // Trigger repaint to run animation loop if Wind is the active layer
+
+        // Trigger map repaint to run the GPU animation loop continuously
         if (state.currentLayerMode === 'wind' && state.map) {
             state.map.triggerRepaint();
         }
     }
-    
+
     onRemove(map, gl) {
         if (state.windProgram) {
             gl.deleteProgram(state.windProgram);
@@ -500,6 +650,10 @@ export class WebGLWindLayer {
             gl.deleteProgram(state.particleProgram);
             state.particleProgram = null;
         }
+        if (this.updateProgram) {
+            gl.deleteProgram(this.updateProgram);
+            this.updateProgram = null;
+        }
         if (state.windPositionBuffer) {
             gl.deleteBuffer(state.windPositionBuffer);
             state.windPositionBuffer = null;
@@ -508,9 +662,23 @@ export class WebGLWindLayer {
             gl.deleteBuffer(state.windTexcoordBuffer);
             state.windTexcoordBuffer = null;
         }
-        if (state.particleBuffer) {
-            gl.deleteBuffer(state.particleBuffer);
-            state.particleBuffer = null;
+        if (this.quadBuffer) {
+            gl.deleteBuffer(this.quadBuffer);
+            this.quadBuffer = null;
+        }
+        if (this.particleUVBuffer) {
+            gl.deleteBuffer(this.particleUVBuffer);
+            this.particleUVBuffer = null;
+        }
+        for (let i = 0; i < 2; i++) {
+            if (this.stateTextures[i]) {
+                gl.deleteTexture(this.stateTextures[i]);
+                this.stateTextures[i] = null;
+            }
+            if (this.stateFBOs[i]) {
+                gl.deleteFramebuffer(this.stateFBOs[i]);
+                this.stateFBOs[i] = null;
+            }
         }
     }
 }
