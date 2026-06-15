@@ -7,7 +7,7 @@ use crate::constants::{
 };
 use crate::models::{EnsembleStat, FileUrlResponse, Metadata, reduce_ensemble};
 use crate::state::AppState;
-use crate::rendering::render_data_png_bytes;
+use crate::rendering::render_data_webp_bytes;
 
 /// Scans a directory for the most-recently-modified `.nc` file and returns its path.
 pub fn find_latest_nc_file(dir: &str) -> Option<String> {
@@ -176,7 +176,7 @@ pub fn compute_raw_slice(
     }
 }
 
-/// Precalculates all packed PNG data in the background.
+/// Precalculates all packed WebP data in the background.
 pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
     let target_version = meta.version;
     let file_path = state.file_path.read().await.clone();
@@ -326,7 +326,7 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             state.grid_cache.insert((ens_num.to_string(), time_val), Arc::new(slice));
         }
 
-        // Render PNGs for stats (med, max, prob)
+        // Render WebPs for stats (med, max, prob)
         let render_items = vec![
             ("med".to_string(), arc_med),
             ("max".to_string(), arc_max),
@@ -342,10 +342,10 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
-                let png_bytes = tokio::task::spawn_blocking(move || {
-                    render_data_png_bytes(&slice, &state_clone_for_blocking.projection_lut)
+                let webp_bytes = tokio::task::spawn_blocking(move || {
+                    render_data_webp_bytes(&slice, &state_clone_for_blocking.projection_lut)
                 }).await.unwrap();
-                state_clone.data_cache.insert((ens_str_clone, time_val_clone), png_bytes);
+                state_clone.data_cache.insert((ens_str_clone, time_val_clone), webp_bytes);
             });
         }
 

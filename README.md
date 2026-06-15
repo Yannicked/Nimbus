@@ -29,7 +29,7 @@ KNMI MQTT ──► Download Pipeline ──► NetCDF on disk
 Browser ◄──── Axum HTTP Server ◄── Data Server
    │              │                     │
    │         /api/metadata         Raw grid data
-   │         /api/data/:ens/:t     as packed PNG
+   │         /api/data/:ens/:t     as packed WebP
    │         /api/value
    │         /api/timeseries
    │
@@ -77,7 +77,7 @@ Open **http://localhost:8080** in your browser.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/metadata` | Dataset dimensions, times, ensemble members |
-| `GET /api/data/:ens/:time` | Raw packed radar data PNG (high byte -> Red, low byte -> Green) |
+| `GET /api/data/:ens/:time` | Raw packed radar data WebP (high byte -> Red, low byte -> Green) |
 | `GET /api/value?ens=med&time=300&lat=52.1&lon=5.2` | Point value query |
 | `GET /api/timeseries?ens=med&lat=52.1&lon=5.2` | Full forecast time series |
 

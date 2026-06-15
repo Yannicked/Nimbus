@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::constants::NODATA;
 use crate::models::{TempForecast, TempStep, WindForecast, WindStep, FileUrlResponse};
 use crate::state::AppState;
-use crate::rendering::{render_temp_png_bytes, render_wind_png_bytes};
+use crate::rendering::{render_temp_webp_bytes, render_wind_webp_bytes};
 
 pub fn parse_run_time_from_name(filename: &str) -> Option<i64> {
     let parts: Vec<&str> = filename.split('_').collect();
@@ -330,7 +330,7 @@ pub fn cleanup_tar_files() {
     }
 }
 
-/// Precalculates all temperature forecast step PNGs in the background.
+/// Precalculates all temperature forecast step WebPs in the background.
 pub async fn precalculate_temp_data(state: Arc<AppState>) {
     let forecast_opt = state.temp_forecast.read().await;
     let forecast = match forecast_opt.as_ref() {
@@ -347,7 +347,7 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
     }
 
     println!(
-        "Starting temperature PNG precalculation for {} steps...",
+        "Starting temperature WebP precalculation for {} steps...",
         num_steps
     );
 
@@ -376,10 +376,10 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let png_bytes = tokio::task::spawn_blocking(move || {
-                render_temp_png_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
+            let webp_bytes = tokio::task::spawn_blocking(move || {
+                render_temp_webp_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
             }).await.unwrap();
-            state_clone.temp_data_cache.insert(time_key, png_bytes);
+            state_clone.temp_data_cache.insert(time_key, webp_bytes);
         });
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {
@@ -392,7 +392,7 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
         }
     }
 
-    println!("Temperature PNG precalculation tasks spawned for all {} steps.", num_steps);
+    println!("Temperature WebP precalculation tasks spawned for all {} steps.", num_steps);
 }
 
 pub async fn precalculate_wind_data(state: Arc<AppState>) {
@@ -411,7 +411,7 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
     }
 
     println!(
-        "Starting wind PNG precalculation for {} steps...",
+        "Starting wind WebP precalculation for {} steps...",
         num_steps
     );
 
@@ -438,10 +438,10 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let png_bytes = tokio::task::spawn_blocking(move || {
-                render_wind_png_bytes(&u_vals, &v_vals, &state_clone_for_blocking.wind_projection_lut)
+            let webp_bytes = tokio::task::spawn_blocking(move || {
+                render_wind_webp_bytes(&u_vals, &v_vals, &state_clone_for_blocking.wind_projection_lut)
             }).await.unwrap();
-            state_clone.wind_data_cache.insert((height_level, time_key), png_bytes);
+            state_clone.wind_data_cache.insert((height_level, time_key), webp_bytes);
         });
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {
@@ -454,5 +454,5 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
         }
     }
 
-    println!("Wind PNG precalculation tasks spawned for all {} steps.", num_steps);
+    println!("Wind WebP precalculation tasks spawned for all {} steps.", num_steps);
 }

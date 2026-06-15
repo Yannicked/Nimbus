@@ -9,7 +9,7 @@ Welcome! This document provides a comprehensive overview of the **Weer** codebas
 **Weer** is a real-time precipitation ensemble forecast, temperature, and wind viewer for the Netherlands. It connects to the KNMI Open Data platform, downloads raw datasets (NetCDF and GRIB1), processes them, serves them via a Rust-based HTTP Axum API, and renders them interactively using WebGL and MapLibre GL JS on the frontend.
 
 Key performance optimizations in this repo:
-1. **Lossless RG-Packed PNGs**: High-precision grid values (`u16` values) are packed into the Red and Green channels of standard PNG files. The browser loads these PNGs as textures and uses custom WebGL shaders to decode the values on the GPU.
+1. **Lossless RG-Packed WebPs**: High-precision grid values (`u16` values) are packed into the Red and Green channels of standard WebP files. The browser loads these WebPs as textures and uses custom WebGL shaders to decode the values on the GPU.
 2. **Precalculated Look-Up Tables (LUTs)**: Coordinate transformations (Mercator ↔ Polar Stereographic ↔ GRIB1 Lat/Lon) are heavy. The server precalculates a bilinear interpolation LUT on startup, making raw slice re-projection extremely fast.
 3. **GPU-Bound Wind Particle Simulation**: Wind particle trajectories and trails are simulated entirely on the GPU using Ping-Pong Framebuffer Objects (FBOs) and 12-bit coordinate packing.
 
@@ -36,7 +36,7 @@ Key performance optimizations in this repo:
 │                                                           ▼                                    │
 │  ┌────────────────────────┐                      ┌─────────────────┐      Precalculation       │
 │  │    Axum API Router     │◄─────────────────────┤   Data Cache    │◄─────────────────────────┐│
-│  │  (Handlers & Endpoints)│                      │  (PNG / Grid)   │                          ││
+│  │  (Handlers & Endpoints)│                      │ (WebP / Grid)   │                          ││
 │  └───────────▲────────────┘                      └─────────────────┘                          ││
 │              │                                                                                ││
 │              │ HTTP Requests                                                                  ││
@@ -48,7 +48,7 @@ Key performance optimizations in this repo:
 ┌──────────────┴────────────────────────────────────────────────────────────────────────────────┼┐
 │ Web Browser Frontend                                                                          ││
 │                                                                                                ││
-│  ┌────────────────────────┐      Load PNGs       ┌─────────────────┐                          ││
+│  ┌────────────────────────┐      Load WebPs      ┌─────────────────┐                          ││
 │  │      MapLibre GL       ├─────────────────────►│  WebGL Textures │                          ││
 │  │     Map Rendering      │   (Decode RG to u16) └────────┬────────┘                          ││
 │  └────────────────────────┘                               │                                   ││
@@ -77,7 +77,7 @@ weer/
 │   ├── mqtt.rs            # MQTT clients: subscribes to KNMI topics for real-time notifications.
 │   ├── projection.rs      # Math: Web Mercator (EPSG:3857) ↔ Polar Stereographic coordinate conversion.
 │   ├── interpolation.rs   # Interpolation: Bilinear grid mapping and LUT initialization.
-│   └── rendering.rs       # Image rendering: packing u16 grids into Red/Green channels of PNGs.
+│   └── rendering.rs       # Image rendering: packing u16 grids into Red/Green channels of WebPs.
 ├── static/
 │   ├── index.html         # Main client layout: HTML/CSS setup.
 │   ├── style.css          # Glassmorphic dark styling.
@@ -105,15 +105,15 @@ The server listens on **`http://localhost:8080`**. Below is a summary of the bac
 | Endpoint | Description |
 |---|---|
 | `GET /api/metadata` | Dimensions, timestamps, and ensemble list for precipitation. |
-| `GET /api/data/{ens}/{time}` | Serves the lossless R/G packed radar PNG for the given ensemble/time step. |
+| `GET /api/data/{ens}/{time}` | Serves the lossless R/G packed radar WebP for the given ensemble/time step. |
 | `GET /api/value` | Precipitation query at `lat`/`lon`/`time`/`ens`. Returns value in mm/h. |
 | `GET /api/timeseries` | Fetches precipitation forecast across all times at `lat`/`lon`. |
 | `GET /api/metadata/temp` | Dimensions and forecast times for temperature. |
-| `GET /api/data/temp/{time}` | Lossless R/G packed temperature PNG. |
+| `GET /api/data/temp/{time}` | Lossless R/G packed temperature WebP. |
 | `GET /api/value/temp` | Temperature query at `lat`/`lon`/`time`. Returns value in Celsius. |
 | `GET /api/timeseries/temp` | Fetches temperature forecast across all times at `lat`/`lon`. |
 | `GET /api/metadata/wind` | Dimensions, times, and height levels for wind. |
-| `GET /api/data/wind/{height}/{time}` | Lossless R/G packed wind vector PNG (double height: top `u`, bottom `v`). |
+| `GET /api/data/wind/{height}/{time}` | Lossless R/G packed wind vector WebP (double height: top `u`, bottom `v`). |
 | `GET /api/value/wind` | Wind query (u, v, speed, direction) at `lat`/`lon`/`time`/`height`. |
 | `GET /api/timeseries/wind` | Fetches wind speed/direction forecast across all times at `lat`/`lon`. |
 
@@ -123,8 +123,8 @@ The server listens on **`http://localhost:8080`**. Below is a summary of the bac
 
 ## ⚙️ Core Technical Implementations
 
-### 1. Lossless RG-Packed PNGs
-The raw coordinates/wind/temperature values are stored as high-precision floats or integers. To avoid transporting bloated raw arrays, the values are scaled into a `u16` space, split into high and low bytes, and stored in the Red and Green channels of a PNG:
+### 1. Lossless RG-Packed WebPs
+The raw coordinates/wind/temperature values are stored as high-precision floats or integers. To avoid transporting bloated raw arrays, the values are scaled into a `u16` space, split into high and low bytes, and stored in the Red and Green channels of a WebP:
 *   `pixel[0] = (val_raw >> 8) as u8` (Red = High Byte)
 *   `pixel[1] = (val_raw & 0xFF) as u8` (Green = Low Byte)
 *   `pixel[2] = 0` (Blue)
@@ -138,14 +138,12 @@ float g = tex.g * 255.0;
 float raw_val = r * 256.0 + g;
 ```
 
-### 2. Double-Height Wind PNGs
+### 2. Packed Wind WebPs
 Wind has two vector components: `u` (zonal/eastward wind) and `v` (meridional/northward wind).
-*   The backend renders a PNG of dimensions `GRID_W * (GRID_H * 2)`.
-*   The top half `[0, GRID_H]` contains the `u` values.
-*   The bottom half `[GRID_H, GRID_H * 2]` contains the `v` values.
-*   The frontend fragment shader offsets the texture lookup coordinates to sample either component:
-    *   `u` components are sampled with `y` coordinate shifted by `+0.5`.
-    *   `v` components are sampled with `y` coordinate unshifted.
+*   The backend renders a single-height WebP of dimensions `GRID_W * GRID_H`.
+*   The `u` component is packed into the Red and Green channels (Red = High Byte, Green = Low Byte).
+*   The `v` component is packed into the Blue and Alpha channels (Blue = High Byte, Alpha = Low Byte).
+*   The frontend fragment and vertex shaders sample both components simultaneously in a single texture fetch, eliminating coordinates offsets.
 
 ### 3. GPU Wind Particle Simulation (`WebGLWind.js`)
 To simulate thousands of wind particles without choking the CPU, the particles are simulated on the GPU using two textures in a Ping-Pong FBO configuration.

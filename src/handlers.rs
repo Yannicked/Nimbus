@@ -18,7 +18,7 @@ use crate::models::{
     EnsembleStat, reduce_ensemble
 };
 use crate::projection;
-use crate::rendering::{render_data_png_bytes, render_temp_png_bytes, render_wind_png_bytes};
+use crate::rendering::{render_data_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes};
 use crate::interpolation::interpolate_bilinear;
 use crate::radar::{compute_raw_slice, raw_to_value};
 
@@ -49,7 +49,7 @@ pub async fn get_data_image(
     // Check cache
     if let Some(cached_data) = state.data_cache.get(&(ens_str.clone(), time)) {
         return Ok(Response::builder()
-            .header("Content-Type", "image/png")
+            .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
             .body(axum::body::Body::from(cached_data.value().clone()))
             .unwrap());
@@ -74,22 +74,22 @@ pub async fn get_data_image(
         arc
     };
 
-    // Render data png bytes using LUT
+    // Render data webp bytes using LUT
     let state_clone = state.clone();
     let raw_slice_clone = raw_slice.clone();
-    let png_bytes = tokio::task::spawn_blocking(move || {
-        render_data_png_bytes(&raw_slice_clone, &state_clone.projection_lut)
+    let webp_bytes = tokio::task::spawn_blocking(move || {
+        render_data_webp_bytes(&raw_slice_clone, &state_clone.projection_lut)
     }).await.unwrap();
 
     // Cache results
     state
         .data_cache
-        .insert((ens_str, time), png_bytes.clone());
+        .insert((ens_str, time), webp_bytes.clone());
 
     Ok(Response::builder()
-        .header("Content-Type", "image/png")
+        .header("Content-Type", "image/webp")
         .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(png_bytes))
+        .body(axum::body::Body::from(webp_bytes))
         .unwrap())
 }
 
@@ -386,7 +386,7 @@ pub async fn get_wind_data_image(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     if let Some(cached) = state.wind_data_cache.get(&(height, time)) {
         return Ok(Response::builder()
-            .header("Content-Type", "image/png")
+            .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
             .body(axum::body::Body::from(cached.value().clone()))
             .unwrap());
@@ -415,15 +415,15 @@ pub async fn get_wind_data_image(
     let u_vals = step.u_values.clone();
     let v_vals = step.v_values.clone();
     let state_clone = state.clone();
-    let png_bytes = tokio::task::spawn_blocking(move || {
-        render_wind_png_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
+    let webp_bytes = tokio::task::spawn_blocking(move || {
+        render_wind_webp_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
     }).await.unwrap();
-    state.wind_data_cache.insert((height, time), png_bytes.clone());
+    state.wind_data_cache.insert((height, time), webp_bytes.clone());
 
     Ok(Response::builder()
-        .header("Content-Type", "image/png")
+        .header("Content-Type", "image/webp")
         .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(png_bytes))
+        .body(axum::body::Body::from(webp_bytes))
         .unwrap())
 }
 
@@ -597,7 +597,7 @@ pub async fn get_temp_data_image(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     if let Some(cached) = state.temp_data_cache.get(&time) {
         return Ok(Response::builder()
-            .header("Content-Type", "image/png")
+            .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
             .body(axum::body::Body::from(cached.value().clone()))
             .unwrap());
@@ -624,15 +624,15 @@ pub async fn get_temp_data_image(
 
     let vals = step.values.clone();
     let state_clone = state.clone();
-    let png_bytes = tokio::task::spawn_blocking(move || {
-        render_temp_png_bytes(&vals, &state_clone.temp_projection_lut)
+    let webp_bytes = tokio::task::spawn_blocking(move || {
+        render_temp_webp_bytes(&vals, &state_clone.temp_projection_lut)
     }).await.unwrap();
-    state.temp_data_cache.insert(time, png_bytes.clone());
+    state.temp_data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()
-        .header("Content-Type", "image/png")
+        .header("Content-Type", "image/webp")
         .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(png_bytes))
+        .body(axum::body::Body::from(webp_bytes))
         .unwrap())
 }
 
