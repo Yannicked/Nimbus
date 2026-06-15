@@ -420,9 +420,9 @@ pub async fn download_and_update_nc_file(
             if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "nc" {
-                        if let Some(file_stem) = path.file_stem().and_then(|n| n.to_str()) {
-                            if file_stem != filename
-                                && file_stem.starts_with("KNMI_PYSTEPS_BLEND_ENS_")
+                        if let Some(file_name_str) = path.file_name().and_then(|n| n.to_str()) {
+                            if file_name_str != filename
+                                && file_name_str.starts_with("KNMI_PYSTEPS_BLEND_ENS_")
                             {
                                 println!("Deleting old NetCDF file: {:?}", path);
                                 let _ = tokio::fs::remove_file(path).await;
