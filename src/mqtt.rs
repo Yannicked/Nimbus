@@ -12,7 +12,7 @@ use crate::harmonie::{download_and_process_combined_tar, precalculate_temp_data,
 /// When a new NetCDF file is published, it is downloaded and written to the
 /// current directory so the file watcher can pick it up.
 pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
-    let broker = "mqtt.dataplatform.knmi.nl";
+    let broker = "wss://mqtt.dataplatform.knmi.nl";
     let port = 443;
     let mqtt_password =
         std::env::var("KNMI_MQTT_PASSWORD").expect("KNMI_MQTT_PASSWORD environment variable not set!");
@@ -128,7 +128,7 @@ pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
 
 /// Spawn MQTT client to listen for HARMONIE updates from KNMI (combined temp and wind)
 pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
-    let broker = "mqtt.dataplatform.knmi.nl";
+    let broker = "wss://mqtt.dataplatform.knmi.nl";
     let port = 443;
     let mqtt_password =
         std::env::var("KNMI_MQTT_PASSWORD").expect("KNMI_MQTT_PASSWORD environment variable not set!");
