@@ -96,7 +96,7 @@ struct TempForecast {
 impl TempForecast {
     fn write_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
-        let mut f = std::fs::File::create(path)?;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
         f.write_all(b"HRMT")?;
         f.write_all(&self.reference_time.to_le_bytes())?;
         f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
@@ -109,6 +109,7 @@ impl TempForecast {
                 f.write_all(&val.to_le_bytes())?;
             }
         }
+        f.flush()?;
         Ok(())
     }
 
@@ -181,7 +182,7 @@ struct WindForecast {
 impl WindForecast {
     fn write_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
-        let mut f = std::fs::File::create(path)?;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
         f.write_all(b"HRMW")?;
         f.write_all(&self.reference_time.to_le_bytes())?;
         f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
@@ -197,6 +198,7 @@ impl WindForecast {
                 f.write_all(&val.to_le_bytes())?;
             }
         }
+        f.flush()?;
         Ok(())
     }
 
@@ -991,13 +993,13 @@ fn render_data_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
             let (fx, fy) = lut[idx];
 
             let val_raw = interpolate_bilinear(fx as f64, fy as f64, KNMI_GRID_W, KNMI_GRID_H, raw_slice);
-            let packed_val = if val_raw == NODATA { 0 } else { val_raw };
+            let (r, g, a) = if val_raw == NODATA {
+                (0, 0, 0)
+            } else {
+                ((val_raw >> 8) as u8, (val_raw & 0xFF) as u8, 255)
+            };
 
-            // Pack the u16 value into the Red (high byte) and Green (low byte) channels
-            let r = (packed_val >> 8) as u8;
-            let g = (packed_val & 0xFF) as u8;
-
-            img.put_pixel(col, row, image::Rgba([r, g, 0, 255]));
+            img.put_pixel(col, row, image::Rgba([r, g, 0, a]));
         }
     }
 
@@ -2093,12 +2095,13 @@ fn render_temp_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
             let (fx, fy) = lut[idx];
 
             let val_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, raw_slice);
-            let packed_val = if val_raw == NODATA { 0 } else { val_raw };
+            let (r, g, a) = if val_raw == NODATA {
+                (0, 0, 0)
+            } else {
+                ((val_raw >> 8) as u8, (val_raw & 0xFF) as u8, 255)
+            };
 
-            let r = (packed_val >> 8) as u8;
-            let g = (packed_val & 0xFF) as u8;
-
-            img.put_pixel(col, row, image::Rgba([r, g, 0, 255]));
+            img.put_pixel(col, row, image::Rgba([r, g, 0, a]));
         }
     }
 
@@ -2182,16 +2185,20 @@ fn render_wind_png_bytes(u_slice: &[u16], v_slice: &[u16], lut: &[(f32, f32)]) -
             let (fx, fy) = lut[idx];
 
             let u_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, u_slice);
-            let packed_u = if u_raw == NODATA { 0 } else { u_raw };
-            let r_u = (packed_u >> 8) as u8;
-            let g_u = (packed_u & 0xFF) as u8;
-            img.put_pixel(col, row, image::Rgba([r_u, g_u, 0, 255]));
+            let (r_u, g_u, a_u) = if u_raw == NODATA {
+                (0, 0, 0)
+            } else {
+                ((u_raw >> 8) as u8, (u_raw & 0xFF) as u8, 255)
+            };
+            img.put_pixel(col, row, image::Rgba([r_u, g_u, 0, a_u]));
 
             let v_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, v_slice);
-            let packed_v = if v_raw == NODATA { 0 } else { v_raw };
-            let r_v = (packed_v >> 8) as u8;
-            let g_v = (packed_v & 0xFF) as u8;
-            img.put_pixel(col, row + GRID_H, image::Rgba([r_v, g_v, 0, 255]));
+            let (r_v, g_v, a_v) = if v_raw == NODATA {
+                (0, 0, 0)
+            } else {
+                ((v_raw >> 8) as u8, (v_raw & 0xFF) as u8, 255)
+            };
+            img.put_pixel(col, row + GRID_H, image::Rgba([r_v, g_v, 0, a_v]));
         }
     }
 

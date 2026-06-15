@@ -666,7 +666,15 @@ const webglRadarLayer = {
             }
             
             void main() {
-                vec4 tex = texture2D(u_texture, v_texcoord);
+                // Avoid border/interpolation artifacts by clamping coordinates to pixel centers
+                vec2 clamped_coord = vec2(
+                    0.5 / 700.0 + v_texcoord.x * (699.0 / 700.0),
+                    0.5 / 765.0 + v_texcoord.y * (764.0 / 765.0)
+                );
+                vec4 tex = texture2D(u_texture, clamped_coord);
+                if (tex.a < 0.99) {
+                    discard;
+                }
                 float r = tex.r * 255.0;
                 float g = tex.g * 255.0;
                 float raw_val = r * 256.0 + g;
@@ -936,14 +944,22 @@ const webglWindLayer = {
             }
             
             void main() {
+                // Avoid border/interpolation artifacts by clamping coordinates to pixel centers
+                float clamped_x = 0.5 / 700.0 + v_texcoord.x * (699.0 / 700.0);
+                float clamped_y = 0.5 / 765.0 + v_texcoord.y * (764.0 / 765.0);
+                
                 // Top half: u-component, Bottom half: v-component
-                vec2 texcoord_u = vec2(v_texcoord.x, v_texcoord.y * 0.5 + 0.5);
-                vec2 texcoord_v = vec2(v_texcoord.x, v_texcoord.y * 0.5);
+                vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
+                vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
                 
                 vec4 tex_u = texture2D(u_texture, texcoord_u);
-                float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
-                
                 vec4 tex_v = texture2D(u_texture, texcoord_v);
+                
+                if (tex_u.a < 0.99 || tex_v.a < 0.99) {
+                    discard;
+                }
+                
+                float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
                 float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
                 
                 if (u_raw >= 65535.0 || v_raw >= 65535.0 || u_raw == 0.0 || v_raw == 0.0) {
