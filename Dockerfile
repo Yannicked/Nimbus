@@ -1,24 +1,32 @@
 # ==========================================
-# Stage 1: Build
+# Stage 1: Cargo Chef - Base & Planner
 # ==========================================
-FROM rust:alpine AS builder
-
-# Install build dependencies
-RUN apk add --no-cache musl-dev pkgconfig netcdf-dev hdf5-dev gcc g++ make
-
+FROM lukemathwalker/cargo-chef:latest-rust-alpine AS chef
 WORKDIR /usr/src/nimbus
 
+# Install system dependencies required for compilation
+RUN apk add --no-cache musl-dev pkgconfig netcdf-dev hdf5-dev gcc g++ make
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ==========================================
+# Stage 2: Builder - Cook dependencies & Build app
+# ==========================================
+FROM chef AS builder
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 
-# Copy manifest and code files
-COPY Cargo.toml ./
-COPY src/ ./src/
+# Copy recipe and cook dependencies
+COPY --from=planner /usr/src/nimbus/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
-# Compile the release binary
+# Copy actual source code and compile the application
+COPY . .
 RUN cargo build --release
 
 # ==========================================
-# Stage 2: Runtime
+# Stage 3: Runtime
 # ==========================================
 FROM alpine:latest
 
