@@ -1,7 +1,7 @@
 import { CONFIG } from '../config.js';
 import { state, syncStateToURL } from '../state.js';
 import { DOM } from './dom.js';
-import { updateRadarOverlay, triggerHoverQuery, clearRadarLayers, setupRadarSourceAndLayer } from '../map/index.js';
+import { updateRadarOverlay, triggerHoverQuery, clearRadarLayers, setupRadarSourceAndLayer, setupRadarSourceAndLayerRight, initMapRight, enableMapSync, disableMapSync } from '../map/index.js';
 import { showTimeseriesChart } from './chart.js';
 
 // Format relative time step
@@ -17,7 +17,6 @@ export function formatRelativeTime(seconds) {
 
 // Format absolute forecast time
 export function formatAbsoluteTime(refTimeStr, secondsOffset) {
-    // Expected refTimeStr format: "seconds since YYYY-MM-DD HH:MM:SS"
     const match = refTimeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
     if (!match) return `+${Math.round(secondsOffset / 60)} mins`;
     
@@ -64,7 +63,14 @@ export function updateTimeStepDisplay() {
 export function updateLegend() {
     if (!DOM.legendTitle || !DOM.legendBar || !DOM.legendLabels) return;
 
-    const visConfig = (state.currentEns === 'prob') ? CONFIG.radarVisualization.prob : CONFIG.radarVisualization.rate;
+    let visConfig;
+    if (state.currentEns === 'prob') {
+        visConfig = CONFIG.radarVisualization.prob;
+    } else if (state.currentEns === 'spread') {
+        visConfig = CONFIG.radarVisualization.spread;
+    } else {
+        visConfig = CONFIG.radarVisualization.rate;
+    }
     
     DOM.legendTitle.textContent = visConfig.title;
     
@@ -122,7 +128,7 @@ export function selectEnsemble(ens) {
     }
 
     // Update quick selector buttons active state and sliding indicator
-    const viewMap = { 'med': '0', 'max': '1', 'prob': '2' };
+    const viewMap = { 'med': '0', 'max': '1', 'prob': '2', 'spread': '3' };
     document.querySelectorAll('.view-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.view === ens.toString());
     });
@@ -142,7 +148,7 @@ export function selectEnsemble(ens) {
     syncStateToURL();
 }
 
-// Toggle layer mode between rain, temperature, and wind
+// Toggle layer mode between rain, temperature, solar, and wind
 export function selectLayerMode(mode) {
     if (mode === state.currentLayerMode) return;
     state.currentLayerMode = mode;
@@ -154,7 +160,7 @@ export function selectLayerMode(mode) {
     
     const selector = DOM.layerSelector;
     if (selector) {
-        selector.dataset.active = mode === 'rain' ? '0' : (mode === 'temp' ? '1' : '2');
+        selector.dataset.active = mode === 'rain' ? '0' : (mode === 'temp' ? '1' : (mode === 'solar' ? '2' : '3'));
     }
     
     // Toggle UI visibility depending on layer mode
@@ -163,6 +169,7 @@ export function selectLayerMode(mode) {
     const legendRain = DOM.legendRain;
     const legendTemp = DOM.legendTemp;
     const legendWind = DOM.legendWind;
+    const legendSolar = DOM.legendSolar;
     
     if (mode === 'temp') {
         if (viewSelector) viewSelector.classList.add('hidden');
@@ -170,6 +177,7 @@ export function selectLayerMode(mode) {
         if (ensembleContainer) ensembleContainer.classList.add('hidden');
         if (legendRain) legendRain.classList.add('hidden');
         if (legendWind) legendWind.classList.add('hidden');
+        if (legendSolar) legendSolar.classList.add('hidden');
         if (legendTemp) legendTemp.classList.remove('hidden');
         
         state.metadata = state.tempMetadata;
@@ -179,9 +187,20 @@ export function selectLayerMode(mode) {
         if (ensembleContainer) ensembleContainer.classList.add('hidden');
         if (legendRain) legendRain.classList.add('hidden');
         if (legendTemp) legendTemp.classList.add('hidden');
+        if (legendSolar) legendSolar.classList.add('hidden');
         if (legendWind) legendWind.classList.remove('hidden');
         
         state.metadata = state.windMetadata;
+    } else if (mode === 'solar') {
+        if (viewSelector) viewSelector.classList.add('hidden');
+        if (DOM.windHeightSelector) DOM.windHeightSelector.classList.add('hidden');
+        if (ensembleContainer) ensembleContainer.classList.add('hidden');
+        if (legendRain) legendRain.classList.add('hidden');
+        if (legendTemp) legendTemp.classList.add('hidden');
+        if (legendWind) legendWind.classList.add('hidden');
+        if (legendSolar) legendSolar.classList.remove('hidden');
+        
+        state.metadata = state.solarMetadata;
     } else {
         if (viewSelector) viewSelector.classList.remove('hidden');
         if (DOM.windHeightSelector) DOM.windHeightSelector.classList.add('hidden');
@@ -189,6 +208,7 @@ export function selectLayerMode(mode) {
         if (legendRain) legendRain.classList.remove('hidden');
         if (legendTemp) legendTemp.classList.add('hidden');
         if (legendWind) legendWind.classList.add('hidden');
+        if (legendSolar) legendSolar.classList.add('hidden');
         
         state.metadata = state.rainMetadata;
     }
@@ -226,7 +246,7 @@ export function selectLayerMode(mode) {
     // Update hover panel label
     const hoverLabel = DOM.hoverLabel;
     if (hoverLabel) {
-        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : (mode === 'wind' ? `${state.selectedWindHeight}M WIND` : 'PRECIPITATION');
+        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : (mode === 'solar' ? 'SOLAR RADIATION' : (mode === 'wind' ? `${state.selectedWindHeight}M WIND` : 'PRECIPITATION'));
     }
 
     // Update legend title
@@ -245,8 +265,28 @@ export function selectLayerMode(mode) {
 
 // Switch between map vector style layers
 export function switchMapStyle(styleKey) {
-    if (state.map && CONFIG.map.styles[styleKey]) {
-        state.map.setStyle(CONFIG.map.styles[styleKey]);
+    if (CONFIG.map.styles[styleKey]) {
+        if (state.map) {
+            state.map.setStyle(CONFIG.map.styles[styleKey]);
+        }
+        if (state.mapRight) {
+            state.mapRight.setStyle(CONFIG.map.styles[styleKey]);
+        }
+    }
+}
+
+// Helper to update compare map clipping inset path
+export function updateClipPath() {
+    const parent = DOM.swipeDivider.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const dividerX = (state.dividerPosition / 100) * rect.width;
+    
+    DOM.swipeDivider.style.left = `${dividerX}px`;
+    
+    const mapRightEl = document.getElementById('map-right');
+    if (mapRightEl) {
+        mapRightEl.style.clipPath = `inset(0px 0px 0px ${dividerX}px)`;
     }
 }
 
@@ -270,7 +310,7 @@ export function initControls() {
     }
 
     // Set initial quick view selector state
-    const viewMap = { 'med': '0', 'max': '1', 'prob': '2' };
+    const viewMap = { 'med': '0', 'max': '1', 'prob': '2', 'spread': '3' };
     document.querySelectorAll('.view-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.view === state.currentEns.toString());
     });
@@ -292,6 +332,9 @@ export function initControls() {
         DOM.opacityValue.textContent = `${val}%`;
         if (state.map) {
             state.map.triggerRepaint();
+        }
+        if (state.mapRight) {
+            state.mapRight.triggerRepaint();
         }
     });
 
@@ -399,6 +442,131 @@ export function initControls() {
         }
         selectEnsemble(val);
     });
+
+    // -------------------------------------------------------------
+    // Compare Mode (Split Screen) Toggling & Dragging
+    // -------------------------------------------------------------
+    if (DOM.btnCompareToggle) {
+        DOM.btnCompareToggle.addEventListener('click', () => {
+            state.isCompareModeActive = !state.isCompareModeActive;
+            DOM.btnCompareToggle.classList.toggle('active', state.isCompareModeActive);
+            
+            const mapRightEl = document.getElementById('map-right');
+            
+            if (state.isCompareModeActive) {
+                mapRightEl.classList.remove('hidden');
+                DOM.compareMenu.classList.remove('hidden');
+                DOM.swipeDivider.classList.remove('hidden');
+                
+                // Initialize right map
+                if (!state.mapRight) {
+                    initMapRight();
+                } else {
+                    // Sync viewport to main map
+                    state.mapRight.jumpTo({
+                        center: state.map.getCenter(),
+                        zoom: state.map.getZoom(),
+                        bearing: state.map.getBearing(),
+                        pitch: state.map.getPitch()
+                    });
+                }
+                
+                enableMapSync();
+                updateClipPath();
+                setupRadarSourceAndLayerRight();
+                updateRadarOverlay();
+            } else {
+                disableMapSync();
+                mapRightEl.classList.add('hidden');
+                DOM.compareMenu.classList.add('hidden');
+                DOM.swipeDivider.classList.add('hidden');
+                
+                // Redraw main map
+                updateRadarOverlay();
+            }
+        });
+    }
+
+    // Drag divider logic
+    if (DOM.swipeDivider) {
+        let isDragging = false;
+        
+        const onStart = (e) => {
+            isDragging = true;
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'ew-resize';
+        };
+        
+        const onMove = (e) => {
+            if (!isDragging) return;
+            
+            const parent = DOM.swipeDivider.parentElement;
+            if (!parent) return;
+            
+            const rect = parent.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const relativeX = clientX - rect.left;
+            
+            let percentage = (relativeX / rect.width) * 100;
+            percentage = Math.max(0, Math.min(100, percentage));
+            
+            state.dividerPosition = percentage;
+            updateClipPath();
+            
+            if (state.map) state.map.triggerRepaint();
+            if (state.mapRight) state.mapRight.triggerRepaint();
+        };
+        
+        const onEnd = () => {
+            if (isDragging) {
+                isDragging = false;
+                document.body.style.userSelect = '';
+                document.body.style.cursor = '';
+            }
+        };
+        
+        DOM.swipeDivider.addEventListener('mousedown', onStart);
+        DOM.swipeDivider.addEventListener('touchstart', onStart, { passive: true });
+        
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('touchmove', onMove, { passive: true });
+        
+        window.addEventListener('mouseup', onEnd);
+        window.addEventListener('touchend', onEnd);
+        
+        window.addEventListener('resize', () => {
+            if (state.isCompareModeActive) {
+                updateClipPath();
+            }
+        });
+    }
+
+    // Bind Compare Menu select change listener
+    if (DOM.compareLayerSelect) {
+        DOM.compareLayerSelect.addEventListener('change', (e) => {
+            const val = e.target.value;
+            // Options: rain-med, rain-max, rain-prob, rain-spread, temp, solar, wind-10, wind-50, etc.
+            if (val.startsWith('rain-')) {
+                state.compareLayerMode = 'rain';
+                state.compareEns = val.substring(5); // med, max, prob, spread
+            } else if (val === 'temp') {
+                state.compareLayerMode = 'temp';
+                state.compareEns = 'med';
+            } else if (val === 'solar') {
+                state.compareLayerMode = 'solar';
+                state.compareEns = 'med';
+            } else if (val.startsWith('wind-')) {
+                state.compareLayerMode = 'wind';
+                state.compareEns = 'med';
+                state.compareSelectedWindHeight = parseInt(val.substring(5));
+            }
+            
+            clearRadarLayers();
+            setupRadarSourceAndLayerRight();
+            updateRadarOverlay();
+            triggerHoverQuery();
+        });
+    }
 }
 
 // Select wind height

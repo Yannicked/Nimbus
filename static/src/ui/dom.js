@@ -30,6 +30,7 @@ export const DOM = {
     legendRain: document.getElementById('legend-rain'),
     legendTemp: document.getElementById('legend-temp'),
     legendWind: document.getElementById('legend-wind'),
+    legendSolar: document.getElementById('legend-solar'),
     legendTitle: document.querySelector('#legend-rain .section-label'),
     legendBar: document.querySelector('#legend-rain .legend-bar'),
     legendLabels: document.querySelector('#legend-rain .legend-labels'),
@@ -42,5 +43,9 @@ export const DOM = {
     rainfallChart: document.getElementById('rainfall-chart'),
     chartHeaderTitle: document.querySelector('#chart-panel h3'),
     statBox1Label: document.querySelector('.stat-box:nth-child(1) .stat-label'),
-    statBox2Label: document.querySelector('.stat-box:nth-child(2) .stat-label')
+    statBox2Label: document.querySelector('.stat-box:nth-child(2) .stat-label'),
+    btnCompareToggle: document.getElementById('btn-compare-toggle'),
+    compareMenu: document.getElementById('compare-menu'),
+    compareLayerSelect: document.getElementById('compare-layer-select'),
+    swipeDivider: document.getElementById('swipe-divider')
 };

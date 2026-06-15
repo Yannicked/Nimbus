@@ -6,26 +6,43 @@ import { mpsToBeaufort, degreesToCardinal, showTimeseriesChart } from '../ui/cha
 import { WebGLRadarLayer } from './WebGLRadar.js';
 import { WebGLWindLayer } from './WebGLWind.js';
 
-let radarLayerInstance = new WebGLRadarLayer();
-let windLayerInstance = new WebGLWindLayer();
+export let radarLayerInstance = new WebGLRadarLayer();
+export let windLayerInstance = new WebGLWindLayer();
+
+export let radarLayerInstanceRight = new WebGLRadarLayer('radar-webgl-layer-right', true);
+export let windLayerInstanceRight = new WebGLWindLayer('wind-webgl-layer-right', true);
 
 let activeWindCacheKey = null;
+let activeWindCacheKeyRight = null;
 
 // Helper to load/bind WebGL textures asynchronously
-export function getOrLoadTexture(gl, timeVal) {
-    if (!state.metadata) return null;
+export function getOrLoadTexture(gl, timeVal, isCompare = false) {
+    const layerMode = isCompare ? state.compareLayerMode : state.currentLayerMode;
+    const ens = isCompare ? state.compareEns : state.currentEns;
+    const windHeight = isCompare ? state.compareSelectedWindHeight : state.selectedWindHeight;
+    const cache = isCompare ? state.textureCacheRight : state.textureCache;
+    const metadata = isCompare ? (layerMode === 'temp' ? state.tempMetadata : (layerMode === 'solar' ? state.solarMetadata : (layerMode === 'wind' ? state.windMetadata : state.rainMetadata))) : state.metadata;
+
+    if (!metadata) return null;
     
-    const cacheKey = `${state.currentLayerMode}-${state.currentEns}-${timeVal}-${state.metadata.version}`;
+    const cacheKey = `${layerMode}-${ens}-${timeVal}-${metadata.version}`;
     
-    if (state.textureCache[cacheKey]) {
-        const entry = state.textureCache[cacheKey];
+    if (cache[cacheKey]) {
+        const entry = cache[cacheKey];
         if (!entry.loaded) {
             return null; // Still loading the image
         }
-        if (state.currentLayerMode === 'wind' && timeVal === state.metadata.times[state.currentTimeIndex]) {
-            if (state.windPixelData === null || activeWindCacheKey !== cacheKey) {
-                activeWindCacheKey = cacheKey;
-                windLayerInstance.updateWindPixelData(entry.image);
+        if (layerMode === 'wind' && timeVal === metadata.times[state.currentTimeIndex]) {
+            if (isCompare) {
+                if (state.windPixelDataRight === null || activeWindCacheKeyRight !== cacheKey) {
+                    activeWindCacheKeyRight = cacheKey;
+                    windLayerInstanceRight.updateWindPixelData(entry.image);
+                }
+            } else {
+                if (state.windPixelData === null || activeWindCacheKey !== cacheKey) {
+                    activeWindCacheKey = cacheKey;
+                    windLayerInstance.updateWindPixelData(entry.image);
+                }
             }
         }
         if (!entry.uploaded) {
@@ -46,16 +63,16 @@ export function getOrLoadTexture(gl, timeVal) {
     }
     
     // Keep cache size bounded to prevent memory bloat
-    const keys = Object.keys(state.textureCache);
+    const keys = Object.keys(cache);
     if (keys.length > 250) {
         const oldestKey = keys[0];
-        const oldestEntry = state.textureCache[oldestKey];
+        const oldestEntry = cache[oldestKey];
         if (oldestEntry) {
             console.log(`Evicting cached texture: ${oldestKey}`);
             if (gl && oldestEntry.texture) {
                 gl.deleteTexture(oldestEntry.texture);
             }
-            delete state.textureCache[oldestKey];
+            delete cache[oldestKey];
         }
     }
 
@@ -67,7 +84,7 @@ export function getOrLoadTexture(gl, timeVal) {
         uploaded: false,
         image: null
     };
-    state.textureCache[cacheKey] = entry;
+    cache[cacheKey] = entry;
     
     console.log(`Starting image load for ${cacheKey}...`);
     const img = new Image();
@@ -76,19 +93,25 @@ export function getOrLoadTexture(gl, timeVal) {
         console.log(`Image loaded successfully for ${cacheKey}.`);
         entry.image = img;
         entry.loaded = true;
-        if (state.currentLayerMode === 'wind' && timeVal === state.metadata.times[state.currentTimeIndex]) {
-            activeWindCacheKey = cacheKey;
-            windLayerInstance.updateWindPixelData(img);
+        if (layerMode === 'wind' && timeVal === metadata.times[state.currentTimeIndex]) {
+            if (isCompare) {
+                activeWindCacheKeyRight = cacheKey;
+                windLayerInstanceRight.updateWindPixelData(img);
+            } else {
+                activeWindCacheKey = cacheKey;
+                windLayerInstance.updateWindPixelData(img);
+            }
         }
-        if (state.map) state.map.triggerRepaint();
+        const mapObj = isCompare ? state.mapRight : state.map;
+        if (mapObj) mapObj.triggerRepaint();
     };
     img.onerror = (err) => {
         console.error(`Failed to load image for ${cacheKey}:`, err);
     };
-    const srcPath = state.currentLayerMode === 'temp'
+    const srcPath = layerMode === 'temp'
         ? `/api/data/temp/${timeVal}`
-        : (state.currentLayerMode === 'wind' ? `/api/data/wind/${state.selectedWindHeight}/${timeVal}` : `/api/data/${state.currentEns}/${timeVal}`);
-    img.src = `${window.location.origin}${srcPath}?v=${state.metadata.version}`;
+        : (layerMode === 'solar' ? `/api/data/solar/${timeVal}` : (layerMode === 'wind' ? `/api/data/wind/${windHeight}/${timeVal}` : `/api/data/${ens}/${timeVal}`));
+    img.src = `${window.location.origin}${srcPath}?v=${metadata.version}`;
     
     return null;
 }
@@ -119,7 +142,18 @@ export function clearRadarLayers() {
         }
     }
     state.textureCache = {};
+
+    if (state.glContextRight) {
+        for (const cacheKey in state.textureCacheRight) {
+            if (state.textureCacheRight[cacheKey].texture) {
+                state.glContextRight.deleteTexture(state.textureCacheRight[cacheKey].texture);
+            }
+        }
+    }
+    state.textureCacheRight = {};
+
     if (state.map) state.map.triggerRepaint();
+    if (state.mapRight) state.mapRight.triggerRepaint();
 }
 
 // Add the custom WebGL layer to style
@@ -143,6 +177,30 @@ export function setupRadarSourceAndLayer() {
     }
 }
 
+// Add the custom WebGL layer to the right style
+export function setupRadarSourceAndLayerRight() {
+    if (!state.mapRight || !state.mapRight.isStyleLoaded()) return;
+
+    const layerMode = state.compareLayerMode;
+    const rightMetadata = layerMode === 'temp' ? state.tempMetadata : (layerMode === 'solar' ? state.solarMetadata : (layerMode === 'wind' ? state.windMetadata : state.rainMetadata));
+    if (!rightMetadata) return;
+
+    if (state.mapRight.getLayer('radar-webgl-layer-right')) {
+        state.mapRight.removeLayer('radar-webgl-layer-right');
+    }
+    if (state.mapRight.getLayer('wind-webgl-layer-right')) {
+        state.mapRight.removeLayer('wind-webgl-layer-right');
+    }
+
+    if (layerMode === 'wind') {
+        state.mapRight.addLayer(windLayerInstanceRight);
+        windLayerInstanceRight.initParticles();
+        state.mapRight.triggerRepaint();
+    } else {
+        state.mapRight.addLayer(radarLayerInstanceRight);
+    }
+}
+
 // Trigger map repaint and preload future frames
 export function updateRadarOverlay() {
     if (!state.metadata || !state.map || !state.map.isStyleLoaded()) return;
@@ -159,7 +217,29 @@ export function updateRadarOverlay() {
         for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
             const nextIndex = (state.currentTimeIndex + i) % len;
             const nextTimeVal = state.metadata.times[nextIndex];
-            getOrLoadTexture(state.glContext, nextTimeVal);
+            getOrLoadTexture(state.glContext, nextTimeVal, false);
+        }
+    }
+
+    if (state.isCompareModeActive && state.mapRight && state.mapRight.isStyleLoaded()) {
+        const activeLayerIdRight = state.compareLayerMode === 'wind' ? 'wind-webgl-layer-right' : 'radar-webgl-layer-right';
+        if (!state.mapRight.getLayer(activeLayerIdRight)) {
+            setupRadarSourceAndLayerRight();
+        }
+
+        state.mapRight.triggerRepaint();
+
+        if (state.glContextRight) {
+            const layerMode = state.compareLayerMode;
+            const rightMetadata = layerMode === 'temp' ? state.tempMetadata : (layerMode === 'solar' ? state.solarMetadata : (layerMode === 'wind' ? state.windMetadata : state.rainMetadata));
+            if (rightMetadata) {
+                const lenRight = rightMetadata.times.length;
+                for (let i = 1; i <= CONFIG.cache.preloadAhead; i++) {
+                    const nextIndex = (state.currentTimeIndex + i) % lenRight;
+                    const nextTimeVal = rightMetadata.times[nextIndex];
+                    getOrLoadTexture(state.glContextRight, nextTimeVal, true);
+                }
+            }
         }
     }
 }
@@ -167,6 +247,7 @@ export function updateRadarOverlay() {
 let lastLat = null;
 let lastLon = null;
 let hoverTimeout = null;
+let isHoveringRightGlobal = false;
 
 // Throttled mouse listener on map
 export function handleMapMouseMove(e) {
@@ -175,10 +256,29 @@ export function handleMapMouseMove(e) {
     lastLat = lat;
     lastLon = lon;
 
+    isHoveringRightGlobal = false;
+    if (state.isCompareModeActive) {
+        const parent = DOM.swipeDivider.parentElement;
+        if (parent) {
+            const rect = parent.getBoundingClientRect();
+            const dividerX = (state.dividerPosition / 100) * rect.width;
+            const mouseX = e.originalEvent.clientX - rect.left;
+            if (mouseX > dividerX) {
+                isHoveringRightGlobal = true;
+            }
+        }
+    }
+
     // Show coordinates in panel
     DOM.hoverCoords.textContent = `lat: ${lastLat.toFixed(4)}, lon: ${lastLon.toFixed(4)}`;
     DOM.hoverPanel.classList.remove('glass-panel', 'hidden');
-    DOM.hoverPanel.classList.add('glass-panel'); // Make sure it's shown
+    DOM.hoverPanel.classList.add('glass-panel');
+
+    // Update hover label immediately based on side
+    const mode = isHoveringRightGlobal ? state.compareLayerMode : state.currentLayerMode;
+    const windHeight = isHoveringRightGlobal ? state.compareSelectedWindHeight : state.selectedWindHeight;
+    const prefix = state.isCompareModeActive ? (isHoveringRightGlobal ? "RIGHT: " : "LEFT: ") : "";
+    DOM.hoverLabel.textContent = prefix + (mode === 'temp' ? 'TEMPERATURE' : (mode === 'solar' ? 'SOLAR RADIATION' : (mode === 'wind' ? `${windHeight}M WIND` : 'PRECIPITATION')));
 
     // Throttle queries
     if (hoverTimeout) return;
@@ -199,10 +299,18 @@ export function handleMapMouseLeave() {
 export async function triggerHoverQuery() {
     if (lastLat === null || lastLon === null || !state.metadata) return;
 
-    const timeVal = state.metadata.times[state.currentTimeIndex];
-    if (state.currentLayerMode === 'temp') {
+    const isRight = isHoveringRightGlobal && state.isCompareModeActive;
+    const mode = isRight ? state.compareLayerMode : state.currentLayerMode;
+    const ens = isRight ? state.compareEns : state.currentEns;
+    const windHeight = isRight ? state.compareSelectedWindHeight : state.selectedWindHeight;
+    const metadata = isRight ? (mode === 'temp' ? state.tempMetadata : (mode === 'solar' ? state.solarMetadata : (mode === 'wind' ? state.windMetadata : state.rainMetadata))) : state.metadata;
+
+    if (!metadata) return;
+    const timeVal = metadata.times[state.currentTimeIndex];
+
+    if (mode === 'temp') {
         try {
-            const res = await fetchHoverValue(state.currentLayerMode, state.currentEns, timeVal, lastLat, lastLon);
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
@@ -212,22 +320,47 @@ export async function triggerHoverQuery() {
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else {
                 DOM.hoverValue.textContent = `${res.value.toFixed(1)} °C`;
-                // Color code temperature hover value
-                if (res.value < 0) DOM.hoverValue.style.color = "#38bdf8"; // Freezing: sky blue
-                else if (res.value < 10) DOM.hoverValue.style.color = "#60a5fa"; // Cool: blue
-                else if (res.value < 20) DOM.hoverValue.style.color = "#4ade80"; // Mild: green
-                else if (res.value < 28) DOM.hoverValue.style.color = "#facc15"; // Warm: yellow
-                else if (res.value < 33) DOM.hoverValue.style.color = "#fb923c"; // Hot: orange
-                else DOM.hoverValue.style.color = "#f87171"; // Very hot: red
+                if (res.value < 0) DOM.hoverValue.style.color = "#38bdf8";
+                else if (res.value < 10) DOM.hoverValue.style.color = "#60a5fa";
+                else if (res.value < 20) DOM.hoverValue.style.color = "#4ade80";
+                else if (res.value < 28) DOM.hoverValue.style.color = "#facc15";
+                else if (res.value < 33) DOM.hoverValue.style.color = "#fb923c";
+                else DOM.hoverValue.style.color = "#f87171";
             }
         } catch (e) {
             console.error("Temp Hover error:", e);
             DOM.hoverValue.textContent = "Error";
             DOM.hoverValue.style.color = "#f87171";
         }
-    } else if (state.currentLayerMode === 'wind') {
+    } else if (mode === 'solar') {
         try {
-            const res = await fetchHoverValue(state.currentLayerMode, state.currentEns, timeVal, lastLat, lastLon);
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);
+
+            if (res.status === "out_of_bounds") {
+                DOM.hoverValue.textContent = "Out of Grid";
+                DOM.hoverValue.style.color = "var(--text-secondary)";
+            } else if (res.value === null) {
+                DOM.hoverValue.textContent = "No Data";
+                DOM.hoverValue.style.color = "var(--text-secondary)";
+            } else {
+                DOM.hoverValue.textContent = `${Math.round(res.value)} W/m²`;
+                if (res.value < 50) DOM.hoverValue.style.color = "#94a3b8";
+                else if (res.value < 200) DOM.hoverValue.style.color = "#fef08a";
+                else if (res.value < 500) DOM.hoverValue.style.color = "#facc15";
+                else if (res.value < 800) DOM.hoverValue.style.color = "#f97316";
+                else DOM.hoverValue.style.color = "#ef4444";
+            }
+        } catch (e) {
+            console.error("Solar Hover error:", e);
+            DOM.hoverValue.textContent = "Error";
+            DOM.hoverValue.style.color = "#f87171";
+        }
+    } else if (mode === 'wind') {
+        try {
+            const url = `/api/value/wind?time=${timeVal}&lat=${lastLat}&lon=${lastLon}&height=${windHeight}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error("Wind Hover query failed");
+            const res = await response.json();
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
@@ -240,13 +373,12 @@ export async function triggerHoverQuery() {
                 const cardinal = degreesToCardinal(res.direction);
                 DOM.hoverValue.textContent = `${res.speed.toFixed(1)} m/s (${bft} Bft) ${cardinal}`;
                 
-                // Color code wind speed
-                if (res.speed < 2.0) DOM.hoverValue.style.color = "#94a3b8"; // Calm: blue-gray
-                else if (res.speed < 5.0) DOM.hoverValue.style.color = "#22d3ee"; // Light: cyan
-                else if (res.speed < 10.0) DOM.hoverValue.style.color = "#4ade80"; // Moderate: green
-                else if (res.speed < 15.0) DOM.hoverValue.style.color = "#facc15"; // Strong: yellow
-                else if (res.speed < 20.0) DOM.hoverValue.style.color = "#fb923c"; // Gale: orange
-                else DOM.hoverValue.style.color = "#f87171"; // Storm: red
+                if (res.speed < 2.0) DOM.hoverValue.style.color = "#94a3b8";
+                else if (res.speed < 5.0) DOM.hoverValue.style.color = "#22d3ee";
+                else if (res.speed < 10.0) DOM.hoverValue.style.color = "#4ade80";
+                else if (res.speed < 15.0) DOM.hoverValue.style.color = "#facc15";
+                else if (res.speed < 20.0) DOM.hoverValue.style.color = "#fb923c";
+                else DOM.hoverValue.style.color = "#f87171";
             }
         } catch (e) {
             console.error("Wind Hover error:", e);
@@ -255,13 +387,13 @@ export async function triggerHoverQuery() {
         }
     } else {
         try {
-            const res = await fetchHoverValue(state.currentLayerMode, state.currentEns, timeVal, lastLat, lastLon);
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else if (res.status === "no_rain" || res.value === 0.0) {
-                if (state.currentEns === 'prob') {
+                if (ens === 'prob') {
                     DOM.hoverValue.textContent = "0% Chance";
                 } else {
                     DOM.hoverValue.textContent = "0.00 mm/h";
@@ -269,19 +401,17 @@ export async function triggerHoverQuery() {
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else if (res.status === "probability") {
                 DOM.hoverValue.textContent = `${Math.round(res.value)}% Chance`;
-                // Color code probability
-                if (res.value < 30) DOM.hoverValue.style.color = "#94a3b8"; // Grey-blue
-                else if (res.value < 70) DOM.hoverValue.style.color = "#3b82f6"; // Blue
-                else DOM.hoverValue.style.color = "#a855f7"; // Purple / High probability
+                if (res.value < 30) DOM.hoverValue.style.color = "#94a3b8";
+                else if (res.value < 70) DOM.hoverValue.style.color = "#3b82f6";
+                else DOM.hoverValue.style.color = "#a855f7";
             } else {
                 DOM.hoverValue.textContent = `${res.value.toFixed(2)} mm/h`;
-                // Color code value dynamically in panel based on intensity
-                if (res.value < 0.2) DOM.hoverValue.style.color = "#38bdf8"; // Light sky-blue
-                else if (res.value < 1.0) DOM.hoverValue.style.color = "#60a5fa"; // Blue
-                else if (res.value < 5.0) DOM.hoverValue.style.color = "#4ade80"; // Green
-                else if (res.value < 15.0) DOM.hoverValue.style.color = "#facc15"; // Yellow
-                else if (res.value < 30.0) DOM.hoverValue.style.color = "#fb923c"; // Orange
-                else DOM.hoverValue.style.color = "#f87171"; // Red
+                if (res.value < 0.2) DOM.hoverValue.style.color = "#38bdf8";
+                else if (res.value < 1.0) DOM.hoverValue.style.color = "#60a5fa";
+                else if (res.value < 5.0) DOM.hoverValue.style.color = "#4ade80";
+                else if (res.value < 15.0) DOM.hoverValue.style.color = "#facc15";
+                else if (res.value < 30.0) DOM.hoverValue.style.color = "#fb923c";
+                else DOM.hoverValue.style.color = "#f87171";
             }
         } catch (e) {
             console.error("Hover error:", e);
@@ -316,7 +446,7 @@ export function initMap() {
     const initialZoom = parseFloat(urlParams.get('zoom'));
 
     const center = (!isNaN(initialLat) && !isNaN(initialLon)) 
-        ? [initialLon, initialLat] // lon, lat for MapLibre!
+        ? [initialLon, initialLat] 
         : CONFIG.map.defaultCenter;
 
     const zoom = !isNaN(initialZoom) 
@@ -332,25 +462,111 @@ export function initMap() {
         maxZoom: CONFIG.map.maxZoom
     });
 
-    // Add map navigation controls (zoom, compass)
     state.map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
     state.map.on('load', () => {
         setupRadarSourceAndLayer();
     });
 
-    // Recreate custom WebGL layer on style changes
     state.map.on('style.load', () => {
         setupRadarSourceAndLayer();
     });
 
-    // Attach map mouse events for hover & click
     state.map.on('mousemove', handleMapMouseMove);
     state.map.on('mouseout', handleMapMouseLeave);
     state.map.on('click', handleMapClick);
 
-    // Sync viewport state to URL query parameters
     state.map.on('moveend', () => {
         syncStateToURL();
     });
+}
+
+// Initialize right-hand compare map
+export function initMapRight() {
+    if (state.mapRight) return;
+
+    state.mapRight = new maplibregl.Map({
+        container: 'map-right',
+        style: state.map ? state.map.getStyle() : CONFIG.map.styles.dark,
+        center: state.map ? state.map.getCenter() : CONFIG.map.defaultCenter,
+        zoom: state.map ? state.map.getZoom() : CONFIG.map.defaultZoom,
+        bearing: state.map ? state.map.getBearing() : 0,
+        pitch: state.map ? state.map.getPitch() : 0,
+        minZoom: CONFIG.map.minZoom,
+        maxZoom: CONFIG.map.maxZoom,
+        attributionControl: false
+    });
+
+    state.mapRight.on('load', () => {
+        setupRadarSourceAndLayerRight();
+        updateRadarOverlay();
+    });
+
+    state.mapRight.on('style.load', () => {
+        setupRadarSourceAndLayerRight();
+        updateRadarOverlay();
+    });
+
+    state.mapRight.on('mousemove', handleMapMouseMove);
+    state.mapRight.on('mouseout', handleMapMouseLeave);
+    state.mapRight.on('click', handleMapClick);
+}
+
+let leftMoveListener = null;
+let rightMoveListener = null;
+let isSyncing = false;
+
+export function enableMapSync() {
+    if (!state.map || !state.mapRight) return;
+    
+    isSyncing = false;
+    
+    leftMoveListener = () => {
+        if (isSyncing) return;
+        isSyncing = true;
+        state.mapRight.jumpTo({
+            center: state.map.getCenter(),
+            zoom: state.map.getZoom(),
+            bearing: state.map.getBearing(),
+            pitch: state.map.getPitch()
+        });
+        isSyncing = false;
+    };
+    
+    rightMoveListener = () => {
+        if (isSyncing) return;
+        isSyncing = true;
+        state.map.jumpTo({
+            center: state.mapRight.getCenter(),
+            zoom: state.mapRight.getZoom(),
+            bearing: state.mapRight.getBearing(),
+            pitch: state.mapRight.getPitch()
+        });
+        isSyncing = false;
+    };
+    
+    state.map.on('move', leftMoveListener);
+    state.mapRight.on('move', rightMoveListener);
+}
+
+export function disableMapSync() {
+    if (state.map && leftMoveListener) {
+        state.map.off('move', leftMoveListener);
+        leftMoveListener = null;
+    }
+    if (state.mapRight && rightMoveListener) {
+        state.mapRight.off('move', rightMoveListener);
+        rightMoveListener = null;
+    }
+}
+
+export function switchMapStyle(styleKey) {
+    if (CONFIG.map.styles[styleKey]) {
+        if (state.map) {
+            state.map.setStyle(CONFIG.map.styles[styleKey]);
+        }
+        if (state.mapRight) {
+            state.mapRight.setStyle(CONFIG.map.styles[styleKey]);
+        }
+    }
 }

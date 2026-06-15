@@ -23,13 +23,41 @@
 </head>
 <body>
     <!-- Main Map Container -->
-    <div id="map"></div>
+    <div id="map-container">
+        <div id="map" class="map-pane"></div>
+        <div id="map-right" class="map-pane hidden"></div>
+        <div id="swipe-divider" class="hidden">
+            <div class="swipe-handle"><i class="fa-solid fa-arrows-left-right"></i></div>
+        </div>
+    </div>
 
     <!-- Hover Panel (Value at Cursor) -->
     <div id="hover-panel" class="glass-panel hidden">
         <div id="hover-label" class="hover-label">PRECIPITATION</div>
         <div id="hover-value" class="hover-value">-- mm/h</div>
         <div id="hover-coords" class="hover-coords">lat: --, lon: --</div>
+    </div>
+
+    <!-- Compare Layer Menu Overlay -->
+    <div id="compare-menu" class="glass-panel hidden">
+        <label for="compare-layer-select" class="section-label">Compare Layer (Right Map)</label>
+        <select id="compare-layer-select" class="glass-select">
+            <optgroup label="Precipitation">
+                <option value="rain-med">Rain (Median)</option>
+                <option value="rain-max">Rain (Max)</option>
+                <option value="rain-prob">Rain (Probability)</option>
+                <option value="rain-spread">Rain (Uncertainty)</option>
+            </optgroup>
+            <optgroup label="Harmonie Arome">
+                <option value="temp">Temperature</option>
+                <option value="solar">Solar Radiation</option>
+                <option value="wind-10">Wind (10m)</option>
+                <option value="wind-50">Wind (50m)</option>
+                <option value="wind-100">Wind (100m)</option>
+                <option value="wind-200">Wind (200m)</option>
+                <option value="wind-300">Wind (300m)</option>
+            </optgroup>
+        </select>
     </div>
 
     <!-- Chart Panel (Location Time-Series) -->
@@ -66,6 +94,9 @@
                     <span class="label">Reference Time:</span>
                     <span id="ref-time-value" class="value">Loading...</span>
                 </div>
+                <button id="btn-compare-toggle" class="header-btn hidden-mobile" title="Toggle Split-Screen Compare Mode">
+                    <i class="fa-solid fa-columns"></i>
+                </button>
                 <button id="btn-settings-toggle" class="header-btn" title="Toggle Settings and Layers">
                     <i class="fa-solid fa-sliders"></i>
                 </button>
@@ -95,7 +126,8 @@
                 <div class="layer-selector" data-active="0">
                     <button class="layer-btn active" data-mode="rain" title="Precipitation Radar"><i class="fa-solid fa-cloud-showers-heavy"></i> Rain</button>
                     <button class="layer-btn" data-mode="temp" title="2m Temperature"><i class="fa-solid fa-temperature-half"></i> Temp</button>
-                    <button class="layer-btn" data-mode="wind" title="10m Wind"><i class="fa-solid fa-wind"></i> Wind</button>
+                    <button class="layer-btn" data-mode="solar" title="Solar Radiation"><i class="fa-solid fa-sun"></i> Solar</button>
+                    <button class="layer-btn" data-mode="wind" title="10m/selectable Wind"><i class="fa-solid fa-wind"></i> Wind</button>
                 </div>
 
                 <!-- Quick View Selector -->
@@ -103,6 +135,7 @@
                     <button class="view-btn" data-view="med" title="Median Forecast">Med</button>
                     <button class="view-btn" data-view="max" title="Maximum Forecast">Max</button>
                     <button class="view-btn" data-view="prob" title="Rain Probability">Prob</button>
+                    <button class="view-btn" data-view="spread" title="Rain Forecast Uncertainty (Spread)">Uncert</button>
                 </div>
 
                 <!-- Wind Height Selector -->
@@ -196,6 +229,20 @@
                         <span>20</span>
                         <span>30</span>
                         <span>35+</span>
+                    </div>
+                </div>
+
+                <!-- Solar Legend Panel -->
+                <div id="legend-solar" class="legend-container hidden">
+                    <label class="section-label">Solar Radiation (W/m²)</label>
+                    <div class="legend-bar solar-gradient"></div>
+                    <div class="legend-labels">
+                        <span>10</span>
+                        <span>100</span>
+                        <span>250</span>
+                        <span>500</span>
+                        <span>750</span>
+                        <span>1000+</span>
                     </div>
                 </div>
 

@@ -23,11 +23,30 @@ body {
     overflow: hidden;
 }
 
-/* Fullscreen Map */
-#map {
+/* Fullscreen Map and Containers */
+#map-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.map-pane {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
     height: 100%;
+}
+
+#map {
     z-index: 1;
+}
+
+#map-right {
+    z-index: 2;
 }
 
 /* Glassmorphic Panel Base */
@@ -291,7 +310,7 @@ header .ref-time .value {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: calc((100% - 8px) / 3);
+    width: calc((100% - 10px) / 4);
     height: calc(100% - 4px);
     background: var(--primary-color);
     border-radius: 18px;
@@ -305,11 +324,15 @@ header .ref-time .value {
 }
 
 .view-selector[data-active="1"]::before {
-    left: calc(2px + (100% - 8px) / 3 + 2px);
+    left: calc(2px + (100% - 10px) / 4 + 2px);
 }
 
 .view-selector[data-active="2"]::before {
-    left: calc(2px + 2 * (100% - 8px) / 3 + 4px);
+    left: calc(2px + 2 * (100% - 10px) / 4 + 4px);
+}
+
+.view-selector[data-active="3"]::before {
+    left: calc(2px + 3 * (100% - 10px) / 4 + 6px);
 }
 
 .view-btn {
@@ -432,7 +455,7 @@ header .ref-time .value {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: calc((100% - 8px) / 3);
+    width: calc((100% - 10px) / 4);
     height: calc(100% - 4px);
     background: var(--primary-color);
     border-radius: 18px;
@@ -446,11 +469,15 @@ header .ref-time .value {
 }
 
 .layer-selector[data-active="1"]::before {
-    left: calc(2px + (100% - 8px) / 3 + 2px);
+    left: calc(2px + (100% - 10px) / 4 + 2px);
 }
 
 .layer-selector[data-active="2"]::before {
-    left: calc(2px + 2 * (100% - 8px) / 3 + 4px);
+    left: calc(2px + 2 * (100% - 10px) / 4 + 4px);
+}
+
+.layer-selector[data-active="3"]::before {
+    left: calc(2px + 3 * (100% - 10px) / 4 + 6px);
 }
 
 .layer-btn {
@@ -1199,6 +1226,75 @@ header .ref-time .value {
     background: rgba(244, 63, 94, 0.15);
     border-color: rgba(244, 63, 94, 0.3);
     color: #fda4af;
+}
+
+/* Solar Radiation Legend Gradient */
+.solar-gradient {
+    background: linear-gradient(to right, rgba(0, 0, 0, 0.0), rgba(253, 224, 71, 0.3), rgba(250, 204, 21, 0.5), rgba(234, 179, 8, 0.7), rgba(249, 115, 22, 0.85), rgba(239, 68, 68, 0.95));
+}
+
+/* Split-Screen Compare Mode Elements */
+#swipe-divider {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(255, 255, 255, 0.25);
+    cursor: ew-resize;
+    z-index: 1005;
+    pointer-events: auto;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+}
+
+#swipe-divider:hover {
+    background: var(--primary-color);
+}
+
+.swipe-handle {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 38px;
+    height: 38px;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: 50%;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: ew-resize;
+    box-shadow: 0 4px 16px var(--shadow-color);
+    pointer-events: auto;
+    transition: background-color 0.2s, color 0.2s, transform 0.15s, border-color 0.2s;
+}
+
+#swipe-divider:hover .swipe-handle {
+    background: var(--primary-color);
+    border-color: var(--primary-hover);
+    transform: translate(-50%, -50%) scale(1.1);
+    color: white;
+}
+
+#compare-menu {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    width: 240px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    box-sizing: border-box;
+    z-index: 1000;
+}
+
+/* Responsive Overrides to hide compare controls on small devices */
+@media (max-width: 768px) {
+    #compare-menu, #btn-compare-toggle, #swipe-divider {
+        display: none !important;
+    }
 }
 
 

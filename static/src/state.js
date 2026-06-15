@@ -6,6 +6,7 @@ export const state = {
     rainMetadata: null,
     tempMetadata: null,
     windMetadata: null,
+    solarMetadata: null,
     currentLayerMode: 'rain',
     currentEns: CONFIG.defaults.ensemble,
     selectedWindHeight: 10,
@@ -33,7 +34,27 @@ export const state = {
     maxParticles: 3000,
     TRAIL_LENGTH: 24,
     particles: [],
-    lastAnimTime: 0
+    lastAnimTime: 0,
+
+    // Compare Mode (Split Screen) variables
+    isCompareModeActive: false,
+    mapRight: null,
+    compareLayerMode: 'temp',
+    compareEns: 'med',
+    compareSelectedWindHeight: 10,
+    dividerPosition: 50, // percentage (0-100)
+    textureCacheRight: {},
+    radarProgramRight: null,
+    positionBufferRight: null,
+    texcoordBufferRight: null,
+    glContextRight: null,
+    windProgramRight: null,
+    windPositionBufferRight: null,
+    windTexcoordBufferRight: null,
+    particleProgramRight: null,
+    particleBufferRight: null,
+    windPixelDataRight: null,
+    particlesRight: []
 };
 
 export function syncStateToURL() {
@@ -79,7 +100,7 @@ export function parseURLState() {
     const urlParams = new URLSearchParams(window.location.search);
     
     const mode = urlParams.get('mode');
-    if (mode && ['rain', 'temp', 'wind'].includes(mode)) {
+    if (mode && ['rain', 'temp', 'wind', 'solar'].includes(mode)) {
         state.currentLayerMode = mode;
     }
     
@@ -87,7 +108,7 @@ export function parseURLState() {
     if (ens) {
         if (!isNaN(ens)) {
             state.currentEns = parseInt(ens);
-        } else if (['med', 'max', 'prob'].includes(ens)) {
+        } else if (['med', 'max', 'prob', 'spread'].includes(ens)) {
             state.currentEns = ens;
         }
     }

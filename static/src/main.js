@@ -10,20 +10,24 @@ import { showTimeseriesChart, closeTimeseriesChart } from './ui/chart.js';
 async function loadApp() {
     try {
         // Fetch metadata in parallel
-        const [rainMetadata, tempMetadata, windMetadata] = await Promise.all([
+        const [rainMetadata, tempMetadata, windMetadata, solarMetadata] = await Promise.all([
             fetchMetadata('rain'),
             fetchMetadata('temp'),
-            fetchMetadata('wind')
+            fetchMetadata('wind'),
+            fetchMetadata('solar')
         ]);
         state.rainMetadata = rainMetadata;
         state.tempMetadata = tempMetadata;
         state.windMetadata = windMetadata;
+        state.solarMetadata = solarMetadata;
         
         // Default active metadata
         if (state.currentLayerMode === 'temp') {
             state.metadata = state.tempMetadata;
         } else if (state.currentLayerMode === 'wind') {
             state.metadata = state.windMetadata;
+        } else if (state.currentLayerMode === 'solar') {
+            state.metadata = state.solarMetadata;
         } else {
             state.metadata = state.rainMetadata;
         }
@@ -56,11 +60,12 @@ async function loadApp() {
         const statsGroup = document.createElement('optgroup');
         statsGroup.label = 'Statistics / Summary';
         
-        const stats = ['med', 'max', 'prob'];
+        const stats = ['med', 'max', 'prob', 'spread'];
         const statLabels = { 
             'med': 'Median Forecast (MED)', 
             'max': 'Maximum Forecast (MAX)', 
-            'prob': 'Precipitation Probability (PROB)' 
+            'prob': 'Precipitation Probability (PROB)',
+            'spread': 'Forecast Uncertainty (SPREAD)'
         };
         stats.forEach(stat => {
             const opt = document.createElement('option');
@@ -109,14 +114,14 @@ function startMetadataPolling() {
         try {
             const endpoint = state.currentLayerMode === 'temp' 
                 ? '/api/metadata/temp' 
-                : (state.currentLayerMode === 'wind' ? '/api/metadata/wind' : '/api/metadata');
+                : (state.currentLayerMode === 'wind' ? '/api/metadata/wind' : (state.currentLayerMode === 'solar' ? '/api/metadata/solar' : '/api/metadata'));
             const response = await fetch(endpoint);
             if (!response.ok) return;
             const newMetadata = await response.json();
 
             let targetMetadata = state.currentLayerMode === 'temp' 
                 ? state.tempMetadata 
-                : (state.currentLayerMode === 'wind' ? state.windMetadata : state.rainMetadata);
+                : (state.currentLayerMode === 'wind' ? state.windMetadata : (state.currentLayerMode === 'solar' ? state.solarMetadata : state.rainMetadata));
                 
             if (targetMetadata && newMetadata.version !== targetMetadata.version) {
                 console.log(`New ${state.currentLayerMode} forecast run detected! Reloading...`);
@@ -129,6 +134,9 @@ function startMetadataPolling() {
                     state.windMetadata = newMetadata;
                     state.metadata = state.windMetadata;
                     state.windPixelData = null;
+                } else if (state.currentLayerMode === 'solar') {
+                    state.solarMetadata = newMetadata;
+                    state.metadata = state.solarMetadata;
                 } else {
                     state.rainMetadata = newMetadata;
                     state.metadata = state.rainMetadata;

@@ -4,8 +4,9 @@ import { DOM } from '../ui/dom.js';
 import { getOrLoadTexture } from './index.js';
 
 export class WebGLWindLayer {
-    constructor() {
-        this.id = 'wind-webgl-layer';
+    constructor(id = 'wind-webgl-layer', isCompare = false) {
+        this.id = id;
+        this.isCompare = isCompare;
         this.type = 'custom';
         this.renderingMode = '2d';
 
@@ -20,11 +21,22 @@ export class WebGLWindLayer {
         this.updateProgram = null;
         this.quadBuffer = null;
         this.particleUVBuffer = null;
+
+        // Isolated shader programs and buffers
+        this.windProgram = null;
+        this.particleProgram = null;
+        this.windPositionBuffer = null;
+        this.windTexcoordBuffer = null;
+        this.lastAnimTime = 0;
     }
 
     // Keep this for MapLibre/index.js callbacks, but make it CPU-overhead-free
     updateWindPixelData(img) {
-        state.windPixelData = true;
+        if (this.isCompare) {
+            state.windPixelDataRight = true;
+        } else {
+            state.windPixelData = true;
+        }
     }
 
     getWindVelocity(mx, my) {
@@ -62,8 +74,12 @@ export class WebGLWindLayer {
     }
 
     onAdd(mapInstance, gl) {
-        state.glContext = gl;
-        console.log("Initializing WebGL Wind Layer fully on GPU...");
+        if (this.isCompare) {
+            state.glContextRight = gl;
+        } else {
+            state.glContext = gl;
+        }
+        console.log(`Initializing WebGL Wind Layer (${this.id}) fully on GPU...`);
 
         // 1. Compile background heat map overlay shader (with manual 16-bit bilinear interpolation)
         const vertexShaderSource = `
@@ -167,7 +183,7 @@ export class WebGLWindLayer {
             }
         `;
 
-        state.windProgram = this._createProgram(gl, vertexShaderSource, fragmentShaderSource);
+        this.windProgram = this._createProgram(gl, vertexShaderSource, fragmentShaderSource);
 
         // 2. Compile GPU simulation update program
         const updateVsSource = `
@@ -454,7 +470,7 @@ export class WebGLWindLayer {
             }
         `;
 
-        state.particleProgram = this._createProgram(gl, particleVsSource, particleFsSource);
+        this.particleProgram = this._createProgram(gl, particleVsSource, particleFsSource);
 
         // 4. Set up Mercator quad buffers (background speed field overlay)
         const MAP_LIMIT = 20037508.342789244;
@@ -478,8 +494,8 @@ export class WebGLWindLayer {
             TR[0], TR[1]  // NE
         ]);
 
-        state.windPositionBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.windPositionBuffer);
+        this.windPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.windPositionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
         const texcoords = new Float32Array([
@@ -491,8 +507,8 @@ export class WebGLWindLayer {
             1, 1  // TR
         ]);
 
-        state.windTexcoordBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.windTexcoordBuffer);
+        this.windTexcoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.windTexcoordBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.STATIC_DRAW);
 
         // 5. Create screen-aligned quad buffer for FBO updates
@@ -573,14 +589,14 @@ export class WebGLWindLayer {
         gl.bindTexture(gl.TEXTURE_2D, null);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-        state.lastAnimTime = performance.now();
+        this.lastAnimTime = performance.now();
     }
 
     render(gl, matrix) {
-        if (!state.metadata || !state.windProgram || !state.particleProgram || !this.updateProgram) return;
+        if (!state.metadata || !this.windProgram || !this.particleProgram || !this.updateProgram) return;
 
         const timeVal = state.metadata.times[state.currentTimeIndex];
-        const windTexture = getOrLoadTexture(gl, timeVal);
+        const windTexture = getOrLoadTexture(gl, timeVal, this.isCompare);
         if (!windTexture) return; // Wait for texture load
 
         // Force NEAREST filtering on the wind texture to ensure manual 16-bit bilinear interpolation gets precise pixel bytes
@@ -590,9 +606,9 @@ export class WebGLWindLayer {
         gl.bindTexture(gl.TEXTURE_2D, null);
 
         const now = performance.now();
-        let dt = (now - state.lastAnimTime) / 1000.0;
+        let dt = (now - this.lastAnimTime) / 1000.0;
         if (dt > 0.1) dt = 0.1;
-        state.lastAnimTime = now;
+        this.lastAnimTime = now;
 
         const depthTestEnabled = gl.isEnabled(gl.DEPTH_TEST);
         if (depthTestEnabled) {
@@ -662,25 +678,25 @@ export class WebGLWindLayer {
         // -------------------------------------------------------------
         // Step B: Draw Background Vector Speed Field Overlay
         // -------------------------------------------------------------
-        gl.useProgram(state.windProgram);
+        gl.useProgram(this.windProgram);
 
-        const aPosition = gl.getAttribLocation(state.windProgram, 'a_position');
+        const aPosition = gl.getAttribLocation(this.windProgram, 'a_position');
         gl.enableVertexAttribArray(aPosition);
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.windPositionBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.windPositionBuffer);
         gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
 
-        const aTexcoord = gl.getAttribLocation(state.windProgram, 'a_texcoord');
+        const aTexcoord = gl.getAttribLocation(this.windProgram, 'a_texcoord');
         gl.enableVertexAttribArray(aTexcoord);
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.windTexcoordBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.windTexcoordBuffer);
         gl.vertexAttribPointer(aTexcoord, 2, gl.FLOAT, false, 0, 0);
 
-        gl.uniformMatrix4fv(gl.getUniformLocation(state.windProgram, 'u_matrix'), false, matrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.windProgram, 'u_matrix'), false, matrix);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, windTexture);
-        gl.uniform1i(gl.getUniformLocation(state.windProgram, 'u_texture'), 0);
+        gl.uniform1i(gl.getUniformLocation(this.windProgram, 'u_texture'), 0);
 
         const opacity = parseFloat(DOM.opacitySlider.value) / 100;
-        gl.uniform1f(gl.getUniformLocation(state.windProgram, 'u_opacity'), opacity);
+        gl.uniform1f(gl.getUniformLocation(this.windProgram, 'u_opacity'), opacity);
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -693,27 +709,27 @@ export class WebGLWindLayer {
         // -------------------------------------------------------------
         // Step C: Draw Particle Trails from GPU State Texture
         // -------------------------------------------------------------
-        gl.useProgram(state.particleProgram);
+        gl.useProgram(this.particleProgram);
 
-        const aPartUV = gl.getAttribLocation(state.particleProgram, 'a_particle_uv');
+        const aPartUV = gl.getAttribLocation(this.particleProgram, 'a_particle_uv');
         gl.enableVertexAttribArray(aPartUV);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.particleUVBuffer);
         gl.vertexAttribPointer(aPartUV, 2, gl.FLOAT, false, 0, 0);
 
-        gl.uniformMatrix4fv(gl.getUniformLocation(state.particleProgram, 'u_matrix'), false, matrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.particleProgram, 'u_matrix'), false, matrix);
 
         // Bind current state texture to look up coordinates in vertex shader
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, currentUpdatedTex);
-        gl.uniform1i(gl.getUniformLocation(state.particleProgram, 'u_state_texture'), 0);
+        gl.uniform1i(gl.getUniformLocation(this.particleProgram, 'u_state_texture'), 0);
 
         // Bind wind texture to look up velocity/speed in vertex shader
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, windTexture);
-        gl.uniform1i(gl.getUniformLocation(state.particleProgram, 'u_wind_texture'), 1);
+        gl.uniform1i(gl.getUniformLocation(this.particleProgram, 'u_wind_texture'), 1);
 
-        gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_point_size'), 5.5);
-        gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_arrow_opacity'), opacity);
+        gl.uniform1f(gl.getUniformLocation(this.particleProgram, 'u_point_size'), 5.5);
+        gl.uniform1f(gl.getUniformLocation(this.particleProgram, 'u_arrow_opacity'), opacity);
 
         gl.drawArrays(gl.POINTS, 0, this.numParticles * this.trailLength);
 
@@ -725,31 +741,33 @@ export class WebGLWindLayer {
         }
 
         // Trigger map repaint to run the GPU animation loop continuously
-        if (state.currentLayerMode === 'wind' && state.map) {
-            state.map.triggerRepaint();
+        const mapObj = this.isCompare ? state.mapRight : state.map;
+        const layerMode = this.isCompare ? state.compareLayerMode : state.currentLayerMode;
+        if (layerMode === 'wind' && mapObj) {
+            mapObj.triggerRepaint();
         }
     }
 
     onRemove(map, gl) {
-        if (state.windProgram) {
-            gl.deleteProgram(state.windProgram);
-            state.windProgram = null;
+        if (this.windProgram) {
+            gl.deleteProgram(this.windProgram);
+            this.windProgram = null;
         }
-        if (state.particleProgram) {
-            gl.deleteProgram(state.particleProgram);
-            state.particleProgram = null;
+        if (this.particleProgram) {
+            gl.deleteProgram(this.particleProgram);
+            this.particleProgram = null;
         }
         if (this.updateProgram) {
             gl.deleteProgram(this.updateProgram);
             this.updateProgram = null;
         }
-        if (state.windPositionBuffer) {
-            gl.deleteBuffer(state.windPositionBuffer);
-            state.windPositionBuffer = null;
+        if (this.windPositionBuffer) {
+            gl.deleteBuffer(this.windPositionBuffer);
+            this.windPositionBuffer = null;
         }
-        if (state.windTexcoordBuffer) {
-            gl.deleteBuffer(state.windTexcoordBuffer);
-            state.windTexcoordBuffer = null;
+        if (this.windTexcoordBuffer) {
+            gl.deleteBuffer(this.windTexcoordBuffer);
+            this.windTexcoordBuffer = null;
         }
         if (this.quadBuffer) {
             gl.deleteBuffer(this.quadBuffer);
