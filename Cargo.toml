@@ -17,4 +17,34 @@ notify = "6.1"
 rumqttc = { version = "0.24", features = ["websocket", "use-rustls"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 dotenvy = "0.15"
+grib-reader = "0.1"
+tar = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
+[[bin]]
+name = "inspect_grib"
+path = "scratch/inspect_grib.rs"
+
+[[bin]]
+name = "test_grib"
+path = "scratch/test_grib.rs"
+
+[[bin]]
+name = "check_proj"
+path = "scratch/check_proj.rs"
+
+[[bin]]
+name = "download_small"
+path = "scratch/download_small.rs"
+
+[[bin]]
+name = "test_locations"
+path = "scratch/test_locations.rs"
+
+[[bin]]
+name = "check_png"
+path = "scratch/check_png.rs"
+
+[[bin]]
+name = "find_rotation"
+path = "scratch/find_rotation.rs"

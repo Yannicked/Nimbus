@@ -42,7 +42,8 @@ body {
     z-index: 1000;
 }
 
-.glass-panel.hidden {
+.glass-panel.hidden,
+.hidden {
     display: none !important;
 }
 
@@ -339,6 +340,72 @@ header .ref-time .value {
 
 .view-btn.active {
     color: var(--text-primary);
+}
+
+.layer-selector {
+    display: flex;
+    position: relative;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-glass);
+    border-radius: 20px;
+    padding: 2px;
+    gap: 2px;
+}
+
+.layer-selector::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: calc((100% - 6px) / 2);
+    height: calc(100% - 4px);
+    background: var(--primary-color);
+    border-radius: 18px;
+    box-shadow: 0 2px 10px var(--primary-glow);
+    transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 0;
+}
+
+.layer-selector[data-active="0"]::before {
+    left: 2px;
+}
+
+.layer-selector[data-active="1"]::before {
+    left: calc(2px + (100% - 6px) / 2 + 2px);
+}
+
+.layer-btn {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: 18px;
+    cursor: pointer;
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    white-space: nowrap;
+    transition: color 0.25s ease, transform 0.1s ease;
+}
+
+.layer-btn:hover {
+    color: var(--text-primary);
+}
+
+.layer-btn:active {
+    transform: scale(0.95);
+}
+
+.layer-btn.active {
+    color: var(--text-primary);
+}
+
+.temp-gradient {
+    background: linear-gradient(to right, #002b80, #00ccff, #00ff66, #ffff00, #ff6600, #cc0000);
 }
 
 .settings-grid {

@@ -18,6 +18,7 @@ use dashmap::DashMap;
 use notify::{EventKind, RecursiveMode, Watcher};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -27,6 +28,7 @@ use tower_http::services::ServeDir;
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
 
 /// Sentinel value used in the u16 grid to indicate missing / no-data pixels.
 const NODATA: u16 = 65535;
@@ -79,6 +81,90 @@ struct Metadata {
     version: u64,
 }
 
+struct TempStep {
+    forecast_hour: i32,
+    width: usize,
+    height: usize,
+    values: Arc<Vec<u16>>,
+}
+
+struct TempForecast {
+    reference_time: i64,
+    steps: Vec<TempStep>,
+}
+
+impl TempForecast {
+    fn write_to_file(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(b"HRMT")?;
+        f.write_all(&self.reference_time.to_le_bytes())?;
+        f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
+        
+        for step in &self.steps {
+            f.write_all(&step.forecast_hour.to_le_bytes())?;
+            f.write_all(&(step.width as u32).to_le_bytes())?;
+            f.write_all(&(step.height as u32).to_le_bytes())?;
+            for &val in step.values.as_ref() {
+                f.write_all(&val.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut f = std::fs::File::open(path)?;
+        let mut magic = [0u8; 4];
+        f.read_exact(&mut magic)?;
+        if &magic != b"HRMT" {
+            return Err("Invalid magic bytes in temp file".into());
+        }
+        
+        let mut ref_time_bytes = [0u8; 8];
+        f.read_exact(&mut ref_time_bytes)?;
+        let reference_time = i64::from_le_bytes(ref_time_bytes);
+        
+        let mut steps_len_bytes = [0u8; 4];
+        f.read_exact(&mut steps_len_bytes)?;
+        let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
+        
+        let mut steps = Vec::with_capacity(steps_len);
+        for _ in 0..steps_len {
+            let mut hour_bytes = [0u8; 4];
+            f.read_exact(&mut hour_bytes)?;
+            let forecast_hour = i32::from_le_bytes(hour_bytes);
+            
+            let mut w_bytes = [0u8; 4];
+            f.read_exact(&mut w_bytes)?;
+            let width = u32::from_le_bytes(w_bytes) as usize;
+            
+            let mut h_bytes = [0u8; 4];
+            f.read_exact(&mut h_bytes)?;
+            let height = u32::from_le_bytes(h_bytes) as usize;
+            
+            let len = width * height;
+            let mut values = vec![0u16; len];
+            let mut byte_buf = vec![0u8; len * 2];
+            f.read_exact(&mut byte_buf)?;
+            for i in 0..len {
+                values[i] = u16::from_le_bytes([byte_buf[i * 2], byte_buf[i * 2 + 1]]);
+            }
+            
+            steps.push(TempStep {
+                forecast_hour,
+                width,
+                height,
+                values: Arc::new(values),
+            });
+        }
+        
+        Ok(TempForecast {
+            reference_time,
+            steps,
+        })
+    }
+}
+
 /// Shared application state accessible from all request handlers.
 struct AppState {
     file_path: RwLock<String>,
@@ -88,6 +174,11 @@ struct AppState {
     data_cache: DashMap<(String, i64), Vec<u8>>,
     metadata: RwLock<Option<Metadata>>,
     projection_lut: Vec<(f32, f32)>,
+    
+    // 2m Temperature Forecast
+    temp_forecast: RwLock<Option<TempForecast>>,
+    temp_projection_lut: Vec<(f32, f32)>,
+    temp_data_cache: DashMap<i64, Vec<u8>>,
 }
 
 /// Query parameters for the `/api/value` endpoint.
@@ -362,6 +453,15 @@ async fn main() {
     dotenvy::dotenv().ok();
     println!("Starting Weather Radar service...");
 
+    let open_data_api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
+        .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
+
+    // Clean up leftover tar files on startup
+    cleanup_tar_files();
+
+    // Load or fetch temperature forecast
+    let temp_fc = load_or_fetch_temp_forecast(&open_data_api_key).await;
+
     // 1. Find the latest netcdf file in the current directory, or download it if none exists
     let initial_file = match find_latest_nc_file(".") {
         Some(f) => f,
@@ -392,6 +492,10 @@ async fn main() {
         data_cache: DashMap::new(),
         metadata: RwLock::new(metadata_val.clone()),
         projection_lut: init_projection_lut(),
+        
+        temp_forecast: RwLock::new(Some(temp_fc)),
+        temp_projection_lut: init_temp_projection_lut(),
+        temp_data_cache: DashMap::new(),
     });
 
     if let Some(ref meta) = metadata_val {
@@ -402,10 +506,24 @@ async fn main() {
         });
     }
 
-    // Spawn MQTT client to listen for updates from KNMI
+    // Precalculate temperature PNGs in background
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            precalculate_temp_data(state_clone).await;
+        });
+    }
+
+    // Spawn MQTT client to listen for radar updates from KNMI
     let state_clone_mqtt = state.clone();
     tokio::spawn(async move {
         start_knmi_mqtt_listener(state_clone_mqtt).await;
+    });
+
+    // Spawn MQTT client to listen for temperature updates from KNMI
+    let state_clone_temp_mqtt = state.clone();
+    tokio::spawn(async move {
+        start_knmi_temp_mqtt_listener(state_clone_temp_mqtt).await;
     });
 
     // 4. Set up directory watcher to monitor file updates
@@ -470,6 +588,10 @@ async fn main() {
         .route("/api/data/:ens/:time", get(get_data_image))
         .route("/api/value", get(get_value))
         .route("/api/timeseries", get(get_timeseries))
+        .route("/api/metadata/temp", get(get_temp_metadata))
+        .route("/api/data/temp/:time", get(get_temp_data_image))
+        .route("/api/value/temp", get(get_temp_value))
+        .route("/api/timeseries/temp", get(get_temp_timeseries))
         .nest_service("/", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -591,13 +713,13 @@ fn read_netcdf_all_ensembles(
 ///
 /// Returns [`NODATA`] when the query point falls entirely outside the grid or
 /// when no valid neighbours are found.
-fn interpolate_bilinear(fx: f64, fy: f64, raw_slice: &[u16]) -> u16 {
+fn interpolate_bilinear(fx: f64, fy: f64, grid_w: usize, grid_h: usize, raw_slice: &[u16]) -> u16 {
     let ix1 = fx.floor() as i32;
     let iy1 = fy.floor() as i32;
     let ix2 = ix1 + 1;
     let iy2 = iy1 + 1;
 
-    if ix1 < -1 || ix1 >= KNMI_GRID_W as i32 || iy1 < -1 || iy1 >= KNMI_GRID_H as i32 {
+    if ix1 < -1 || ix1 >= grid_w as i32 || iy1 < -1 || iy1 >= grid_h as i32 {
         return NODATA;
     }
 
@@ -610,8 +732,8 @@ fn interpolate_bilinear(fx: f64, fy: f64, raw_slice: &[u16]) -> u16 {
     let w11 = wx * wy;
 
     let get_val = |x: i32, y: i32| -> Option<(u16, f32)> {
-        if x >= 0 && x < KNMI_GRID_W as i32 && y >= 0 && y < KNMI_GRID_H as i32 {
-            let val = raw_slice[(y * KNMI_GRID_W as i32 + x) as usize];
+        if x >= 0 && x < grid_w as i32 && y >= 0 && y < grid_h as i32 {
+            let val = raw_slice[(y * grid_w as i32 + x) as usize];
             if val != NODATA {
                 Some((val, 1.0))
             } else {
@@ -752,7 +874,7 @@ fn render_data_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
             let idx = (row * GRID_W + col) as usize;
             let (fx, fy) = lut[idx];
 
-            let val_raw = interpolate_bilinear(fx as f64, fy as f64, raw_slice);
+            let val_raw = interpolate_bilinear(fx as f64, fy as f64, KNMI_GRID_W, KNMI_GRID_H, raw_slice);
             let packed_val = if val_raw == NODATA { 0 } else { val_raw };
 
             // Pack the u16 value into the Red (high byte) and Green (low byte) channels
@@ -778,7 +900,7 @@ async fn get_data_image(
     if let Some(cached_data) = state.data_cache.get(&(ens_str.clone(), time)) {
         return Ok(Response::builder()
             .header("Content-Type", "image/png")
-            .header("Cache-Control", "public, max-age=300")
+            .header("Cache-Control", "no-store, no-cache, must-revalidate")
             .body(axum::body::Body::from(cached_data.value().clone()))
             .unwrap());
     }
@@ -812,7 +934,7 @@ async fn get_data_image(
 
     Ok(Response::builder()
         .header("Content-Type", "image/png")
-        .header("Cache-Control", "public, max-age=300")
+        .header("Cache-Control", "no-store, no-cache, must-revalidate")
         .body(axum::body::Body::from(png_bytes))
         .unwrap())
 }
@@ -1359,3 +1481,677 @@ async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std::err
 
     Ok(final_path)
 }
+
+// ===========================================================================
+// 2m Temperature Forecast Helper Functions and Handlers
+// ===========================================================================
+
+fn init_temp_projection_lut() -> Vec<(f32, f32)> {
+    let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
+    for row in 0..GRID_H {
+        for col in 0..GRID_W {
+            let col_frac = (col as f64 + 0.5) / GRID_W as f64;
+            let row_frac = (row as f64 + 0.5) / GRID_H as f64;
+            
+            let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
+            let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
+
+            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
+
+            // Map (lon, lat) to GRIB1 390x390 grid indices (fx, fy)
+            let fx = ((lon - 0.0) / 0.029) as f32;
+            let fy = ((lat - 49.0) / 0.018) as f32;
+            lut.push((fx, fy));
+        }
+    }
+    lut
+}
+
+fn parse_run_time_from_name(filename: &str) -> Option<i64> {
+    let parts: Vec<&str> = filename.split('_').collect();
+    if parts.len() >= 3 {
+        let date_str = parts[2];
+        if date_str.len() == 12 {
+            let year = date_str[0..4].parse::<i32>().ok()?;
+            let month = date_str[4..6].parse::<u32>().ok()?;
+            let day = date_str[6..8].parse::<u32>().ok()?;
+            let hour = date_str[8..10].parse::<u32>().ok()?;
+            let minute = date_str[10..12].parse::<u32>().ok()?;
+            
+            use chrono::TimeZone;
+            let utc = chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, 0).single()?;
+            return Some(utc.timestamp());
+        }
+    }
+    None
+}
+
+fn parse_tar_run_time(filename: &str) -> Option<i64> {
+    if filename.starts_with("HARM43_V1_P1_") && filename.ends_with(".tar") {
+        let date_part = &filename["HARM43_V1_P1_".len()..filename.len() - 4];
+        if date_part.len() == 10 {
+            let year = date_part[0..4].parse::<i32>().ok()?;
+            let month = date_part[4..6].parse::<u32>().ok()?;
+            let day = date_part[6..8].parse::<u32>().ok()?;
+            let hour = date_part[8..10].parse::<u32>().ok()?;
+            
+            use chrono::TimeZone;
+            let utc = chrono::Utc.with_ymd_and_hms(year, month, day, hour, 0, 0).single()?;
+            return Some(utc.timestamp());
+        }
+    }
+    None
+}
+
+fn process_harmonie_tar(tar_path: &str) -> Result<TempForecast, Box<dyn std::error::Error + Send + Sync>> {
+    let file = std::fs::File::open(tar_path)?;
+    let mut archive = tar::Archive::new(file);
+    let entries = archive.entries()?;
+
+    let mut steps = Vec::new();
+    let mut reference_time = 0;
+
+    for entry_res in entries {
+        let mut entry = entry_res?;
+        let path = entry.path()?.to_path_buf();
+        let filename = path.file_name().ok_or("Invalid path")?.to_string_lossy().to_string();
+
+        if !filename.contains("_GB") {
+            continue;
+        }
+
+        if reference_time == 0 {
+            if let Some(t) = parse_run_time_from_name(&filename) {
+                reference_time = t;
+            }
+        }
+
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data)?;
+
+        let grib_file = grib_reader::GribFile::from_bytes(data)?;
+        for idx in 0..grib_file.message_count() {
+            let msg = grib_file.message(idx)?;
+            if let Some(pds) = msg.grib1_product_definition() {
+                if pds.parameter_number == 11 && pds.level_type == 105 && pds.level_value == 2 {
+                    let forecast_hour = pds.forecast_time().unwrap_or(0) as i32;
+                    let vals_f64 = msg.read_flat_data_as_f64()?;
+
+                    if vals_f64.len() == 152100 {
+                        let mut values = vec![NODATA; 152100];
+                        for (i, &v) in vals_f64.iter().enumerate() {
+                            if v.is_finite() {
+                                values[i] = (v * 10.0).round() as u16;
+                            }
+                        }
+                        steps.push(TempStep {
+                            forecast_hour,
+                            width: 390,
+                            height: 390,
+                            values: Arc::new(values),
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    steps.sort_by_key(|s| s.forecast_hour);
+    Ok(TempForecast {
+        reference_time,
+        steps,
+    })
+}
+
+async fn download_and_process_temp_tar(
+    filename: &str,
+    file_url: Option<&str>,
+    api_key: &str,
+) -> Result<TempForecast, Box<dyn std::error::Error + Send + Sync>> {
+    println!("Requesting download URL for HARMONIE tar: {}...", filename);
+    let url = match file_url {
+        Some(u) => u.to_string(),
+        None => format!(
+            "https://api.dataplatform.knmi.nl/open-data/v1/datasets/harmonie_arome_cy43_p1/versions/1.0/files/{}/url",
+            filename
+        ),
+    };
+
+    let client = reqwest::Client::builder().build()?;
+    let res = client.get(&url).header("Authorization", api_key).send().await?;
+    if !res.status().is_success() {
+        return Err(format!("Failed to get download URL, HTTP status: {}", res.status()).into());
+    }
+
+    let url_resp: FileUrlResponse = res.json().await?;
+    let download_url = url_resp.temporary_download_url;
+
+    println!("Downloading HARMONIE tar from temporary URL to temp file...");
+    let mut file_res = client.get(&download_url).send().await?;
+    if !file_res.status().is_success() {
+        return Err(format!("Failed to download tar content, HTTP status: {}", file_res.status()).into());
+    }
+
+    let temp_tar_path = "temp_harmonie.tar";
+    {
+        let mut f = tokio::fs::File::create(temp_tar_path).await?;
+        while let Some(chunk) = file_res.chunk().await? {
+            tokio::io::copy(&mut &*chunk, &mut f).await?;
+        }
+    }
+    
+    println!("Extracting and processing GRIB1 files from tar...");
+    let forecast = tokio::task::spawn_blocking(move || {
+        let res = process_harmonie_tar(temp_tar_path);
+        let _ = std::fs::remove_file(temp_tar_path);
+        res
+    }).await??;
+
+    println!("HARMONIE forecast processed successfully: {} steps", forecast.steps.len());
+    Ok(forecast)
+}
+
+async fn fetch_latest_temp_filename(api_key: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::new();
+    let list_url = "https://api.dataplatform.knmi.nl/open-data/v1/datasets/harmonie_arome_cy43_p1/versions/1.0/files?maxKeys=1&sorting=desc";
+    let list_res = client
+        .get(list_url)
+        .header("Authorization", api_key)
+        .send()
+        .await?;
+
+    if !list_res.status().is_success() {
+        return Err(format!("Failed to list files, HTTP status: {}", list_res.status()).into());
+    }
+
+    #[derive(Deserialize)]
+    struct KnmiFileEntry {
+        filename: String,
+    }
+
+    #[derive(Deserialize)]
+    struct KnmiListResponse {
+        files: Vec<KnmiFileEntry>,
+    }
+
+    let list_data: KnmiListResponse = list_res.json().await?;
+    let entry = list_data.files.first().ok_or("No files returned by KNMI API")?;
+    Ok(entry.filename.clone())
+}
+
+async fn load_or_fetch_temp_forecast(api_key: &str) -> TempForecast {
+    let bin_path = "./harmonie_temp.bin";
+    
+    if std::path::Path::new(bin_path).exists() {
+        println!("Found local temperature cache: {}", bin_path);
+        match TempForecast::read_from_file(bin_path) {
+            Ok(fc) => {
+                println!("Successfully loaded temperature forecast run: {}", fc.reference_time);
+                match fetch_latest_temp_filename(api_key).await {
+                    Ok(latest_filename) => {
+                        if let Some(api_time) = parse_tar_run_time(&latest_filename) {
+                            if api_time > fc.reference_time {
+                                println!("Newer run available on KNMI API: {} (cached is {}). Downloading...", api_time, fc.reference_time);
+                                if let Ok(new_fc) = download_and_process_temp_tar(&latest_filename, None, api_key).await {
+                                    if let Err(e) = new_fc.write_to_file(bin_path) {
+                                        eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
+                                    }
+                                    return new_fc;
+                                }
+                            } else {
+                                println!("Local temperature cache is up to date with API: {}", fc.reference_time);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to query latest temperature run from KNMI API: {:?}", e);
+                    }
+                }
+                return fc;
+            }
+            Err(e) => {
+                eprintln!("Failed to read temperature cache, will re-download: {:?}", e);
+            }
+        }
+    }
+
+    println!("No valid temperature cache found. Downloading latest run...");
+    loop {
+        match fetch_latest_temp_filename(api_key).await {
+            Ok(latest_filename) => {
+                match download_and_process_temp_tar(&latest_filename, None, api_key).await {
+                    Ok(fc) => {
+                        if let Err(e) = fc.write_to_file(bin_path) {
+                            eprintln!("Failed to save temperature forecast to bin: {:?}", e);
+                        }
+                        return fc;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to download/process latest temperature run: {:?}. Retrying in 10 seconds...", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to get latest temperature filename: {:?}. Retrying in 10 seconds...", e);
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+}
+
+fn cleanup_tar_files() {
+    if let Ok(entries) = std::fs::read_dir(".") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "tar" {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            if stem.starts_with("HARM43_") || stem == "temp_harmonie" {
+                                println!("Cleaning up leftover tar file: {:?}", path);
+                                let _ = std::fs::remove_file(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn start_knmi_temp_mqtt_listener(state: Arc<AppState>) {
+    let broker = "wss://mqtt.dataplatform.knmi.nl";
+    let port = 443;
+    let mqtt_password =
+        std::env::var("KNMI_MQTT_PASSWORD").expect("KNMI_MQTT_PASSWORD environment variable not set!");
+    let open_data_api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
+        .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
+    let topic = "dataplatform/file/v1/harmonie_arome_cy43_p1/1.0/#";
+
+    loop {
+        let client_id = format!(
+            "weer-temp-service-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+
+        println!(
+            "Initializing KNMI MQTT subscriber for Temp with Client ID: {}...",
+            client_id
+        );
+
+        let mut mqttoptions = MqttOptions::new(client_id, broker, port);
+        mqttoptions.set_keep_alive(Duration::from_secs(30));
+        mqttoptions.set_credentials("token", &mqtt_password);
+
+        let tls_config = TlsConfiguration::default();
+        mqttoptions.set_transport(Transport::wss_with_config(tls_config));
+
+        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
+
+        if let Err(e) = client.subscribe(topic, QoS::AtMostOnce).await {
+            eprintln!(
+                "Failed to subscribe to KNMI Temp MQTT topic: {:?}. Retrying connection in 10 seconds...",
+                e
+            );
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+        println!("Subscribed to KNMI Temp topic: {}", topic);
+
+        loop {
+            match eventloop.poll().await {
+                Ok(notification) => {
+                    if let Event::Incoming(Packet::Publish(publish)) = notification {
+                        let payload_str = match String::from_utf8(publish.payload.to_vec()) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        println!("Received KNMI Temp MQTT notification: {}", payload_str);
+
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                            let data = json.get("data");
+                            let file_name = data
+                                .and_then(|d| {
+                                    d.get("filename")
+                                        .or_else(|| d.get("fileName"))
+                                        .or_else(|| d.get("file_name"))
+                                })
+                                .and_then(|v| v.as_str())
+                                .or_else(|| {
+                                    json.get("fileName")
+                                        .or_else(|| json.get("file_name"))
+                                        .and_then(|v| v.as_str())
+                                });
+
+                            let file_url = data.and_then(|d| d.get("url")).and_then(|v| v.as_str());
+
+                            if let Some(name) = file_name {
+                                if name.ends_with(".tar") {
+                                    println!("New HARMONIE tar file available: {}", name);
+                                    let state_clone = state.clone();
+                                    let name_clone = name.to_string();
+                                    let url_opt = file_url.map(|s| s.to_string());
+                                    let api_key = open_data_api_key.to_string();
+                                    tokio::spawn(async move {
+                                        match download_and_process_temp_tar(&name_clone, url_opt.as_deref(), &api_key).await {
+                                            Ok(fc) => {
+                                                if let Err(e) = fc.write_to_file("./harmonie_temp.bin") {
+                                                    eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
+                                                }
+                                                let mut temp_write = state_clone.temp_forecast.write().await;
+                                                *temp_write = Some(fc);
+                                                state_clone.temp_data_cache.clear();
+                                                println!("Successfully updated temperature forecast and cleared cache.");
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Error processing Temp tar file update for {}: {:?}", name_clone, e);
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Temp MQTT Connection error: {:?}. Reconnecting in 10 seconds...",
+                        e
+                    );
+                    break;
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+}
+
+fn render_temp_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
+    use image::{ImageBuffer, ImageFormat};
+    use std::io::Cursor;
+    
+    let mut img = ImageBuffer::new(GRID_W, GRID_H);
+
+    for row in 0..GRID_H {
+        for col in 0..GRID_W {
+            let idx = (row * GRID_W + col) as usize;
+            let (fx, fy) = lut[idx];
+
+            let val_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, raw_slice);
+            let packed_val = if val_raw == NODATA { 0 } else { val_raw };
+
+            let r = (packed_val >> 8) as u8;
+            let g = (packed_val & 0xFF) as u8;
+
+            img.put_pixel(col, row, image::Rgba([r, g, 0, 255]));
+        }
+    }
+
+    let mut png_bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut png_bytes);
+    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    png_bytes
+}
+
+/// Precalculates all temperature forecast step PNGs in the background.
+async fn precalculate_temp_data(state: Arc<AppState>) {
+    let forecast_opt = state.temp_forecast.read().await;
+    let forecast = match forecast_opt.as_ref() {
+        Some(fc) => fc,
+        None => {
+            println!("No temperature forecast loaded, skipping precalculation.");
+            return;
+        }
+    };
+
+    let num_steps = forecast.steps.len();
+    if num_steps == 0 {
+        return;
+    }
+
+    println!(
+        "Starting temperature PNG precalculation for {} steps...",
+        num_steps
+    );
+
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+
+    // Collect step info while we hold the read lock
+    let steps_info: Vec<(i64, Arc<Vec<u16>>)> = forecast
+        .steps
+        .iter()
+        .map(|s| {
+            let time_key = (s.forecast_hour as i64) * 3600;
+            (time_key, s.values.clone())
+        })
+        .collect();
+
+    // Drop the read lock before spawning tasks
+    drop(forecast_opt);
+
+    for (i, (time_key, values)) in steps_info.into_iter().enumerate() {
+        let state_clone = state.clone();
+        let sem = semaphore.clone();
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let png_bytes = render_temp_png_bytes(&values, &state_clone.temp_projection_lut);
+            state_clone.temp_data_cache.insert(time_key, png_bytes);
+        });
+
+        if (i + 1) % 10 == 0 || i == num_steps - 1 {
+            println!(
+                "Temperature precalculation... {}% done ({}/{})",
+                ((i + 1) * 100) / num_steps,
+                i + 1,
+                num_steps
+            );
+        }
+    }
+
+    println!("Temperature PNG precalculation tasks spawned for all {} steps.", num_steps);
+}
+
+
+#[derive(Serialize)]
+struct TempMetadata {
+    left: f64,
+    right: f64,
+    bottom: f64,
+    top: f64,
+    width: u32,
+    height: u32,
+    times: Vec<i64>,
+    reference_time: i64,
+    reference_time_str: String,
+    version: u64,
+}
+
+async fn get_temp_metadata(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let forecast_opt = state.temp_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Temperature forecast not loaded".to_string(),
+    ))?;
+
+    let times: Vec<i64> = forecast
+        .steps
+        .iter()
+        .map(|s| (s.forecast_hour as i64) * 3600)
+        .collect();
+
+    let reference_time_str = {
+        use chrono::TimeZone;
+        if let Some(utc_dt) = chrono::Utc.timestamp_opt(forecast.reference_time, 0).single() {
+            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
+        } else {
+            "seconds since 1970-01-01 00:00:00".to_string()
+        }
+    };
+
+    Ok(axum::Json(TempMetadata {
+        left: MERCATOR_LEFT,
+        right: MERCATOR_RIGHT,
+        bottom: MERCATOR_BOTTOM,
+        top: MERCATOR_TOP,
+        width: GRID_W,
+        height: GRID_H,
+        times,
+        reference_time: forecast.reference_time,
+        reference_time_str,
+        version: forecast.reference_time as u64,
+    }))
+}
+
+async fn get_temp_data_image(
+    Path(time): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if let Some(cached) = state.temp_data_cache.get(&time) {
+        return Ok(Response::builder()
+            .header("Content-Type", "image/png")
+            .header("Cache-Control", "no-store, no-cache, must-revalidate")
+            .body(axum::body::Body::from(cached.value().clone()))
+            .unwrap());
+    }
+
+    let forecast_opt = state.temp_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Temperature forecast not loaded".to_string(),
+    ))?;
+
+    if forecast.steps.is_empty() {
+        return Err((StatusCode::NOT_FOUND, "No temperature forecast steps".to_string()));
+    }
+
+    let step = forecast
+        .steps
+        .iter()
+        .min_by_key(|s| {
+            let step_offset = (s.forecast_hour as i64) * 3600;
+            (step_offset - time).abs()
+        })
+        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
+
+    let png_bytes = render_temp_png_bytes(&step.values, &state.temp_projection_lut);
+    state.temp_data_cache.insert(time, png_bytes.clone());
+
+    Ok(Response::builder()
+        .header("Content-Type", "image/png")
+        .header("Cache-Control", "no-store, no-cache, must-revalidate")
+        .body(axum::body::Body::from(png_bytes))
+        .unwrap())
+}
+
+#[derive(Deserialize)]
+struct TempValueQuery {
+    lat: f64,
+    lon: f64,
+    time: i64,
+}
+
+async fn get_temp_value(
+    Query(q): Query<TempValueQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let forecast_opt = state.temp_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Temperature forecast not loaded".to_string(),
+    ))?;
+
+    if forecast.steps.is_empty() {
+        return Ok(axum::Json(ValueResponse {
+            status: "no_data".to_string(),
+            value: None,
+        }));
+    }
+
+    let step = forecast
+        .steps
+        .iter()
+        .min_by_key(|s| {
+            let step_offset = (s.forecast_hour as i64) * 3600;
+            (step_offset - q.time).abs()
+        })
+        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
+
+    let fx = (q.lon - 0.0) / 0.029;
+    let fy = (q.lat - 49.0) / 0.018;
+
+    let val_raw = interpolate_bilinear(fx, fy, 390, 390, &step.values);
+    if val_raw == NODATA {
+        Ok(axum::Json(ValueResponse {
+            status: "out_of_bounds".to_string(),
+            value: None,
+        }))
+    } else {
+        let temp_c = val_raw as f64 / 10.0 - 273.15;
+        Ok(axum::Json(ValueResponse {
+            status: "ok".to_string(),
+            value: Some(temp_c),
+        }))
+    }
+}
+
+#[derive(Deserialize)]
+struct TempTimeseriesQuery {
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Serialize)]
+struct TempTimeseriesResponse {
+    status: String,
+    lat: f64,
+    lon: f64,
+    times: Vec<i64>,
+    values: Vec<f64>,
+}
+
+async fn get_temp_timeseries(
+    Query(q): Query<TempTimeseriesQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let forecast_opt = state.temp_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Temperature forecast not loaded".to_string(),
+    ))?;
+
+    let fx = (q.lon - 0.0) / 0.029;
+    let fy = (q.lat - 49.0) / 0.018;
+
+    let mut times = Vec::new();
+    let mut values = Vec::new();
+
+    for step in &forecast.steps {
+        let val_raw = interpolate_bilinear(fx, fy, 390, 390, &step.values);
+        if val_raw != NODATA {
+            let temp_c = val_raw as f64 / 10.0 - 273.15;
+            let step_offset = (step.forecast_hour as i64) * 3600;
+            times.push(step_offset);
+            values.push(temp_c);
+        }
+    }
+
+    Ok(axum::Json(TempTimeseriesResponse {
+        status: "ok".to_string(),
+        lat: q.lat,
+        lon: q.lon,
+        times,
+        values,
+    }))
+}
+

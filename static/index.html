@@ -24,7 +24,7 @@
 
     <!-- Hover Panel (Value at Cursor) -->
     <div id="hover-panel" class="glass-panel hidden">
-        <div class="hover-label">PRECIPITATION</div>
+        <div id="hover-label" class="hover-label">PRECIPITATION</div>
         <div id="hover-value" class="hover-value">-- mm/h</div>
         <div id="hover-coords" class="hover-coords">lat: --, lon: --</div>
     </div>
@@ -85,8 +85,14 @@
 
             <!-- Player Controls -->
             <div class="player-row">
+                <!-- Layer Mode Selector -->
+                <div class="layer-selector" data-active="0">
+                    <button class="layer-btn active" data-mode="rain" title="Precipitation Radar"><i class="fa-solid fa-cloud-showers-heavy"></i> Rain</button>
+                    <button class="layer-btn" data-mode="temp" title="2m Temperature"><i class="fa-solid fa-temperature-half"></i> Temp</button>
+                </div>
+
                 <!-- Quick View Selector -->
-                <div class="view-selector" data-active="0">
+                <div class="view-selector" id="rain-view-selector" data-active="0">
                     <button class="view-btn" data-view="med" title="Median Forecast">Med</button>
                     <button class="view-btn" data-view="max" title="Maximum Forecast">Max</button>
                     <button class="view-btn" data-view="prob" title="Rain Probability">Prob</button>
@@ -139,7 +145,7 @@
                 </div>
 
                 <!-- Legend Panel -->
-                <div class="legend-container">
+                <div id="legend-rain" class="legend-container">
                     <label class="section-label">Rainfall Rate (mm/h)</label>
                     <div class="legend-bar">
                         <span style="background: rgba(120, 200, 255, 0.5);"></span>
@@ -162,6 +168,20 @@
                         <span>250+</span>
                     </div>
                 </div>
+
+                <!-- Temperature Legend Panel -->
+                <div id="legend-temp" class="legend-container hidden">
+                    <label class="section-label">2m Temperature (°C)</label>
+                    <div class="legend-bar temp-gradient"></div>
+                    <div class="legend-labels">
+                        <span>-10</span>
+                        <span>0</span>
+                        <span>10</span>
+                        <span>20</span>
+                        <span>30</span>
+                        <span>35+</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -170,6 +190,6 @@
     <script src="https://unpkg.com/maplibre-gl@4.3.0/dist/maplibre-gl.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=1.0.1"></script>
 </body>
 </html>

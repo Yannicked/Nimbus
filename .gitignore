@@ -15,6 +15,7 @@ wheels/
 
 # Datasets
 *.nc
+*.tar
 
 # Temporary scratch space
 /scratch/

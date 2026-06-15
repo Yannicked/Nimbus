@@ -80,6 +80,9 @@ const CONFIG = {
 // App State
 let map;
 let metadata = null;
+let rainMetadata = null;
+let tempMetadata = null;
+let currentLayerMode = 'rain';
 let currentEns = CONFIG.defaults.ensemble;
 let currentTimeIndex = CONFIG.defaults.timeIndex;
 let isPlaying = false;
@@ -217,9 +220,18 @@ function initMap() {
 // Fetch Metadata and Load App
 async function loadApp() {
     try {
-        const response = await fetch('/api/metadata');
-        if (!response.ok) throw new Error("Metadata request failed");
-        metadata = await response.json();
+        // Fetch rain metadata
+        const responseRain = await fetch('/api/metadata');
+        if (!responseRain.ok) throw new Error("Rain metadata request failed");
+        rainMetadata = await responseRain.json();
+        
+        // Fetch temp metadata
+        const responseTemp = await fetch('/api/metadata/temp');
+        if (!responseTemp.ok) throw new Error("Temp metadata request failed");
+        tempMetadata = await responseTemp.json();
+        
+        // Default active metadata
+        metadata = currentLayerMode === 'temp' ? tempMetadata : rainMetadata;
         
         // Display reference time
         refTimeVal.textContent = formatAbsoluteTime(metadata.reference_time_str, 0);
@@ -250,7 +262,7 @@ async function loadApp() {
         const membersGroup = document.createElement('optgroup');
         membersGroup.label = 'Ensemble Members';
         
-        metadata.ensembles.forEach(ens => {
+        rainMetadata.ensembles.forEach(ens => {
             const opt = document.createElement('option');
             opt.value = ens.toString();
             opt.textContent = `Ensemble Member E${ens}`;
@@ -279,7 +291,7 @@ async function loadApp() {
         // Draw ticks on timeline
         drawSliderTicks();
 
-        // Load initial radar overlay
+        // Load initial overlay
         updateRadarOverlay();
         updateTimeStepDisplay();
         updateLegend();
@@ -313,7 +325,7 @@ function drawSliderTicks() {
 function getOrLoadTexture(gl, timeVal) {
     if (!metadata) return null;
     
-    const cacheKey = `${currentEns}-${timeVal}-${metadata.version}`;
+    const cacheKey = `${currentLayerMode}-${currentEns}-${timeVal}-${metadata.version}`;
     
     if (textureCache[cacheKey]) {
         const entry = textureCache[cacheKey];
@@ -373,7 +385,10 @@ function getOrLoadTexture(gl, timeVal) {
     img.onerror = (err) => {
         console.error(`Failed to load image for ${cacheKey}:`, err);
     };
-    img.src = `${window.location.origin}/api/data/${currentEns}/${timeVal}?v=${metadata.version}`;
+    const srcPath = currentLayerMode === 'temp'
+        ? `/api/data/temp/${timeVal}`
+        : `/api/data/${currentEns}/${timeVal}`;
+    img.src = `${window.location.origin}${srcPath}?v=${metadata.version}`;
     
     return null;
 }
@@ -407,6 +422,7 @@ const webglRadarLayer = {
             uniform float u_opacity;
             uniform vec4 u_colors[8];
             uniform float u_values[8];
+            uniform int u_layer_mode;
             
             vec4 getColor(float val) {
                 if (val < u_values[0]) return vec4(0.0);
@@ -449,7 +465,12 @@ const webglRadarLayer = {
                 if (raw_val >= 65535.0 || raw_val == 0.0) {
                     discard;
                 }
-                float val = raw_val * 0.01;
+                float val;
+                if (u_layer_mode == 1) {
+                    val = raw_val / 10.0 - 273.15;
+                } else {
+                    val = raw_val * 0.01;
+                }
                 vec4 c = getColor(val);
                 if (c.a == 0.0) {
                     discard;
@@ -567,11 +588,26 @@ const webglRadarLayer = {
         const opacity = parseFloat(opacitySlider.value) / 100;
         gl.uniform1f(gl.getUniformLocation(radarProgram, 'u_opacity'), opacity);
         
+        // u_layer_mode uniform
+        gl.uniform1i(gl.getUniformLocation(radarProgram, 'u_layer_mode'), currentLayerMode === 'temp' ? 1 : 0);
+        
         // Dynamic color stops uniform configuration
         const isProb = currentEns === 'prob';
         let colors, values;
         
-        if (isProb) {
+        if (currentLayerMode === 'temp') {
+            colors = [
+                [0/255, 43/255, 128/255, 0.8],
+                [0/255, 204/255, 255/255, 0.8],
+                [0/255, 255/255, 102/255, 0.8],
+                [255/255, 255/255, 0/255, 0.8],
+                [255/255, 153/255, 0/255, 0.85],
+                [255/255, 77/255, 77/255, 0.9],
+                [204/255, 0/255, 0/255, 0.95],
+                [153/255, 0/255, 77/255, 1.0]
+            ];
+            values = [-10.0, 0.0, 10.0, 20.0, 25.0, 30.0, 35.0, 40.0];
+        } else if (isProb) {
             colors = [
                 [180/255, 200/255, 220/255, 0.0],
                 [100/255, 160/255, 255/255, 0.5],
@@ -685,9 +721,9 @@ function updateTimeStepDisplay() {
 
 // Update the legend colors and labels dynamically
 function updateLegend() {
-    const legendTitle = document.querySelector('.legend-container .section-label');
-    const legendBar = document.querySelector('.legend-bar');
-    const legendLabels = document.querySelector('.legend-labels');
+    const legendTitle = document.querySelector('#legend-rain .section-label');
+    const legendBar = document.querySelector('#legend-rain .legend-bar');
+    const legendLabels = document.querySelector('#legend-rain .legend-labels');
     if (!legendTitle || !legendBar || !legendLabels) return;
 
     const visConfig = (currentEns === 'prob') ? CONFIG.radarVisualization.prob : CONFIG.radarVisualization.rate;
@@ -857,41 +893,70 @@ async function triggerHoverQuery() {
     if (lastLat === null || lastLon === null || !metadata) return;
 
     const timeVal = metadata.times[currentTimeIndex];
-    try {
-        const response = await fetch(`/api/value?ens=${currentEns}&time=${timeVal}&lat=${lastLat}&lon=${lastLon}`);
-        if (!response.ok) throw new Error("Value query failed");
-        const res = await response.json();
+    if (currentLayerMode === 'temp') {
+        try {
+            const response = await fetch(`/api/value/temp?time=${timeVal}&lat=${lastLat}&lon=${lastLon}`);
+            if (!response.ok) throw new Error("Temp value query failed");
+            const res = await response.json();
 
-        if (res.status === "out_of_bounds") {
-            hoverValue.textContent = "Out of Grid";
-            hoverValue.style.color = "var(--text-secondary)";
-        } else if (res.status === "no_rain" || res.value === 0.0) {
-            if (currentEns === 'prob') {
-                hoverValue.textContent = "0% Chance";
+            if (res.status === "out_of_bounds") {
+                hoverValue.textContent = "Out of Grid";
+                hoverValue.style.color = "var(--text-secondary)";
+            } else if (res.value === null) {
+                hoverValue.textContent = "No Data";
+                hoverValue.style.color = "var(--text-secondary)";
             } else {
-                hoverValue.textContent = "0.00 mm/h";
+                hoverValue.textContent = `${res.value.toFixed(1)} °C`;
+                // Color code temperature hover value
+                if (res.value < 0) hoverValue.style.color = "#38bdf8"; // Freezing: sky blue
+                else if (res.value < 10) hoverValue.style.color = "#60a5fa"; // Cool: blue
+                else if (res.value < 20) hoverValue.style.color = "#4ade80"; // Mild: green
+                else if (res.value < 28) hoverValue.style.color = "#facc15"; // Warm: yellow
+                else if (res.value < 33) hoverValue.style.color = "#fb923c"; // Hot: orange
+                else hoverValue.style.color = "#f87171"; // Very hot: red
             }
-            hoverValue.style.color = "var(--text-secondary)";
-        } else if (res.status === "probability") {
-            hoverValue.textContent = `${Math.round(res.value)}% Chance`;
-            // Color code probability
-            if (res.value < 30) hoverValue.style.color = "#94a3b8"; // Grey-blue
-            else if (res.value < 70) hoverValue.style.color = "#3b82f6"; // Blue
-            else hoverValue.style.color = "#a855f7"; // Purple / High probability
-        } else {
-            hoverValue.textContent = `${res.value.toFixed(2)} mm/h`;
-            // Color code value dynamically in panel based on intensity
-            if (res.value < 0.2) hoverValue.style.color = "#38bdf8"; // Light sky-blue
-            else if (res.value < 1.0) hoverValue.style.color = "#60a5fa"; // Blue
-            else if (res.value < 5.0) hoverValue.style.color = "#4ade80"; // Green
-            else if (res.value < 15.0) hoverValue.style.color = "#facc15"; // Yellow
-            else if (res.value < 30.0) hoverValue.style.color = "#fb923c"; // Orange
-            else hoverValue.style.color = "#f87171"; // Red
+        } catch (e) {
+            console.error("Temp Hover error:", e);
+            hoverValue.textContent = "Error";
+            hoverValue.style.color = "#f87171";
         }
-    } catch (e) {
-        console.error("Hover error:", e);
-        hoverValue.textContent = "Error";
-        hoverValue.style.color = "#f87171";
+    } else {
+        try {
+            const response = await fetch(`/api/value?ens=${currentEns}&time=${timeVal}&lat=${lastLat}&lon=${lastLon}`);
+            if (!response.ok) throw new Error("Value query failed");
+            const res = await response.json();
+
+            if (res.status === "out_of_bounds") {
+                hoverValue.textContent = "Out of Grid";
+                hoverValue.style.color = "var(--text-secondary)";
+            } else if (res.status === "no_rain" || res.value === 0.0) {
+                if (currentEns === 'prob') {
+                    hoverValue.textContent = "0% Chance";
+                } else {
+                    hoverValue.textContent = "0.00 mm/h";
+                }
+                hoverValue.style.color = "var(--text-secondary)";
+            } else if (res.status === "probability") {
+                hoverValue.textContent = `${Math.round(res.value)}% Chance`;
+                // Color code probability
+                if (res.value < 30) hoverValue.style.color = "#94a3b8"; // Grey-blue
+                else if (res.value < 70) hoverValue.style.color = "#3b82f6"; // Blue
+                else hoverValue.style.color = "#a855f7"; // Purple / High probability
+            } else {
+                hoverValue.textContent = `${res.value.toFixed(2)} mm/h`;
+                // Color code value dynamically in panel based on intensity
+                if (res.value < 0.2) hoverValue.style.color = "#38bdf8"; // Light sky-blue
+                else if (res.value < 1.0) hoverValue.style.color = "#60a5fa"; // Blue
+                else if (res.value < 5.0) hoverValue.style.color = "#4ade80"; // Green
+                else if (res.value < 15.0) hoverValue.style.color = "#facc15"; // Yellow
+                else if (res.value < 30.0) hoverValue.style.color = "#fb923c"; // Orange
+                else hoverValue.style.color = "#f87171"; // Red
+            }
+        } catch (e) {
+            console.error("Hover error:", e);
+            hoverValue.textContent = "Error";
+            hoverValue.style.color = "#f87171";
+        }
     }
 }
 
@@ -899,14 +964,23 @@ async function triggerHoverQuery() {
 function startMetadataPolling() {
     setInterval(async () => {
         try {
-            const response = await fetch('/api/metadata');
+            const endpoint = currentLayerMode === 'temp' ? '/api/metadata/temp' : '/api/metadata';
+            const response = await fetch(endpoint);
             if (!response.ok) return;
             const newMetadata = await response.json();
 
-            if (metadata && newMetadata.version !== metadata.version) {
-                console.log("New NetCDF file detected! Reloading metadata and invalidating cache...");
+            let targetMetadata = currentLayerMode === 'temp' ? tempMetadata : rainMetadata;
+            if (targetMetadata && newMetadata.version !== targetMetadata.version) {
+                console.log(`New ${currentLayerMode} forecast run detected! Reloading...`);
                 clearRadarLayers();
-                metadata = newMetadata;
+                
+                if (currentLayerMode === 'temp') {
+                    tempMetadata = newMetadata;
+                    metadata = tempMetadata;
+                } else {
+                    rainMetadata = newMetadata;
+                    metadata = rainMetadata;
+                }
 
                 // Re-render timeline slider (just in case the number of times changed)
                 timeSlider.max = metadata.times.length - 1;
@@ -937,32 +1011,45 @@ async function showTimeseriesChart(lat, lon) {
     chartCoords.textContent = `lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`;
     
     try {
-        const url = `/api/timeseries?ens=${currentEns}&lat=${lat}&lon=${lon}`;
+        const url = currentLayerMode === 'temp'
+            ? `/api/timeseries/temp?lat=${lat}&lon=${lon}`
+            : `/api/timeseries?ens=${currentEns}&lat=${lat}&lon=${lon}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error("Timeseries request failed");
         const data = await res.json();
         
         if (data.status === "out_of_bounds" || data.values.length === 0) {
-            chartCoords.textContent = "Selected point is out of radar bounds";
+            chartCoords.textContent = currentLayerMode === 'temp'
+                ? "Selected point is out of bounds"
+                : "Selected point is out of radar bounds";
             if (chartInstance) {
                 chartInstance.destroy();
                 chartInstance = null;
             }
-            chartStatPeak.textContent = "-- mm/h";
-            chartStatTotal.textContent = "-- mm";
+            chartStatPeak.textContent = "--";
+            chartStatTotal.textContent = "--";
             return;
         }
         
         const peakVal = Math.max(...data.values);
         let totalVal = 0.0;
         
-        if (currentEns === 'prob') {
+        if (currentLayerMode === 'temp') {
+            const minVal = Math.min(...data.values);
+            chartStatPeak.textContent = `${peakVal.toFixed(1)} °C`;
+            chartStatTotal.textContent = `${minVal.toFixed(1)} °C`;
+            
+            document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Max Temp";
+            document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Min Temp";
+            document.querySelector('#chart-panel h3').innerHTML = '<i class="fa-solid fa-temperature-half chart-header-icon"></i> Temperature Forecast Trend';
+        } else if (currentEns === 'prob') {
             chartStatPeak.textContent = `${Math.round(peakVal)}%`;
             const avgVal = data.values.reduce((a, b) => a + b, 0) / data.values.length;
             chartStatTotal.textContent = `${Math.round(avgVal)}% (avg)`;
             
             document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Peak Probability";
             document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Avg Probability";
+            document.querySelector('#chart-panel h3').innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend';
         } else {
             // total_mm = sum(rates) / 12 (5 mins intervals)
             totalVal = data.values.reduce((a, b) => a + b, 0) / 12.0;
@@ -971,19 +1058,43 @@ async function showTimeseriesChart(lat, lon) {
             
             document.querySelector('.stat-box:nth-child(1) .stat-label').textContent = "Peak Intensity";
             document.querySelector('.stat-box:nth-child(2) .stat-label').textContent = "Total Accumulation";
+            document.querySelector('#chart-panel h3').innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend';
         }
         
         const labels = data.times.map(secs => {
             const timeStr = formatAbsoluteTime(metadata.reference_time_str, secs);
+            if (currentLayerMode === 'temp') {
+                // Include day for multi-day temperature forecasts, e.g. "Mon 08:00"
+                const match = timeStr.match(/(\d{2})\s+(\w+).*?(\d{2}:\d{2})/);
+                if (match) {
+                    // Parse to get short weekday name
+                    const refMatch = metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+                    if (refMatch) {
+                        const refDate = new Date(`${refMatch[1]}T${refMatch[2]}Z`);
+                        const targetDate = new Date(refDate.getTime() + secs * 1000);
+                        const dayName = targetDate.toLocaleDateString('en-GB', { timeZone: 'Europe/Amsterdam', weekday: 'short' });
+                        return `${dayName} ${match[3]}`;
+                    }
+                    return `${match[1]} ${match[2]} ${match[3]}`;
+                }
+            }
             const match = timeStr.match(/(\d{2}:\d{2})/);
             return match ? match[1] : `+${Math.round(secs/60)}m`;
         });
         
         const isProb = currentEns === 'prob';
-        const labelText = isProb ? CONFIG.radarVisualization.prob.title + " (%)" : CONFIG.radarVisualization.rate.title;
-        const chartColors = isProb ? CONFIG.chart.colors.prob : CONFIG.chart.colors.rate;
-        const borderColor = chartColors.border;
-        const backgroundColor = chartColors.background;
+        let labelText, borderColor, backgroundColor;
+        
+        if (currentLayerMode === 'temp') {
+            labelText = "2m Temperature (°C)";
+            borderColor = "#f87171"; // Warm red
+            backgroundColor = "rgba(248, 113, 113, 0.15)";
+        } else {
+            labelText = isProb ? CONFIG.radarVisualization.prob.title + " (%)" : CONFIG.radarVisualization.rate.title;
+            const chartColors = isProb ? CONFIG.chart.colors.prob : CONFIG.chart.colors.rate;
+            borderColor = chartColors.border;
+            backgroundColor = chartColors.background;
+        }
         
         const ctx = document.getElementById('rainfall-chart').getContext('2d');
         
@@ -994,7 +1105,8 @@ async function showTimeseriesChart(lat, lon) {
             chartInstance.data.datasets[0].borderColor = borderColor;
             chartInstance.data.datasets[0].backgroundColor = backgroundColor;
             chartInstance.options.scales.y.title.text = labelText;
-            chartInstance.options.scales.y.max = isProb ? 100 : undefined;
+            chartInstance.options.scales.y.max = (currentLayerMode === 'temp') ? undefined : (isProb ? 100 : undefined);
+            chartInstance.options.scales.y.min = (currentLayerMode === 'temp') ? undefined : 0;
             chartInstance.update();
         } else {
             chartInstance = new Chart(ctx, {
@@ -1030,6 +1142,9 @@ async function showTimeseriesChart(lat, lon) {
                             borderWidth: 1,
                             callbacks: {
                                 label: function(context) {
+                                    if (currentLayerMode === 'temp') {
+                                        return ` ${context.parsed.y.toFixed(1)} °C`;
+                                    }
                                     return ` ${context.parsed.y.toFixed(2)}${isProb ? '%' : ' mm/h'}`;
                                 }
                             }
@@ -1067,8 +1182,8 @@ async function showTimeseriesChart(lat, lon) {
                                     weight: 'bold'
                                 }
                             },
-                            min: 0,
-                            max: isProb ? 100 : undefined
+                            min: currentLayerMode === 'temp' ? undefined : 0,
+                            max: currentLayerMode === 'temp' ? undefined : (isProb ? 100 : undefined)
                         }
                     }
                 }
@@ -1110,6 +1225,70 @@ function handleMapClick(e) {
     }
     
     showTimeseriesChart(lat, lon);
+}
+
+// Select Layer Mode (Rain vs Temp)
+function selectLayerMode(mode) {
+    if (mode === currentLayerMode) return;
+    currentLayerMode = mode;
+    
+    // Update button active state
+    document.querySelectorAll('.layer-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    
+    const selector = document.querySelector('.layer-selector');
+    if (selector) {
+        selector.dataset.active = mode === 'rain' ? '0' : '1';
+    }
+    
+    // Toggle UI visibility depending on layer mode
+    const viewSelector = document.getElementById('rain-view-selector');
+    const ensembleContainer = document.querySelector('.ensemble-select-container');
+    const legendRain = document.getElementById('legend-rain');
+    const legendTemp = document.getElementById('legend-temp');
+    
+    if (mode === 'temp') {
+        if (viewSelector) viewSelector.classList.add('hidden');
+        if (ensembleContainer) ensembleContainer.classList.add('hidden');
+        if (legendRain) legendRain.classList.add('hidden');
+        if (legendTemp) legendTemp.classList.remove('hidden');
+        
+        metadata = tempMetadata;
+    } else {
+        if (viewSelector) viewSelector.classList.remove('hidden');
+        if (ensembleContainer) ensembleContainer.classList.remove('hidden');
+        if (legendRain) legendRain.classList.remove('hidden');
+        if (legendTemp) legendTemp.classList.add('hidden');
+        
+        metadata = rainMetadata;
+    }
+    
+    // Re-initialize slider
+    if (metadata) {
+        timeSlider.max = metadata.times.length - 1;
+        if (currentTimeIndex >= metadata.times.length) {
+            currentTimeIndex = 0;
+        }
+        timeSlider.value = currentTimeIndex;
+        drawSliderTicks();
+        updateTimeStepDisplay();
+    }
+    
+    clearRadarLayers();
+    updateRadarOverlay();
+    
+    // Update hover panel label
+    const hoverLabel = document.getElementById('hover-label');
+    if (hoverLabel) {
+        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : 'PRECIPITATION';
+    }
+    
+    // Update hover panel & trend chart if open
+    triggerHoverQuery();
+    if (activeCoords) {
+        showTimeseriesChart(activeCoords.lat, activeCoords.lon);
+    }
 }
 
 // Switch Map Styles
@@ -1169,6 +1348,13 @@ window.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.view-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             selectEnsemble(btn.dataset.view);
+        });
+    });
+
+    // Attach layer toggle event listeners
+    document.querySelectorAll('.layer-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            selectLayerMode(btn.dataset.mode);
         });
     });
 });
