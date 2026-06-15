@@ -2887,6 +2887,7 @@ dependencies = [
  "ndarray",
  "netcdf",
  "notify",
+ "rayon",
  "reqwest",
  "rumqttc",
  "serde",

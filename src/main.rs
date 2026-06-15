@@ -25,6 +25,12 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
+#[derive(Clone, Debug)]
+struct LutEntry {
+    indices: [u32; 4],
+    weights: [f32; 4],
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -270,16 +276,16 @@ struct AppState {
     /// Key: (ens, time), value: PNG data image bytes
     data_cache: DashMap<(String, i64), Vec<u8>>,
     metadata: RwLock<Option<Metadata>>,
-    projection_lut: Vec<(f32, f32)>,
+    projection_lut: Vec<LutEntry>,
     
     // 2m Temperature Forecast
     temp_forecast: RwLock<Option<TempForecast>>,
-    temp_projection_lut: Vec<(f32, f32)>,
+    temp_projection_lut: Vec<LutEntry>,
     temp_data_cache: DashMap<i64, Vec<u8>>,
 
     // 10m Wind Forecast
     wind_forecast: RwLock<Option<WindForecast>>,
-    wind_projection_lut: Vec<(f32, f32)>,
+    wind_projection_lut: Vec<LutEntry>,
     wind_data_cache: DashMap<i64, Vec<u8>>,
 }
 
@@ -395,7 +401,7 @@ fn raw_to_value(raw: u16) -> f64 {
     }
 }
 /// Initializes the coordinate projection lookup table.
-fn init_projection_lut() -> Vec<(f32, f32)> {
+fn init_projection_lut() -> Vec<LutEntry> {
     let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
     for row in 0..GRID_H {
         for col in 0..GRID_W {
@@ -410,7 +416,40 @@ fn init_projection_lut() -> Vec<(f32, f32)> {
 
             let fx = ((px - KNMI_X0) / KNMI_DX) as f32;
             let fy = ((py - KNMI_Y0) / KNMI_DY) as f32;
-            lut.push((fx, fy));
+
+            let ix1 = fx.floor() as i32;
+            let iy1 = fy.floor() as i32;
+            let ix2 = ix1 + 1;
+            let iy2 = iy1 + 1;
+
+            let wx = fx - ix1 as f32;
+            let wy = fy - iy1 as f32;
+
+            let w00 = (1.0 - wx) * (1.0 - wy);
+            let w10 = wx * (1.0 - wy);
+            let w01 = (1.0 - wx) * wy;
+            let w11 = wx * wy;
+
+            let mut indices = [u32::MAX; 4];
+            let weights = [w00, w10, w01, w11];
+
+            let coords = [
+                (ix1, iy1),
+                (ix2, iy1),
+                (ix1, iy2),
+                (ix2, iy2),
+            ];
+
+            let grid_w = KNMI_GRID_W as i32;
+            let grid_h = KNMI_GRID_H as i32;
+
+            for (idx, &(x, y)) in coords.iter().enumerate() {
+                if x >= 0 && x < grid_w && y >= 0 && y < grid_h {
+                    indices[idx] = (y * grid_w + x) as u32;
+                }
+            }
+
+            lut.push(LutEntry { indices, weights });
         }
     }
     lut
@@ -471,31 +510,84 @@ async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             }
         };
 
-        // Compute stats: med, max, prob
+        // Transpose the data once to make ensemble members for a given pixel contiguous in memory.
         let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+        let mut transposed = vec![0u16; grid_size * num_ensembles];
+        for ens_idx in 0..num_ensembles {
+            let offset = ens_idx * grid_size;
+            let src_slice = &all_members_data[offset..offset + grid_size];
+            for i in 0..grid_size {
+                transposed[i * num_ensembles + ens_idx] = src_slice[i];
+            }
+        }
+
+        // Compute stats in parallel using rayon
         let mut med_slice = vec![NODATA; grid_size];
         let mut max_slice = vec![NODATA; grid_size];
         let mut prob_slice = vec![NODATA; grid_size];
 
-        let mut vals_buf = vec![0u16; num_ensembles];
-        let mut vals_med = vec![0u16; num_ensembles];
-        let mut vals_max = vec![0u16; num_ensembles];
-        let mut vals_prob = vec![0u16; num_ensembles];
+        use rayon::prelude::*;
+        transposed.par_chunks_exact(num_ensembles)
+            .zip(med_slice.par_iter_mut())
+            .zip(max_slice.par_iter_mut())
+            .zip(prob_slice.par_iter_mut())
+            .for_each(|(((ens_vals, med_val), max_val), prob_val)| {
+                if ens_vals[0] == NODATA {
+                    *med_val = NODATA;
+                    *max_val = NODATA;
+                    *prob_val = NODATA;
+                    return;
+                }
 
-        for i in 0..grid_size {
-            for ens_idx in 0..num_ensembles {
-                vals_buf[ens_idx] = all_members_data[ens_idx * grid_size + i];
-            }
+                let mut local_vals = [0u16; 128];
+                let n = ens_vals.len();
+                if n <= 128 {
+                    local_vals[..n].copy_from_slice(ens_vals);
+                    let active_vals = &mut local_vals[..n];
+                    active_vals.sort_unstable();
 
-            vals_med.copy_from_slice(&vals_buf);
-            med_slice[i] = reduce_ensemble(&EnsembleStat::Median, &mut vals_med);
+                    *med_val = active_vals[n / 2];
 
-            vals_max.copy_from_slice(&vals_buf);
-            max_slice[i] = reduce_ensemble(&EnsembleStat::Maximum, &mut vals_max);
+                    let mut max = 0;
+                    for &v in active_vals.iter().rev() {
+                        if v != NODATA {
+                            max = v;
+                            break;
+                        }
+                    }
+                    *max_val = max;
 
-            vals_prob.copy_from_slice(&vals_buf);
-            prob_slice[i] = reduce_ensemble(&EnsembleStat::Probability, &mut vals_prob);
-        }
+                    let mut count = 0;
+                    for &v in active_vals.iter() {
+                        if v >= RAIN_THRESHOLD && v != NODATA {
+                            count += 1;
+                        }
+                    }
+                    *prob_val = ((count * 100) / n) as u16;
+                } else {
+                    let mut active_vals = ens_vals.to_vec();
+                    active_vals.sort_unstable();
+
+                    *med_val = active_vals[n / 2];
+
+                    let mut max = 0;
+                    for &v in active_vals.iter().rev() {
+                        if v != NODATA {
+                            max = v;
+                            break;
+                        }
+                    }
+                    *max_val = max;
+
+                    let mut count = 0;
+                    for &v in active_vals.iter() {
+                        if v >= RAIN_THRESHOLD && v != NODATA {
+                            count += 1;
+                        }
+                    }
+                    *prob_val = ((count * 100) / n) as u16;
+                }
+            });
 
         // Insert stats into grid_cache
         let arc_med = Arc::new(med_slice);
@@ -523,13 +615,16 @@ async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
 
         for (ens_str, slice) in render_items {
             let state_clone = state.clone();
+            let state_clone_for_blocking = state.clone();
             let sem = semaphore.clone();
             let ens_str_clone = ens_str.clone();
             let time_val_clone = time_val;
             
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
-                let png_bytes = render_data_png_bytes(&slice, &state_clone.projection_lut);
+                let png_bytes = tokio::task::spawn_blocking(move || {
+                    render_data_png_bytes(&slice, &state_clone_for_blocking.projection_lut)
+                }).await.unwrap();
                 state_clone.data_cache.insert((ens_str_clone, time_val_clone), png_bytes);
             });
         }
@@ -827,6 +922,32 @@ fn read_netcdf_all_ensembles(
 }
 
 
+/// Bilinear interpolation of a raw u16 grid value using a precalculated LutEntry.
+///
+/// Returns [`NODATA`] when no valid neighbors are found.
+fn interpolate_bilinear_lut(entry: &LutEntry, raw_slice: &[u16]) -> u16 {
+    let mut sum_val = 0.0f64;
+    let mut sum_weight = 0.0f64;
+
+    for i in 0..4 {
+        let idx = entry.indices[i];
+        if idx != u32::MAX {
+            let val = raw_slice[idx as usize];
+            if val != NODATA {
+                let w = entry.weights[i] as f64;
+                sum_val += (val as f64) * w;
+                sum_weight += w;
+            }
+        }
+    }
+
+    if sum_weight > 0.001 {
+        (sum_val / sum_weight).round() as u16
+    } else {
+        NODATA
+    }
+}
+
 /// Bilinear interpolation of a raw u16 grid value at fractional grid coordinates.
 ///
 /// Returns [`NODATA`] when the query point falls entirely outside the grid or
@@ -979,33 +1100,42 @@ async fn get_metadata(
 }
 
 
-/// Renders the entire KNMI radar grid for a timeframe as a 700x765 Web Mercator projected
-/// lossless PNG using a coordinate lookup table (LUT). The u16 raw values are packed into the Red (high byte) and Green (low byte) channels.
-fn render_data_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
+fn render_data_png_bytes(raw_slice: &[u16], lut: &[LutEntry]) -> Vec<u8> {
+    use image::codecs::png::{PngEncoder, CompressionType, FilterType};
+    use image::ImageEncoder;
     use std::io::Cursor;
-    
-    let mut img = ImageBuffer::new(GRID_W, GRID_H);
+    use rayon::prelude::*;
 
-    for row in 0..GRID_H {
-        for col in 0..GRID_W {
-            let idx = (row * GRID_W + col) as usize;
-            let (fx, fy) = lut[idx];
+    let mut pixels = vec![0u8; (GRID_W * GRID_H * 4) as usize];
 
-            let val_raw = interpolate_bilinear(fx as f64, fy as f64, KNMI_GRID_W, KNMI_GRID_H, raw_slice);
-            let (r, g, a) = if val_raw == NODATA {
-                (0, 0, 0)
+    pixels.par_chunks_exact_mut(4)
+        .enumerate()
+        .for_each(|(idx, pixel)| {
+            let entry = &lut[idx];
+            let val_raw = interpolate_bilinear_lut(entry, raw_slice);
+            if val_raw != NODATA {
+                pixel[0] = (val_raw >> 8) as u8;
+                pixel[1] = (val_raw & 0xFF) as u8;
+                pixel[2] = 0;
+                pixel[3] = 255;
             } else {
-                ((val_raw >> 8) as u8, (val_raw & 0xFF) as u8, 255)
-            };
-
-            img.put_pixel(col, row, image::Rgba([r, g, 0, a]));
-        }
-    }
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                pixel[3] = 0;
+            }
+        });
 
     let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    {
+        let cursor = Cursor::new(&mut png_bytes);
+        let encoder = PngEncoder::new_with_quality(
+            cursor,
+            CompressionType::Fast,
+            FilterType::NoFilter,
+        );
+        encoder.write_image(&pixels, GRID_W, GRID_H, image::ExtendedColorType::Rgba8).unwrap();
+    }
     png_bytes
 }
 
@@ -1043,7 +1173,11 @@ async fn get_data_image(
     };
 
     // Render data png bytes using LUT
-    let png_bytes = render_data_png_bytes(&raw_slice, &state.projection_lut);
+    let state_clone = state.clone();
+    let raw_slice_clone = raw_slice.clone();
+    let png_bytes = tokio::task::spawn_blocking(move || {
+        render_data_png_bytes(&raw_slice_clone, &state_clone.projection_lut)
+    }).await.unwrap();
 
     // Cache results
     state
@@ -1604,7 +1738,7 @@ async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std::err
 // 2m Temperature Forecast Helper Functions and Handlers
 // ===========================================================================
 
-fn init_temp_projection_lut() -> Vec<(f32, f32)> {
+fn init_temp_projection_lut() -> Vec<LutEntry> {
     let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
     for row in 0..GRID_H {
         for col in 0..GRID_W {
@@ -1619,7 +1753,40 @@ fn init_temp_projection_lut() -> Vec<(f32, f32)> {
             // Map (lon, lat) to GRIB1 390x390 grid indices (fx, fy)
             let fx = ((lon - 0.0) / 0.029) as f32;
             let fy = ((lat - 49.0) / 0.018) as f32;
-            lut.push((fx, fy));
+
+            let ix1 = fx.floor() as i32;
+            let iy1 = fy.floor() as i32;
+            let ix2 = ix1 + 1;
+            let iy2 = iy1 + 1;
+
+            let wx = fx - ix1 as f32;
+            let wy = fy - iy1 as f32;
+
+            let w00 = (1.0 - wx) * (1.0 - wy);
+            let w10 = wx * (1.0 - wy);
+            let w01 = (1.0 - wx) * wy;
+            let w11 = wx * wy;
+
+            let mut indices = [u32::MAX; 4];
+            let weights = [w00, w10, w01, w11];
+
+            let coords = [
+                (ix1, iy1),
+                (ix2, iy1),
+                (ix1, iy2),
+                (ix2, iy2),
+            ];
+
+            let grid_w = 390;
+            let grid_h = 390;
+
+            for (idx, &(x, y)) in coords.iter().enumerate() {
+                if x >= 0 && x < grid_w && y >= 0 && y < grid_h {
+                    indices[idx] = (y * grid_w + x) as u32;
+                }
+            }
+
+            lut.push(LutEntry { indices, weights });
         }
     }
     lut
@@ -2083,31 +2250,42 @@ async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
     }
 }
 
-fn render_temp_png_bytes(raw_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
+fn render_temp_png_bytes(raw_slice: &[u16], lut: &[LutEntry]) -> Vec<u8> {
+    use image::codecs::png::{PngEncoder, CompressionType, FilterType};
+    use image::ImageEncoder;
     use std::io::Cursor;
-    
-    let mut img = ImageBuffer::new(GRID_W, GRID_H);
+    use rayon::prelude::*;
 
-    for row in 0..GRID_H {
-        for col in 0..GRID_W {
-            let idx = (row * GRID_W + col) as usize;
-            let (fx, fy) = lut[idx];
+    let mut pixels = vec![0u8; (GRID_W * GRID_H * 4) as usize];
 
-            let val_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, raw_slice);
-            let (r, g, a) = if val_raw == NODATA {
-                (0, 0, 0)
+    pixels.par_chunks_exact_mut(4)
+        .enumerate()
+        .for_each(|(idx, pixel)| {
+            let entry = &lut[idx];
+            let val_raw = interpolate_bilinear_lut(entry, raw_slice);
+            if val_raw != NODATA {
+                pixel[0] = (val_raw >> 8) as u8;
+                pixel[1] = (val_raw & 0xFF) as u8;
+                pixel[2] = 0;
+                pixel[3] = 255;
             } else {
-                ((val_raw >> 8) as u8, (val_raw & 0xFF) as u8, 255)
-            };
-
-            img.put_pixel(col, row, image::Rgba([r, g, 0, a]));
-        }
-    }
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                pixel[3] = 0;
+            }
+        });
 
     let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    {
+        let cursor = Cursor::new(&mut png_bytes);
+        let encoder = PngEncoder::new_with_quality(
+            cursor,
+            CompressionType::Fast,
+            FilterType::NoFilter,
+        );
+        encoder.write_image(&pixels, GRID_W, GRID_H, image::ExtendedColorType::Rgba8).unwrap();
+    }
     png_bytes
 }
 
@@ -2152,11 +2330,14 @@ async fn precalculate_temp_data(state: Arc<AppState>) {
 
     for (i, (time_key, values)) in steps_info.into_iter().enumerate() {
         let state_clone = state.clone();
+        let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let png_bytes = render_temp_png_bytes(&values, &state_clone.temp_projection_lut);
+            let png_bytes = tokio::task::spawn_blocking(move || {
+                render_temp_png_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
+            }).await.unwrap();
             state_clone.temp_data_cache.insert(time_key, png_bytes);
         });
 
@@ -2173,38 +2354,62 @@ async fn precalculate_temp_data(state: Arc<AppState>) {
     println!("Temperature PNG precalculation tasks spawned for all {} steps.", num_steps);
 }
 
-fn render_wind_png_bytes(u_slice: &[u16], v_slice: &[u16], lut: &[(f32, f32)]) -> Vec<u8> {
-    use image::{ImageBuffer, ImageFormat};
+fn render_wind_png_bytes(u_slice: &[u16], v_slice: &[u16], lut: &[LutEntry]) -> Vec<u8> {
+    use image::codecs::png::{PngEncoder, CompressionType, FilterType};
+    use image::ImageEncoder;
     use std::io::Cursor;
-    
-    let mut img = ImageBuffer::new(GRID_W, GRID_H * 2);
+    use rayon::prelude::*;
 
-    for row in 0..GRID_H {
-        for col in 0..GRID_W {
-            let idx = (row * GRID_W + col) as usize;
-            let (fx, fy) = lut[idx];
+    let mut pixels = vec![0u8; (GRID_W * GRID_H * 2 * 4) as usize];
 
-            let u_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, u_slice);
-            let (r_u, g_u, a_u) = if u_raw == NODATA {
-                (0, 0, 0)
+    let (top_pixels, bottom_pixels) = pixels.split_at_mut((GRID_W * GRID_H * 4) as usize);
+
+    top_pixels.par_chunks_exact_mut(4)
+        .enumerate()
+        .for_each(|(idx, pixel)| {
+            let entry = &lut[idx];
+            let val_raw = interpolate_bilinear_lut(entry, u_slice);
+            if val_raw != NODATA {
+                pixel[0] = (val_raw >> 8) as u8;
+                pixel[1] = (val_raw & 0xFF) as u8;
+                pixel[2] = 0;
+                pixel[3] = 255;
             } else {
-                ((u_raw >> 8) as u8, (u_raw & 0xFF) as u8, 255)
-            };
-            img.put_pixel(col, row, image::Rgba([r_u, g_u, 0, a_u]));
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                pixel[3] = 0;
+            }
+        });
 
-            let v_raw = interpolate_bilinear(fx as f64, fy as f64, 390, 390, v_slice);
-            let (r_v, g_v, a_v) = if v_raw == NODATA {
-                (0, 0, 0)
+    bottom_pixels.par_chunks_exact_mut(4)
+        .enumerate()
+        .for_each(|(idx, pixel)| {
+            let entry = &lut[idx];
+            let val_raw = interpolate_bilinear_lut(entry, v_slice);
+            if val_raw != NODATA {
+                pixel[0] = (val_raw >> 8) as u8;
+                pixel[1] = (val_raw & 0xFF) as u8;
+                pixel[2] = 0;
+                pixel[3] = 255;
             } else {
-                ((v_raw >> 8) as u8, (v_raw & 0xFF) as u8, 255)
-            };
-            img.put_pixel(col, row + GRID_H, image::Rgba([r_v, g_v, 0, a_v]));
-        }
-    }
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                pixel[3] = 0;
+            }
+        });
 
     let mut png_bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut png_bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    {
+        let cursor = Cursor::new(&mut png_bytes);
+        let encoder = PngEncoder::new_with_quality(
+            cursor,
+            CompressionType::Fast,
+            FilterType::NoFilter,
+        );
+        encoder.write_image(&pixels, GRID_W, GRID_H * 2, image::ExtendedColorType::Rgba8).unwrap();
+    }
     png_bytes
 }
 
@@ -2246,11 +2451,14 @@ async fn precalculate_wind_data(state: Arc<AppState>) {
 
     for (i, (time_key, u_vals, v_vals)) in steps_info.into_iter().enumerate() {
         let state_clone = state.clone();
+        let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let png_bytes = render_wind_png_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut);
+            let png_bytes = tokio::task::spawn_blocking(move || {
+                render_wind_png_bytes(&u_vals, &v_vals, &state_clone_for_blocking.wind_projection_lut)
+            }).await.unwrap();
             state_clone.wind_data_cache.insert(time_key, png_bytes);
         });
 
@@ -2350,7 +2558,12 @@ async fn get_wind_data_image(
         })
         .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
 
-    let png_bytes = render_wind_png_bytes(&step.u_values, &step.v_values, &state.wind_projection_lut);
+    let u_vals = step.u_values.clone();
+    let v_vals = step.v_values.clone();
+    let state_clone = state.clone();
+    let png_bytes = tokio::task::spawn_blocking(move || {
+        render_wind_png_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
+    }).await.unwrap();
     state.wind_data_cache.insert(time, png_bytes.clone());
 
     Ok(Response::builder()
@@ -2588,7 +2801,11 @@ async fn get_temp_data_image(
         })
         .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
 
-    let png_bytes = render_temp_png_bytes(&step.values, &state.temp_projection_lut);
+    let vals = step.values.clone();
+    let state_clone = state.clone();
+    let png_bytes = tokio::task::spawn_blocking(move || {
+        render_temp_png_bytes(&vals, &state_clone.temp_projection_lut)
+    }).await.unwrap();
     state.temp_data_cache.insert(time, png_bytes.clone());
 
     Ok(Response::builder()
