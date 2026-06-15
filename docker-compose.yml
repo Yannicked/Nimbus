@@ -7,13 +7,20 @@ services:
       dockerfile: Dockerfile
     image: nimbus-service:latest
     container_name: nimbus-app
-    ports:
-      - "8080:8080"
     env_file:
       - .env
     volumes:
       - nimbus_cache:/app/cache
+    networks:
+      - reverse-proxy
+      - default
     restart: unless-stopped
 
 volumes:
   nimbus_cache:
+
+networks:
+  reverse-proxy:
+    external: true
+    name: reverse-proxy
+
