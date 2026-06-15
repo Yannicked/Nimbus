@@ -1,0 +1,167 @@
+import { CONFIG } from './config.js';
+import { state } from './state.js';
+import { DOM } from './ui/dom.js';
+import { fetchMetadata } from './api.js';
+import { initMap, updateRadarOverlay, clearRadarLayers } from './map/index.js';
+import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble } from './ui/controls.js';
+import { closeTimeseriesChart } from './ui/chart.js';
+
+// Fetch Metadata and Load App
+async function loadApp() {
+    try {
+        // Fetch metadata in parallel
+        const [rainMetadata, tempMetadata, windMetadata] = await Promise.all([
+            fetchMetadata('rain'),
+            fetchMetadata('temp'),
+            fetchMetadata('wind')
+        ]);
+        state.rainMetadata = rainMetadata;
+        state.tempMetadata = tempMetadata;
+        state.windMetadata = windMetadata;
+        
+        // Default active metadata
+        if (state.currentLayerMode === 'temp') {
+            state.metadata = state.tempMetadata;
+        } else if (state.currentLayerMode === 'wind') {
+            state.metadata = state.windMetadata;
+        } else {
+            state.metadata = state.rainMetadata;
+        }
+        
+        // Find index closest to current system time
+        const refMatch = state.metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+        let refTimeMs = Date.now();
+        if (refMatch) {
+            refTimeMs = new Date(`${refMatch[1]}T${refMatch[2]}Z`).getTime();
+        }
+        const targetOffset = (Date.now() - refTimeMs) / 1000;
+        let closestIndex = 0;
+        let minDiff = Infinity;
+        for (let i = 0; i < state.metadata.times.length; i++) {
+            const diff = Math.abs(state.metadata.times[i] - targetOffset);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = i;
+            }
+        }
+        state.currentTimeIndex = closestIndex;
+        
+        // Display reference time
+        DOM.refTimeVal.textContent = formatAbsoluteTime(state.metadata.reference_time_str, 0);
+
+        // Create Ensemble Selector Options Grouped by Category
+        DOM.ensembleSelect.innerHTML = '';
+        
+        // Add statistics first (separate / at the beginning)
+        const statsGroup = document.createElement('optgroup');
+        statsGroup.label = 'Statistics / Summary';
+        
+        const stats = ['med', 'max', 'prob'];
+        const statLabels = { 
+            'med': 'Median Forecast (MED)', 
+            'max': 'Maximum Forecast (MAX)', 
+            'prob': 'Precipitation Probability (PROB)' 
+        };
+        stats.forEach(stat => {
+            const opt = document.createElement('option');
+            opt.value = stat;
+            opt.textContent = statLabels[stat];
+            if (stat === state.currentEns) opt.selected = true;
+            statsGroup.appendChild(opt);
+        });
+        DOM.ensembleSelect.appendChild(statsGroup);
+
+        // Add individual ensemble members
+        const membersGroup = document.createElement('optgroup');
+        membersGroup.label = 'Ensemble Members';
+        
+        state.rainMetadata.ensembles.forEach(ens => {
+            const opt = document.createElement('option');
+            opt.value = ens.toString();
+            opt.textContent = `Ensemble Member E${ens}`;
+            if (ens === state.currentEns) opt.selected = true;
+            membersGroup.appendChild(opt);
+        });
+        DOM.ensembleSelect.appendChild(membersGroup);
+
+        // Initialize Timeline Slider
+        DOM.timeSlider.min = 0;
+        DOM.timeSlider.max = state.metadata.times.length - 1;
+        DOM.timeSlider.value = state.currentTimeIndex;
+
+        // Draw ticks on timeline
+        drawSliderTicks();
+
+        // Load initial overlay
+        updateRadarOverlay();
+        updateTimeStepDisplay();
+        updateLegend();
+
+    } catch (e) {
+        console.error(e);
+        DOM.refTimeVal.textContent = "Error loading data!";
+    }
+}
+
+// Poll for metadata updates to detect new NetCDF file
+function startMetadataPolling() {
+    setInterval(async () => {
+        try {
+            const endpoint = state.currentLayerMode === 'temp' 
+                ? '/api/metadata/temp' 
+                : (state.currentLayerMode === 'wind' ? '/api/metadata/wind' : '/api/metadata');
+            const response = await fetch(endpoint);
+            if (!response.ok) return;
+            const newMetadata = await response.json();
+
+            let targetMetadata = state.currentLayerMode === 'temp' 
+                ? state.tempMetadata 
+                : (state.currentLayerMode === 'wind' ? state.windMetadata : state.rainMetadata);
+                
+            if (targetMetadata && newMetadata.version !== targetMetadata.version) {
+                console.log(`New ${state.currentLayerMode} forecast run detected! Reloading...`);
+                clearRadarLayers();
+                
+                if (state.currentLayerMode === 'temp') {
+                    state.tempMetadata = newMetadata;
+                    state.metadata = state.tempMetadata;
+                } else if (state.currentLayerMode === 'wind') {
+                    state.windMetadata = newMetadata;
+                    state.metadata = state.windMetadata;
+                    state.windPixelData = null;
+                } else {
+                    state.rainMetadata = newMetadata;
+                    state.metadata = state.rainMetadata;
+                }
+
+                // Re-render timeline slider (just in case the number of times changed)
+                DOM.timeSlider.max = state.metadata.times.length - 1;
+                if (state.currentTimeIndex >= state.metadata.times.length) {
+                    state.currentTimeIndex = 0;
+                    DOM.timeSlider.value = 0;
+                }
+                drawSliderTicks();
+                updateTimeStepDisplay();
+                updateRadarOverlay();
+
+                // Update reference time display
+                DOM.refTimeVal.textContent = formatAbsoluteTime(state.metadata.reference_time_str, 0);
+            }
+        } catch (e) {
+            console.error("Failed to check for metadata update:", e);
+        }
+    }, CONFIG.intervals.metadataPollingMs);
+}
+
+// Orchestrator tying it all together
+async function bootstrap() {
+    initMap();
+    await loadApp();
+    initControls();
+    startMetadataPolling();
+
+    // Additional event listeners
+    DOM.chartCloseBtn.addEventListener('click', closeTimeseriesChart);
+}
+
+window.addEventListener('DOMContentLoaded', bootstrap);
