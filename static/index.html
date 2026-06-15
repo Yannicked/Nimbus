@@ -69,6 +69,9 @@
                 <button id="btn-settings-toggle" class="header-btn" title="Toggle Settings and Layers">
                     <i class="fa-solid fa-sliders"></i>
                 </button>
+                <button id="btn-info-toggle" class="header-btn" title="Information & Developer Details">
+                    <i class="fa-solid fa-circle-info"></i>
+                </button>
             </div>
         </header>
 
@@ -211,6 +214,70 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Info Modal & Backdrop -->
+    <div id="info-modal-backdrop" class="hidden"></div>
+    <div id="info-modal" class="glass-panel hidden">
+        <button id="info-close" class="chart-close-btn" title="Close Panel"><i class="fa-solid fa-xmark"></i></button>
+        <header class="modal-header">
+            <h3><i class="fa-solid fa-circle-info header-icon"></i> About Nimbus</h3>
+        </header>
+        <div class="modal-body">
+            <section class="info-section">
+                <h4><i class="fa-solid fa-satellite-dish"></i> Data & Weather Models</h4>
+                <p>Nimbus displays real-time weather and forecast data sourced directly from the <a href="https://dataplatform.knmi.nl/" target="_blank" rel="noopener noreferrer" class="info-link">KNMI Open Data Platform</a>:</p>
+                <ul>
+                    <li>
+                        <strong>Precipitation Ensemble Forecast:</strong>
+                        <div class="dataset-container">
+                            <a href="https://dataplatform.knmi.nl/dataset/seamless-precipitation-ensemble-forecast-members-1-0" target="_blank" rel="noopener noreferrer" class="dataset-name-link">seamless_precipitation_ensemble_forecast_members <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                        </div>
+                        <p class="dataset-desc">An experimental 20-member pilot dataset providing a seamless ensemble precipitation forecast for the Netherlands. Generated every 5 minutes extending up to 6 hours ahead, combining 5-minute real-time radar accumulations with the Harmonie-Arome ensemble using <strong>pySTEPS</strong>.</p>
+                    </li>
+                    <li>
+                        <strong>Harmonie Temperature & Wind:</strong>
+                        <div class="dataset-container">
+                            <a href="https://dataplatform.knmi.nl/dataset/harmonie-arome-cy43-p1-1-0" target="_blank" rel="noopener noreferrer" class="dataset-name-link">harmonie_arome_cy43_p1 <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                        </div>
+                        <p class="dataset-desc">Derived from the high-resolution <strong>UWC-West HARMONIE-AROME Cy43</strong> numerical weather prediction model, developed in collaboration with meteorological services of the Netherlands, Iceland, Denmark, and Ireland. Provides 2m Temperature and 10m Wind forecasts at selectable levels (10m to 300m) at 1-hour frequency in GRIB format.</p>
+                    </li>
+                </ul>
+            </section>
+
+            <section class="info-section">
+                <h4><i class="fa-solid fa-map"></i> Mapping & Visualization</h4>
+                <p>Interactive maps and geographical data visual layers are powered by:</p>
+                <ul>
+                    <li><strong>Map Library:</strong> <a href="https://maplibre.org/" target="_blank" rel="noopener noreferrer" class="info-link">MapLibre GL JS</a>, an open-source, GPU-accelerated vector map renderer.</li>
+                    <li><strong>Map Style & Basemap:</strong> CartoDB Dark Matter base tiles provided by <a href="https://carto.com/basemaps" target="_blank" rel="noopener noreferrer" class="info-link">CARTO</a>, built using data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" class="info-link">OpenStreetMap</a> contributors.</li>
+                </ul>
+            </section>
+            
+            <section class="info-section">
+                <h4><i class="fa-solid fa-gears"></i> How it Works</h4>
+                <p>Nimbus is built using a high-performance stack:</p>
+                <ul>
+                    <li><strong>Rust Backend:</strong> Built with Axum and Tokio, subscribing to the KNMI MQTT broker for instant updates, downloading raw NetCDF and GRIB1 files, and serving data.</li>
+                    <li><strong>Lossless WebP Packing:</strong> Precision float grids are packed into the Red and Green channels of WebP images for highly compressed, lossless transmission to the client.</li>
+                    <li><strong>GPU Acceleration:</strong> The frontend uses custom WebGL fragment shaders to unpack the WebP pixels on-the-fly and render smooth coordinate projections.</li>
+                </ul>
+            </section>
+            
+            <section class="info-section developer-info">
+                <h4><i class="fa-solid fa-code"></i> Developer</h4>
+                <div class="developer-card">
+                    <div class="dev-avatar">
+                        <i class="fa-solid fa-user-astronaut"></i>
+                    </div>
+                    <div class="dev-details">
+                        <span class="dev-name">Yannick de Jong</span>
+                        <a href="mailto:yannick@yannick.cloud" class="dev-email"><i class="fa-solid fa-envelope"></i> yannick@yannick.cloud</a>
+                        <span class="dev-title">Research Software Engineer</span>
+                    </div>
+                </div>
+            </section>
         </div>
     </div>
 

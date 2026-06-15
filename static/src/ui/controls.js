@@ -338,6 +338,36 @@ export function initControls() {
         localStorage.setItem('nimbus_settings_expanded', isExpanded);
     });
 
+    const toggleInfoModal = (show) => {
+        if (show === undefined) {
+            const isHidden = DOM.infoModal.classList.toggle('hidden');
+            DOM.infoModalBackdrop.classList.toggle('hidden', isHidden);
+            DOM.btnInfoToggle.classList.toggle('active', !isHidden);
+        } else {
+            DOM.infoModal.classList.toggle('hidden', !show);
+            DOM.infoModalBackdrop.classList.toggle('hidden', !show);
+            DOM.btnInfoToggle.classList.toggle('active', show);
+        }
+    };
+
+    DOM.btnInfoToggle.addEventListener('click', () => {
+        toggleInfoModal();
+    });
+
+    DOM.infoCloseBtn.addEventListener('click', () => {
+        toggleInfoModal(false);
+    });
+
+    DOM.infoModalBackdrop.addEventListener('click', () => {
+        toggleInfoModal(false);
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            toggleInfoModal(false);
+        }
+    });
+
     // Attach height buttons event listeners
     document.querySelectorAll('.height-btn').forEach(btn => {
         btn.addEventListener('click', () => {
