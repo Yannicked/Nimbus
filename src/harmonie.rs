@@ -49,7 +49,11 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
 
     let mut temp_steps = Vec::new();
     let mut wind_steps = Vec::new();
-    let mut solar_steps = Vec::new();
+    struct RawSolarStep {
+        forecast_hour: i32,
+        values: Vec<f64>,
+    }
+    let mut raw_solar_steps = Vec::new();
     let mut reference_time = 0;
 
     for entry_res in entries {
@@ -95,13 +99,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                     forecast_hour = pds.forecast_time().unwrap_or(0) as i32;
                     let vals_f64 = msg.read_flat_data_as_f64()?;
                     if vals_f64.len() == 152100 {
-                        let mut values = vec![NODATA; 152100];
-                        for (i, &v) in vals_f64.iter().enumerate() {
-                            if v.is_finite() {
-                                values[i] = v.round() as u16;
-                            }
-                        }
-                        solar_vals = Some(values);
+                        solar_vals = Some(vals_f64);
                     }
                 } else if pds.level_type == 105 && [10, 50, 100, 200, 300].contains(&(pds.level_value as u32)) {
                     let lvl = pds.level_value as u32;
@@ -142,11 +140,9 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
             });
         }
         if let Some(s_vals) = solar_vals {
-            solar_steps.push(SolarStep {
+            raw_solar_steps.push(RawSolarStep {
                 forecast_hour,
-                width: 390,
-                height: 390,
-                values: Arc::new(s_vals),
+                values: s_vals,
             });
         }
         for (lvl, (u_opt, v_opt)) in wind_by_level {
@@ -165,7 +161,45 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
 
     temp_steps.sort_by_key(|s| s.forecast_hour);
     wind_steps.sort_by_key(|s| (s.forecast_hour, s.height_level));
-    solar_steps.sort_by_key(|s| s.forecast_hour);
+    raw_solar_steps.sort_by_key(|s| s.forecast_hour);
+    let mut solar_steps = Vec::new();
+    for k in 0..raw_solar_steps.len() {
+        let current_step = &raw_solar_steps[k];
+        let mut values = vec![NODATA; 152100];
+        
+        let prev_step = if k > 0 {
+            Some(&raw_solar_steps[k - 1])
+        } else {
+            None
+        };
+        
+        let prev_hour = prev_step.map(|s| s.forecast_hour).unwrap_or(0);
+        let dt_hours = current_step.forecast_hour - prev_hour;
+        let dt_seconds = (dt_hours as f64) * 3600.0;
+        
+        if dt_seconds > 0.0 {
+            for i in 0..152100 {
+                let curr_val = current_step.values[i];
+                if curr_val.is_finite() {
+                    let prev_val = match prev_step {
+                        Some(p) if p.values[i].is_finite() => p.values[i],
+                        _ => 0.0,
+                    };
+                    
+                    let diff = (curr_val - prev_val).max(0.0);
+                    let watts = diff / dt_seconds;
+                    values[i] = watts.round().min(65535.0) as u16;
+                }
+            }
+        }
+        
+        solar_steps.push(SolarStep {
+            forecast_hour: current_step.forecast_hour,
+            width: 390,
+            height: 390,
+            values: Arc::new(values),
+        });
+    }
 
     Ok((
         TempForecast {
