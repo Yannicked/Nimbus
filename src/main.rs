@@ -1083,98 +1083,106 @@ async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
         KNMI_DATASET
     );
 
-    let client_id = format!(
-        "weer-service-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    );
-
-    println!(
-        "Initializing KNMI MQTT subscriber with Client ID: {}...",
-        client_id
-    );
-
-    let mut mqttoptions = MqttOptions::new(client_id, broker, port);
-    mqttoptions.set_keep_alive(Duration::from_secs(30));
-    mqttoptions.set_credentials("token", mqtt_password);
-
-    let tls_config = TlsConfiguration::default();
-    mqttoptions.set_transport(Transport::wss_with_config(tls_config));
-
-    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
-
-    // Subscribe to topic
-    if let Err(e) = client.subscribe(&topic, QoS::AtMostOnce).await {
-        eprintln!("Failed to subscribe to KNMI MQTT topic: {:?}", e);
-        return;
-    }
-    println!("Subscribed to KNMI topic: {}", topic);
-
-    // Event loop
     loop {
-        match eventloop.poll().await {
-            Ok(notification) => {
-                if let Event::Incoming(Packet::Publish(publish)) = notification {
-                    let payload_str = match String::from_utf8(publish.payload.to_vec()) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    println!("Received KNMI MQTT notification: {}", payload_str);
+        let client_id = format!(
+            "weer-service-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
 
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_str) {
-                        let data = json.get("data");
-                        let file_name = data
-                            .and_then(|d| {
-                                d.get("filename")
-                                    .or_else(|| d.get("fileName"))
-                                    .or_else(|| d.get("file_name"))
-                            })
-                            .and_then(|v| v.as_str())
-                            .or_else(|| {
-                                json.get("fileName")
-                                    .or_else(|| json.get("file_name"))
-                                    .and_then(|v| v.as_str())
-                            });
+        println!(
+            "Initializing KNMI MQTT subscriber with Client ID: {}...",
+            client_id
+        );
 
-                        let file_url = data.and_then(|d| d.get("url")).and_then(|v| v.as_str());
+        let mut mqttoptions = MqttOptions::new(client_id, broker, port);
+        mqttoptions.set_keep_alive(Duration::from_secs(30));
+        mqttoptions.set_credentials("token", &mqtt_password);
 
-                        if let Some(name) = file_name {
-                            if name.ends_with(".nc") {
-                                println!("New NetCDF file available: {}", name);
-                                let state_clone = state.clone();
-                                let name_clone = name.to_string();
-                                let url_opt = file_url.map(|s| s.to_string());
-                                let open_data_api_key_clone = open_data_api_key.to_string();
-                                tokio::spawn(async move {
-                                    if let Err(e) = download_and_update_nc_file(
-                                        &name_clone,
-                                        url_opt.as_deref(),
-                                        &open_data_api_key_clone,
-                                        state_clone,
-                                    )
-                                    .await
-                                    {
-                                        eprintln!(
-                                            "Error processing file update for {}: {:?}",
-                                            name_clone, e
-                                        );
-                                    }
+        let tls_config = TlsConfiguration::default();
+        mqttoptions.set_transport(Transport::wss_with_config(tls_config));
+
+        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
+
+        // Subscribe to topic
+        if let Err(e) = client.subscribe(&topic, QoS::AtMostOnce).await {
+            eprintln!(
+                "Failed to subscribe to KNMI MQTT topic: {:?}. Retrying connection in 10 seconds...",
+                e
+            );
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+        println!("Subscribed to KNMI topic: {}", topic);
+
+        // Event loop
+        loop {
+            match eventloop.poll().await {
+                Ok(notification) => {
+                    if let Event::Incoming(Packet::Publish(publish)) = notification {
+                        let payload_str = match String::from_utf8(publish.payload.to_vec()) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        println!("Received KNMI MQTT notification: {}", payload_str);
+
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                            let data = json.get("data");
+                            let file_name = data
+                                .and_then(|d| {
+                                    d.get("filename")
+                                        .or_else(|| d.get("fileName"))
+                                        .or_else(|| d.get("file_name"))
+                                })
+                                .and_then(|v| v.as_str())
+                                .or_else(|| {
+                                    json.get("fileName")
+                                        .or_else(|| json.get("file_name"))
+                                        .and_then(|v| v.as_str())
                                 });
+
+                            let file_url = data.and_then(|d| d.get("url")).and_then(|v| v.as_str());
+
+                            if let Some(name) = file_name {
+                                if name.ends_with(".nc") {
+                                    println!("New NetCDF file available: {}", name);
+                                    let state_clone = state.clone();
+                                    let name_clone = name.to_string();
+                                    let url_opt = file_url.map(|s| s.to_string());
+                                    let open_data_api_key_clone = open_data_api_key.to_string();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = download_and_update_nc_file(
+                                            &name_clone,
+                                            url_opt.as_deref(),
+                                            &open_data_api_key_clone,
+                                            state_clone,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!(
+                                                "Error processing file update for {}: {:?}",
+                                                name_clone, e
+                                            );
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                eprintln!(
-                    "MQTT Connection error: {:?}. Retrying in 10 seconds...",
-                    e
-                );
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                Err(e) => {
+                    eprintln!(
+                        "MQTT Connection error: {:?}. Reconnecting in 10 seconds...",
+                        e
+                    );
+                    break;
+                }
             }
         }
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
