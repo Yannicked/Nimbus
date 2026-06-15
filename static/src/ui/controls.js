@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import { state } from '../state.js';
+import { state, syncStateToURL } from '../state.js';
 import { DOM } from './dom.js';
 import { updateRadarOverlay, triggerHoverQuery, clearRadarLayers, setupRadarSourceAndLayer } from '../map/index.js';
 import { showTimeseriesChart } from './chart.js';
@@ -139,6 +139,7 @@ export function selectEnsemble(ens) {
     if (state.activeCoords) {
         showTimeseriesChart(state.activeCoords.lat, state.activeCoords.lon);
     }
+    syncStateToURL();
 }
 
 // Toggle layer mode between rain, temperature, and wind
@@ -239,6 +240,7 @@ export function selectLayerMode(mode) {
     if (state.activeCoords) {
         showTimeseriesChart(state.activeCoords.lat, state.activeCoords.lon);
     }
+    syncStateToURL();
 }
 
 // Switch between map vector style layers
@@ -433,4 +435,5 @@ export function selectWindHeight(height) {
     if (state.activeCoords) {
         showTimeseriesChart(state.activeCoords.lat, state.activeCoords.lon);
     }
+    syncStateToURL();
 }

@@ -1,10 +1,10 @@
 import { CONFIG } from './config.js';
-import { state } from './state.js';
+import { state, parseURLState } from './state.js';
 import { DOM } from './ui/dom.js';
 import { fetchMetadata } from './api.js';
 import { initMap, updateRadarOverlay, clearRadarLayers } from './map/index.js';
-import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble } from './ui/controls.js';
-import { closeTimeseriesChart } from './ui/chart.js';
+import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble, selectLayerMode, selectWindHeight } from './ui/controls.js';
+import { showTimeseriesChart, closeTimeseriesChart } from './ui/chart.js';
 
 // Fetch Metadata and Load App
 async function loadApp() {
@@ -155,10 +155,35 @@ function startMetadataPolling() {
 
 // Orchestrator tying it all together
 async function bootstrap() {
+    parseURLState();
     initMap();
     await loadApp();
     initControls();
     startMetadataPolling();
+
+    // Restore layer mode, wind height, and selected location on load
+    if (state.currentLayerMode !== 'rain') {
+        const targetMode = state.currentLayerMode;
+        state.currentLayerMode = 'rain'; // temporarily reset to trigger setup code
+        selectLayerMode(targetMode);
+    }
+    if (state.currentLayerMode === 'wind') {
+        selectWindHeight(state.selectedWindHeight);
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const sLat = parseFloat(urlParams.get('slat'));
+    const sLon = parseFloat(urlParams.get('slon'));
+    if (!isNaN(sLat) && !isNaN(sLon)) {
+        if (state.clickedMarker) {
+            state.clickedMarker.setLngLat([sLon, sLat]);
+        } else {
+            state.clickedMarker = new maplibregl.Marker()
+                .setLngLat([sLon, sLat])
+                .addTo(state.map);
+        }
+        showTimeseriesChart(sLat, sLon);
+    }
 
     // Additional event listeners
     DOM.chartCloseBtn.addEventListener('click', closeTimeseriesChart);

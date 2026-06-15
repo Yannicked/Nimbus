@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import { state } from '../state.js';
+import { state, syncStateToURL } from '../state.js';
 import { DOM } from '../ui/dom.js';
 import { fetchHoverValue } from '../api.js';
 import { mpsToBeaufort, degreesToCardinal, showTimeseriesChart } from '../ui/chart.js';
@@ -351,14 +351,6 @@ export function initMap() {
 
     // Sync viewport state to URL query parameters
     state.map.on('moveend', () => {
-        const center = state.map.getCenter();
-        const zoom = state.map.getZoom();
-        
-        const url = new URL(window.location.href);
-        url.searchParams.set('lat', center.lat.toFixed(4));
-        url.searchParams.set('lon', center.lng.toFixed(4));
-        url.searchParams.set('zoom', zoom.toFixed(1));
-        
-        window.history.replaceState({}, '', url.pathname + url.search);
+        syncStateToURL();
     });
 }

@@ -1,5 +1,5 @@
 import { CONFIG } from '../config.js';
-import { state } from '../state.js';
+import { state, syncStateToURL } from '../state.js';
 import { DOM } from './dom.js';
 import { fetchTimeseries } from '../api.js';
 import { formatAbsoluteTime } from './controls.js';
@@ -32,6 +32,7 @@ export function degreesToCardinal(deg) {
 export async function showTimeseriesChart(lat, lon) {
     if (!state.metadata) return;
     state.activeCoords = { lat, lon };
+    syncStateToURL();
     
     // Show the panel
     DOM.chartPanel.classList.remove('hidden');
@@ -236,6 +237,7 @@ export async function showTimeseriesChart(lat, lon) {
 export function closeTimeseriesChart() {
     DOM.chartPanel.classList.add('hidden');
     state.activeCoords = null;
+    syncStateToURL();
     
     if (state.clickedMarker) {
         state.clickedMarker.remove();
