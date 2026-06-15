@@ -65,7 +65,7 @@ export class WebGLWindLayer {
         state.glContext = gl;
         console.log("Initializing WebGL Wind Layer fully on GPU...");
 
-        // 1. Compile background heat map overlay shader
+        // 1. Compile background heat map overlay shader (with manual 16-bit bilinear interpolation)
         const vertexShaderSource = `
             attribute vec2 a_position;
             attribute vec2 a_texcoord;
@@ -111,25 +111,47 @@ export class WebGLWindLayer {
                 }
                 return vec4(236.0/255.0, 72.0/255.0, 153.0/255.0, 0.9);
             }
-            
-            void main() {
-                float clamped_x = 0.5 / 700.0 + v_texcoord.x * (699.0 / 700.0);
-                float clamped_y = 0.5 / 765.0 + v_texcoord.y * (764.0 / 765.0);
+
+            float sample_wind_pixel(sampler2D tex, float col, float row, float half_offset) {
+                vec2 uv = vec2((col + 0.5) / 700.0, (row + 0.5) / 765.0 * 0.5 + half_offset);
+                vec4 color = texture2D(tex, uv);
+                float r = floor(color.r * 255.0 + 0.5);
+                float g = floor(color.g * 255.0 + 0.5);
+                return r * 256.0 + g;
+            }
+
+            float interpolate_wind(sampler2D tex, float x_norm, float y_norm, float half_offset) {
+                float px = x_norm * 699.0;
+                float py = y_norm * 764.0;
                 
-                vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
-                vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
+                float x0 = floor(px);
+                float y0 = floor(py);
+                float x1 = min(x0 + 1.0, 699.0);
+                float y1 = min(y0 + 1.0, 764.0);
                 
-                vec4 tex_u = texture2D(u_texture, texcoord_u);
-                vec4 tex_v = texture2D(u_texture, texcoord_v);
+                float tx = px - x0;
+                float ty = py - y0;
                 
-                if (tex_u.a < 0.99 || tex_v.a < 0.99) {
-                    discard;
+                float p00 = sample_wind_pixel(tex, x0, y0, half_offset);
+                float p10 = sample_wind_pixel(tex, x1, y0, half_offset);
+                float p01 = sample_wind_pixel(tex, x0, y1, half_offset);
+                float p11 = sample_wind_pixel(tex, x1, y1, half_offset);
+                
+                if (p00 >= 65535.0 || p10 >= 65535.0 || p01 >= 65535.0 || p11 >= 65535.0 ||
+                    p00 == 0.0 || p10 == 0.0 || p01 == 0.0 || p11 == 0.0) {
+                    return -1.0; 
                 }
                 
-                float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
-                float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
+                float p0 = mix(p00, p10, tx);
+                float p1 = mix(p01, p11, tx);
+                return mix(p0, p1, ty);
+            }
+            
+            void main() {
+                float u_raw = interpolate_wind(u_texture, v_texcoord.x, v_texcoord.y, 0.5);
+                float v_raw = interpolate_wind(u_texture, v_texcoord.x, v_texcoord.y, 0.0);
                 
-                if (u_raw >= 65535.0 || v_raw >= 65535.0 || u_raw == 0.0 || v_raw == 0.0) {
+                if (u_raw < 0.0 || v_raw < 0.0) {
                     discard;
                 }
                 
@@ -164,13 +186,13 @@ export class WebGLWindLayer {
             uniform float u_rand_seed;
             uniform vec2 u_tex_size;
 
-             float rand(vec2 co) {
-                 return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
-             }
+            float rand(vec2 co) {
+                return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+            }
 
-             float rand2(vec2 co) {
-                 return fract(sin(dot(co, vec2(43.2312, 113.8213))) * 43758.5453);
-             }
+            float rand2(vec2 co) {
+                return fract(sin(dot(co, vec2(43.2312, 113.8213))) * 43758.5453);
+            }
 
             float unpack12_X(vec4 color) {
                 float r = floor(color.r * 255.0 + 0.5);
@@ -206,6 +228,41 @@ export class WebGLWindLayer {
                 return vec4(r, g, b, a);
             }
 
+            float sample_wind_pixel(sampler2D tex, float col, float row, float half_offset) {
+                vec2 uv = vec2((col + 0.5) / 700.0, (row + 0.5) / 765.0 * 0.5 + half_offset);
+                vec4 color = texture2D(tex, uv);
+                float r = floor(color.r * 255.0 + 0.5);
+                float g = floor(color.g * 255.0 + 0.5);
+                return r * 256.0 + g;
+            }
+
+            float interpolate_wind(sampler2D tex, float x_norm, float y_norm, float half_offset) {
+                float px = x_norm * 699.0;
+                float py = y_norm * 764.0;
+                
+                float x0 = floor(px);
+                float y0 = floor(py);
+                float x1 = min(x0 + 1.0, 699.0);
+                float y1 = min(y0 + 1.0, 764.0);
+                
+                float tx = px - x0;
+                float ty = py - y0;
+                
+                float p00 = sample_wind_pixel(tex, x0, y0, half_offset);
+                float p10 = sample_wind_pixel(tex, x1, y0, half_offset);
+                float p01 = sample_wind_pixel(tex, x0, y1, half_offset);
+                float p11 = sample_wind_pixel(tex, x1, y1, half_offset);
+                
+                if (p00 >= 65535.0 || p10 >= 65535.0 || p01 >= 65535.0 || p11 >= 65535.0 ||
+                    p00 == 0.0 || p10 == 0.0 || p01 == 0.0 || p11 == 0.0) {
+                    return -1.0; 
+                }
+                
+                float p0 = mix(p00, p10, tx);
+                float p1 = mix(p01, p11, tx);
+                return mix(p0, p1, ty);
+            }
+
             void main() {
                 vec2 pixel = v_texcoord * u_tex_size;
                 float col = floor(pixel.x);
@@ -227,23 +284,14 @@ export class WebGLWindLayer {
 
                     // Re-add a very small continuous random drop rate (0.1% per frame) to gently dissolve long-term sinks/clustering
                     float drop_rand = rand(vec2(col / u_tex_size.x, u_rand_seed + 9.876));
-                    if (drop_rand < 0.0001) {
+                    if (drop_rand < 0.001) {
                         reset = true;
                     }
 
-                    float clamped_x = 0.5 / 700.0 + x * (699.0 / 700.0);
-                    float clamped_y = 0.5 / 765.0 + (1.0 - y) * (764.0 / 765.0);
+                    float u_raw = interpolate_wind(u_wind_texture, x, 1.0 - y, 0.5);
+                    float v_raw = interpolate_wind(u_wind_texture, x, 1.0 - y, 0.0);
 
-                    vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
-                    vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
-
-                    vec4 tex_u = texture2D(u_wind_texture, texcoord_u);
-                    vec4 tex_v = texture2D(u_wind_texture, texcoord_v);
-
-                    float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
-                    float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
-
-                    if (u_raw >= 65535.0 || v_raw >= 65535.0 || u_raw == 0.0 || v_raw == 0.0) {
+                    if (u_raw < 0.0 || v_raw < 0.0) {
                         reset = true;
                     }
 
@@ -259,8 +307,8 @@ export class WebGLWindLayer {
                         float dx_norm = (u * u_dt * u_speed_factor * 1200.0) / 1210000.0;
                         float dy_norm = -(v * u_dt * u_speed_factor * 1200.0) / 1310000.0;
 
-                        x += dx_norm*5.0;
-                        y += dy_norm*5.0;
+                        x += dx_norm;
+                        y += dy_norm;
 
                         if (x < 0.0 || x > 1.0 || y < 0.0 || y > 1.0) {
                             float rx = rand(vec2(col / u_tex_size.x, u_rand_seed + 1.123));
@@ -309,6 +357,41 @@ export class WebGLWindLayer {
                 return (hi * 16.0 + lo) / 4095.0;
             }
 
+            float sample_wind_pixel(sampler2D tex, float col, float row, float half_offset) {
+                vec2 uv = vec2((col + 0.5) / 700.0, (row + 0.5) / 765.0 * 0.5 + half_offset);
+                vec4 color = texture2D(tex, uv);
+                float r = floor(color.r * 255.0 + 0.5);
+                float g = floor(color.g * 255.0 + 0.5);
+                return r * 256.0 + g;
+            }
+
+            float interpolate_wind(sampler2D tex, float x_norm, float y_norm, float half_offset) {
+                float px = x_norm * 699.0;
+                float py = y_norm * 764.0;
+                
+                float x0 = floor(px);
+                float y0 = floor(py);
+                float x1 = min(x0 + 1.0, 699.0);
+                float y1 = min(y0 + 1.0, 764.0);
+                
+                float tx = px - x0;
+                float ty = py - y0;
+                
+                float p00 = sample_wind_pixel(tex, x0, y0, half_offset);
+                float p10 = sample_wind_pixel(tex, x1, y0, half_offset);
+                float p01 = sample_wind_pixel(tex, x0, y1, half_offset);
+                float p11 = sample_wind_pixel(tex, x1, y1, half_offset);
+                
+                if (p00 >= 65535.0 || p10 >= 65535.0 || p01 >= 65535.0 || p11 >= 65535.0 ||
+                    p00 == 0.0 || p10 == 0.0 || p01 == 0.0 || p11 == 0.0) {
+                    return -1.0; 
+                }
+                
+                float p0 = mix(p00, p10, tx);
+                float p1 = mix(p01, p11, tx);
+                return mix(p0, p1, ty);
+            }
+
             void main() {
                 vec4 state_col = texture2D(u_state_texture, a_particle_uv);
                 
@@ -325,21 +408,12 @@ export class WebGLWindLayer {
 
                 gl_Position = u_matrix * vec4(ux, uy, 0.0, 1.0);
                 
-                // Sample wind speed to fade out stationary particles smoothly
-                float clamped_x = 0.5 / 700.0 + x_norm * (699.0 / 700.0);
-                float clamped_y = 0.5 / 765.0 + (1.0 - y_norm) * (764.0 / 765.0);
-
-                vec2 texcoord_u = vec2(clamped_x, clamped_y * 0.5 + 0.5);
-                vec2 texcoord_v = vec2(clamped_x, clamped_y * 0.5);
-
-                vec4 tex_u = texture2D(u_wind_texture, texcoord_u);
-                vec4 tex_v = texture2D(u_wind_texture, texcoord_v);
-
-                float u_raw = (tex_u.r * 255.0) * 256.0 + (tex_u.g * 255.0);
-                float v_raw = (tex_v.r * 255.0) * 256.0 + (tex_v.g * 255.0);
+                // Sample wind speed to fade out stationary particles smoothly with full 16-bit bilinear precision
+                float u_raw = interpolate_wind(u_wind_texture, x_norm, 1.0 - y_norm, 0.5);
+                float v_raw = interpolate_wind(u_wind_texture, x_norm, 1.0 - y_norm, 0.0);
 
                 float speed = 0.0;
-                if (u_raw < 65535.0 && v_raw < 65535.0 && u_raw > 0.0 && v_raw > 0.0) {
+                if (u_raw >= 0.0 && v_raw >= 0.0) {
                     float u = u_raw / 100.0 - 100.0;
                     float v = v_raw / 100.0 - 100.0;
                     speed = sqrt(u * u + v * v);
@@ -500,6 +574,12 @@ export class WebGLWindLayer {
         const windTexture = getOrLoadTexture(gl, timeVal);
         if (!windTexture) return; // Wait for texture load
 
+        // Force NEAREST filtering on the wind texture to ensure manual 16-bit bilinear interpolation gets precise pixel bytes
+        gl.bindTexture(gl.TEXTURE_2D, windTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+
         const now = performance.now();
         let dt = (now - state.lastAnimTime) / 1000.0;
         if (dt > 0.1) dt = 0.1;
@@ -547,7 +627,7 @@ export class WebGLWindLayer {
 
         // Set update uniforms
         gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_dt'), dt);
-        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_speed_factor'), 2.5);
+        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_speed_factor'), 2.5 * 4);
         gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_rand_seed'), Math.random());
         gl.uniform2f(gl.getUniformLocation(this.updateProgram, 'u_tex_size'), this.numParticles, this.trailLength);
 
@@ -624,7 +704,7 @@ export class WebGLWindLayer {
         gl.uniform1i(gl.getUniformLocation(state.particleProgram, 'u_wind_texture'), 1);
 
         gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_point_size'), 5.5);
-        gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_arrow_opacity'), 0.85);
+        gl.uniform1f(gl.getUniformLocation(state.particleProgram, 'u_arrow_opacity'), opacity);
 
         gl.drawArrays(gl.POINTS, 0, this.numParticles * this.trailLength);
 
