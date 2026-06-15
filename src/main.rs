@@ -1842,10 +1842,17 @@ async fn start_knmi_temp_mqtt_listener(state: Arc<AppState>) {
                                                 if let Err(e) = fc.write_to_file("./harmonie_temp.bin") {
                                                     eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
                                                 }
-                                                let mut temp_write = state_clone.temp_forecast.write().await;
-                                                *temp_write = Some(fc);
-                                                state_clone.temp_data_cache.clear();
+                                                {
+                                                    let mut temp_write = state_clone.temp_forecast.write().await;
+                                                    *temp_write = Some(fc);
+                                                    state_clone.temp_data_cache.clear();
+                                                }
                                                 println!("Successfully updated temperature forecast and cleared cache.");
+                                                
+                                                let state_precalc = state_clone.clone();
+                                                tokio::spawn(async move {
+                                                    precalculate_temp_data(state_precalc).await;
+                                                });
                                             }
                                             Err(e) => {
                                                 eprintln!("Error processing Temp tar file update for {}: {:?}", name_clone, e);
