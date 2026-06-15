@@ -1,27 +1,27 @@
-use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use std::sync::Arc;
 
-use crate::state::AppState;
 use crate::constants::{
-    KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0, KNMI_DX, KNMI_DY,
-    MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_BOTTOM, MERCATOR_TOP,
-    GRID_W, GRID_H, NODATA, PRECIP_VAR
+    GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0, MERCATOR_BOTTOM,
+    MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NODATA, PRECIP_VAR,
 };
+use crate::interpolation::interpolate_bilinear;
 use crate::models::{
-    ValueQuery, ValueResponse, TimeseriesQuery, TimeseriesResponse,
-    WindMetadata, WindValueQuery, WindValueResponse, WindTimeseriesQuery, WindTimeseriesResponse,
-    TempMetadata, TempValueQuery, TempTimeseriesQuery, TempTimeseriesResponse,
-    SolarMetadata, SolarValueQuery, SolarTimeseriesQuery, SolarTimeseriesResponse,
-    EnsembleStat, reduce_ensemble
+    reduce_ensemble, EnsembleStat, SolarMetadata, SolarTimeseriesQuery, SolarTimeseriesResponse,
+    SolarValueQuery, TempMetadata, TempTimeseriesQuery, TempTimeseriesResponse, TempValueQuery,
+    TimeseriesQuery, TimeseriesResponse, ValueQuery, ValueResponse, WindMetadata,
+    WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery, WindValueResponse,
 };
 use crate::projection;
-use crate::rendering::{render_data_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes, render_solar_webp_bytes};
-use crate::interpolation::interpolate_bilinear;
 use crate::radar::{compute_raw_slice, raw_to_value};
+use crate::rendering::{
+    render_data_webp_bytes, render_solar_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes,
+};
+use crate::state::AppState;
 
 /// Serves an empty favicon response to prevent 404 console errors.
 pub async fn favicon() -> impl IntoResponse {
@@ -80,12 +80,12 @@ pub async fn get_data_image(
     let raw_slice_clone = raw_slice.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
         render_data_webp_bytes(&raw_slice_clone, &state_clone.projection_lut)
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     // Cache results
-    state
-        .data_cache
-        .insert((ens_str, time), webp_bytes.clone());
+    state.data_cache.insert((ens_str, time), webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -137,8 +137,8 @@ pub async fn get_value(
     }
 
     // Read value based on query type
-    let file = netcdf::open(&file_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let file =
+        netcdf::open(&file_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let var = file.variable(PRECIP_VAR).ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "precip_intensity variable missing".to_string(),
@@ -146,10 +146,11 @@ pub async fn get_value(
 
     let (status_out, value_out) = if let Some(stat) = EnsembleStat::from_str(&q.ens) {
         // Read value at target cell across all members
-        let time_idx = meta.times.iter().position(|&t| t == q.time).ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("Invalid time: {}", q.time),
-        ))?;
+        let time_idx = meta
+            .times
+            .iter()
+            .position(|&t| t == q.time)
+            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", q.time)))?;
         let mut vals = Vec::with_capacity(meta.ensembles.len());
         for (ens_idx, _) in meta.ensembles.iter().enumerate() {
             let val_raw: u16 = var
@@ -177,14 +178,10 @@ pub async fn get_value(
             )
         })?;
 
-        let ens_idx = meta
-            .ensembles
-            .iter()
-            .position(|&e| e == ens_num)
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                format!("Invalid ensemble: {}", ens_num),
-            ))?;
+        let ens_idx = meta.ensembles.iter().position(|&e| e == ens_num).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("Invalid ensemble: {}", ens_num),
+        ))?;
 
         let time_idx = meta
             .times
@@ -268,8 +265,8 @@ pub async fn get_timeseries(
         }));
     }
 
-    let file = netcdf::open(&file_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let file =
+        netcdf::open(&file_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let var = file.variable(PRECIP_VAR).ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "precip_intensity variable missing".to_string(),
@@ -309,14 +306,10 @@ pub async fn get_timeseries(
             )
         })?;
 
-        let ens_idx = meta
-            .ensembles
-            .iter()
-            .position(|&e| e == ens_num)
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                format!("Invalid ensemble: {}", ens_num),
-            ))?;
+        let ens_idx = meta.ensembles.iter().position(|&e| e == ens_num).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("Invalid ensemble: {}", ens_num),
+        ))?;
 
         let raw_values = var
             .get_values::<u16, _>((
@@ -359,7 +352,10 @@ pub async fn get_wind_metadata(
 
     let reference_time_str = {
         use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc.timestamp_opt(forecast.reference_time, 0).single() {
+        if let Some(utc_dt) = chrono::Utc
+            .timestamp_opt(forecast.reference_time, 0)
+            .single()
+        {
             format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
         } else {
             "seconds since 1970-01-01 00:00:00".to_string()
@@ -418,8 +414,12 @@ pub async fn get_wind_data_image(
     let state_clone = state.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
         render_wind_webp_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
-    }).await.unwrap();
-    state.wind_data_cache.insert((height, time), webp_bytes.clone());
+    })
+    .await
+    .unwrap();
+    state
+        .wind_data_cache
+        .insert((height, time), webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -571,7 +571,10 @@ pub async fn get_temp_metadata(
 
     let reference_time_str = {
         use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc.timestamp_opt(forecast.reference_time, 0).single() {
+        if let Some(utc_dt) = chrono::Utc
+            .timestamp_opt(forecast.reference_time, 0)
+            .single()
+        {
             format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
         } else {
             "seconds since 1970-01-01 00:00:00".to_string()
@@ -611,7 +614,10 @@ pub async fn get_temp_data_image(
     ))?;
 
     if forecast.steps.is_empty() {
-        return Err((StatusCode::NOT_FOUND, "No temperature forecast steps".to_string()));
+        return Err((
+            StatusCode::NOT_FOUND,
+            "No temperature forecast steps".to_string(),
+        ));
     }
 
     let step = forecast
@@ -627,7 +633,9 @@ pub async fn get_temp_data_image(
     let state_clone = state.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
         render_temp_webp_bytes(&vals, &state_clone.temp_projection_lut)
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     state.temp_data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()
@@ -733,7 +741,10 @@ pub async fn get_solar_metadata(
 
     let reference_time_str = {
         use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc.timestamp_opt(forecast.reference_time, 0).single() {
+        if let Some(utc_dt) = chrono::Utc
+            .timestamp_opt(forecast.reference_time, 0)
+            .single()
+        {
             format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
         } else {
             "seconds since 1970-01-01 00:00:00".to_string()
@@ -789,7 +800,9 @@ pub async fn get_solar_data_image(
     let state_clone = state.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
         render_solar_webp_bytes(&vals, &state_clone.solar_projection_lut)
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     state.solar_data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()

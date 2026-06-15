@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::io::Read;
 use crate::constants::{NODATA, RAIN_THRESHOLD};
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct LutEntry {
@@ -43,7 +43,7 @@ impl TempForecast {
         f.write_all(b"HRMT")?;
         f.write_all(&self.reference_time.to_le_bytes())?;
         f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
-        
+
         for step in &self.steps {
             f.write_all(&step.forecast_hour.to_le_bytes())?;
             f.write_all(&(step.width as u32).to_le_bytes())?;
@@ -63,29 +63,29 @@ impl TempForecast {
         if &magic != b"HRMT" {
             return Err("Invalid magic bytes in temp file".into());
         }
-        
+
         let mut ref_time_bytes = [0u8; 8];
         f.read_exact(&mut ref_time_bytes)?;
         let reference_time = i64::from_le_bytes(ref_time_bytes);
-        
+
         let mut steps_len_bytes = [0u8; 4];
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
-        
+
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
             let mut hour_bytes = [0u8; 4];
             f.read_exact(&mut hour_bytes)?;
             let forecast_hour = i32::from_le_bytes(hour_bytes);
-            
+
             let mut w_bytes = [0u8; 4];
             f.read_exact(&mut w_bytes)?;
             let width = u32::from_le_bytes(w_bytes) as usize;
-            
+
             let mut h_bytes = [0u8; 4];
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
-            
+
             let len = width * height;
             let mut values = vec![0u16; len];
             let mut byte_buf = vec![0u8; len * 2];
@@ -93,7 +93,7 @@ impl TempForecast {
             for i in 0..len {
                 values[i] = u16::from_le_bytes([byte_buf[i * 2], byte_buf[i * 2 + 1]]);
             }
-            
+
             steps.push(TempStep {
                 forecast_hour,
                 width,
@@ -101,7 +101,7 @@ impl TempForecast {
                 values: Arc::new(values),
             });
         }
-        
+
         Ok(TempForecast {
             reference_time,
             steps,
@@ -130,7 +130,7 @@ impl WindForecast {
         f.write_all(b"HRW2")?;
         f.write_all(&self.reference_time.to_le_bytes())?;
         f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
-        
+
         for step in &self.steps {
             f.write_all(&step.forecast_hour.to_le_bytes())?;
             f.write_all(&step.height_level.to_le_bytes())?;
@@ -154,33 +154,33 @@ impl WindForecast {
         if &magic != b"HRW2" {
             return Err("Invalid magic bytes in wind file".into());
         }
-        
+
         let mut ref_time_bytes = [0u8; 8];
         f.read_exact(&mut ref_time_bytes)?;
         let reference_time = i64::from_le_bytes(ref_time_bytes);
-        
+
         let mut steps_len_bytes = [0u8; 4];
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
-        
+
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
             let mut hour_bytes = [0u8; 4];
             f.read_exact(&mut hour_bytes)?;
             let forecast_hour = i32::from_le_bytes(hour_bytes);
-            
+
             let mut hl_bytes = [0u8; 4];
             f.read_exact(&mut hl_bytes)?;
             let height_level = u32::from_le_bytes(hl_bytes);
-            
+
             let mut w_bytes = [0u8; 4];
             f.read_exact(&mut w_bytes)?;
             let width = u32::from_le_bytes(w_bytes) as usize;
-            
+
             let mut h_bytes = [0u8; 4];
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
-            
+
             let len = width * height;
             let mut u_values = vec![0u16; len];
             let mut byte_buf = vec![0u8; len * 2];
@@ -188,13 +188,13 @@ impl WindForecast {
             for i in 0..len {
                 u_values[i] = u16::from_le_bytes([byte_buf[i * 2], byte_buf[i * 2 + 1]]);
             }
-            
+
             let mut v_values = vec![0u16; len];
             f.read_exact(&mut byte_buf)?;
             for i in 0..len {
                 v_values[i] = u16::from_le_bytes([byte_buf[i * 2], byte_buf[i * 2 + 1]]);
             }
-            
+
             steps.push(WindStep {
                 forecast_hour,
                 height_level,
@@ -204,7 +204,7 @@ impl WindForecast {
                 v_values: Arc::new(v_values),
             });
         }
-        
+
         Ok(WindForecast {
             reference_time,
             steps,
@@ -289,14 +289,12 @@ pub fn reduce_ensemble(stat: &EnsembleStat, member_vals: &mut [u16]) -> u16 {
         return NODATA;
     }
     match stat {
-        EnsembleStat::Maximum => {
-            member_vals
-                .iter()
-                .copied()
-                .filter(|&v| v != NODATA)
-                .max()
-                .unwrap_or(0)
-        }
+        EnsembleStat::Maximum => member_vals
+            .iter()
+            .copied()
+            .filter(|&v| v != NODATA)
+            .max()
+            .unwrap_or(0),
         EnsembleStat::Probability => {
             let count = member_vals
                 .iter()
@@ -443,7 +441,7 @@ impl SolarForecast {
         f.write_all(b"HRMS")?; // Magic bytes: HaRMonie Solar
         f.write_all(&self.reference_time.to_le_bytes())?;
         f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
-        
+
         for step in &self.steps {
             f.write_all(&step.forecast_hour.to_le_bytes())?;
             f.write_all(&(step.width as u32).to_le_bytes())?;
@@ -463,29 +461,29 @@ impl SolarForecast {
         if &magic != b"HRMS" {
             return Err("Invalid magic bytes in solar file".into());
         }
-        
+
         let mut ref_time_bytes = [0u8; 8];
         f.read_exact(&mut ref_time_bytes)?;
         let reference_time = i64::from_le_bytes(ref_time_bytes);
-        
+
         let mut steps_len_bytes = [0u8; 4];
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
-        
+
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
             let mut hour_bytes = [0u8; 4];
             f.read_exact(&mut hour_bytes)?;
             let forecast_hour = i32::from_le_bytes(hour_bytes);
-            
+
             let mut w_bytes = [0u8; 4];
             f.read_exact(&mut w_bytes)?;
             let width = u32::from_le_bytes(w_bytes) as usize;
-            
+
             let mut h_bytes = [0u8; 4];
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
-            
+
             let len = width * height;
             let mut values = vec![0u16; len];
             let mut byte_buf = vec![0u8; len * 2];
@@ -493,7 +491,7 @@ impl SolarForecast {
             for i in 0..len {
                 values[i] = u16::from_le_bytes([byte_buf[i * 2], byte_buf[i * 2 + 1]]);
             }
-            
+
             steps.push(SolarStep {
                 forecast_hour,
                 width,
@@ -501,7 +499,7 @@ impl SolarForecast {
                 values: Arc::new(values),
             });
         }
-        
+
         Ok(SolarForecast {
             reference_time,
             steps,
@@ -535,4 +533,3 @@ pub struct SolarTimeseriesQuery {
     pub lat: f64,
     pub lon: f64,
 }
-

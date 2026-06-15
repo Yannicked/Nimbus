@@ -6,29 +6,32 @@
 //! time-series endpoints for individual grid cells.
 
 mod constants;
-mod models;
-mod state;
-mod interpolation;
-mod rendering;
-mod radar;
-mod harmonie;
-mod mqtt;
 mod handlers;
+mod harmonie;
+mod interpolation;
+mod models;
+mod mqtt;
 mod projection;
+mod radar;
+mod rendering;
+mod state;
 
 use axum::{routing::get, Router};
+use notify::{EventKind, RecursiveMode, Watcher};
 use std::sync::Arc;
 use std::time::Duration;
-use notify::{EventKind, RecursiveMode, Watcher};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
-use state::AppState;
-use interpolation::{init_projection_lut, init_temp_projection_lut};
-use radar::{find_latest_nc_file, fetch_latest_nc_file, load_metadata, precalculate_all_data};
-use harmonie::{load_or_fetch_combined_forecast, precalculate_temp_data, precalculate_wind_data, precalculate_solar_data, cleanup_tar_files};
-use mqtt::{start_knmi_mqtt_listener, start_knmi_harmonie_mqtt_listener};
 use handlers::*;
+use harmonie::{
+    cleanup_tar_files, load_or_fetch_combined_forecast, precalculate_solar_data,
+    precalculate_temp_data, precalculate_wind_data,
+};
+use interpolation::{init_projection_lut, init_temp_projection_lut};
+use mqtt::{start_knmi_harmonie_mqtt_listener, start_knmi_mqtt_listener};
+use radar::{fetch_latest_nc_file, find_latest_nc_file, load_metadata, precalculate_all_data};
+use state::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -41,7 +44,11 @@ async fn main() {
 
     // Create cache directory if it doesn't exist
     if let Err(e) = std::fs::create_dir_all(constants::CACHE_DIR) {
-        eprintln!("Failed to create cache directory '{}': {:?}", constants::CACHE_DIR, e);
+        eprintln!(
+            "Failed to create cache directory '{}': {:?}",
+            constants::CACHE_DIR,
+            e
+        );
     }
 
     // Clean up leftover tar files on startup
@@ -80,7 +87,7 @@ async fn main() {
         data_cache: dashmap::DashMap::new(),
         metadata: tokio::sync::RwLock::new(metadata_val.clone()),
         projection_lut: init_projection_lut(),
-        
+
         temp_forecast: tokio::sync::RwLock::new(Some(temp_fc)),
         temp_projection_lut: init_temp_projection_lut(),
         temp_data_cache: dashmap::DashMap::new(),
@@ -152,7 +159,10 @@ async fn main() {
         .expect("Failed to create file watcher");
 
     watcher
-        .watch(std::path::Path::new(constants::CACHE_DIR), RecursiveMode::NonRecursive)
+        .watch(
+            std::path::Path::new(constants::CACHE_DIR),
+            RecursiveMode::NonRecursive,
+        )
         .expect("Failed to watch cache directory");
 
     tokio::spawn(async move {
@@ -218,9 +228,7 @@ async fn main() {
         .with_state(state);
 
     // 6. Start Server
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
     println!("Webservice running on http://localhost:8080");
     axum::serve(listener, app).await.unwrap();
 }

@@ -32,7 +32,8 @@ pub fn lonlat_to_polar_stereographic(lon: f64, lat: f64) -> (f64, f64) {
     let m_f = cos_phi_f / (1.0 - e * e * sin_phi_f * sin_phi_f).sqrt();
 
     // Calculate isometric latitude for standard parallel (t_f)
-    let t_f = (PI / 4.0 - phi_f / 2.0).tan() * ((1.0 + e * sin_phi_f) / (1.0 - e * sin_phi_f)).powf(e / 2.0);
+    let t_f = (PI / 4.0 - phi_f / 2.0).tan()
+        * ((1.0 + e * sin_phi_f) / (1.0 - e * sin_phi_f)).powf(e / 2.0);
 
     // Calculate isometric latitude for target point (t)
     // Avoid tan(pi/4 - pi/4) at the pole

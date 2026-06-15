@@ -12,7 +12,7 @@ pub fn init_projection_lut() -> Vec<LutEntry> {
         for col in 0..GRID_W {
             let col_frac = (col as f64 + 0.5) / GRID_W as f64;
             let row_frac = (row as f64 + 0.5) / GRID_H as f64;
-            
+
             let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
             let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
 
@@ -38,12 +38,7 @@ pub fn init_projection_lut() -> Vec<LutEntry> {
             let mut indices = [u32::MAX; 4];
             let weights = [w00, w10, w01, w11];
 
-            let coords = [
-                (ix1, iy1),
-                (ix2, iy1),
-                (ix1, iy2),
-                (ix2, iy2),
-            ];
+            let coords = [(ix1, iy1), (ix2, iy1), (ix1, iy2), (ix2, iy2)];
 
             let grid_w = KNMI_GRID_W as i32;
             let grid_h = KNMI_GRID_H as i32;
@@ -66,7 +61,7 @@ pub fn init_temp_projection_lut() -> Vec<LutEntry> {
         for col in 0..GRID_W {
             let col_frac = (col as f64 + 0.5) / GRID_W as f64;
             let row_frac = (row as f64 + 0.5) / GRID_H as f64;
-            
+
             let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
             let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
 
@@ -92,12 +87,7 @@ pub fn init_temp_projection_lut() -> Vec<LutEntry> {
             let mut indices = [u32::MAX; 4];
             let weights = [w00, w10, w01, w11];
 
-            let coords = [
-                (ix1, iy1),
-                (ix2, iy1),
-                (ix1, iy2),
-                (ix2, iy2),
-            ];
+            let coords = [(ix1, iy1), (ix2, iy1), (ix1, iy2), (ix2, iy2)];
 
             let grid_w = 390;
             let grid_h = 390;
@@ -144,7 +134,13 @@ pub fn interpolate_bilinear_lut(entry: &LutEntry, raw_slice: &[u16]) -> u16 {
 ///
 /// Returns [`NODATA`] when the query point falls entirely outside the grid or
 /// when no valid neighbours are found.
-pub fn interpolate_bilinear(fx: f64, fy: f64, grid_w: usize, grid_h: usize, raw_slice: &[u16]) -> u16 {
+pub fn interpolate_bilinear(
+    fx: f64,
+    fy: f64,
+    grid_w: usize,
+    grid_h: usize,
+    raw_slice: &[u16],
+) -> u16 {
     let ix1 = fx.floor() as i32;
     let iy1 = fy.floor() as i32;
     let ix2 = ix1 + 1;

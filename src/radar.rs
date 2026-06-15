@@ -1,13 +1,14 @@
-use std::sync::Arc;
-use axum::http::StatusCode;
-use serde::Deserialize;
 use crate::constants::{
-    KNMI_DATASET, KNMI_GRID_H, KNMI_GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT,
-    MERCATOR_TOP, NODATA, PRECIP_VAR, RAIN_THRESHOLD, SCALE_FACTOR, GRID_W, GRID_H
+    GRID_H, GRID_W, KNMI_DATASET, KNMI_GRID_H, KNMI_GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT,
+    MERCATOR_RIGHT, MERCATOR_TOP, NODATA, PRECIP_VAR, RAIN_THRESHOLD, SCALE_FACTOR,
 };
-use crate::models::{EnsembleStat, FileUrlResponse, Metadata, reduce_ensemble};
-use crate::state::AppState;
+use crate::models::{reduce_ensemble, EnsembleStat, FileUrlResponse, Metadata};
 use crate::rendering::render_data_webp_bytes;
+use crate::state::AppState;
+use axum::http::StatusCode;
+use rayon::prelude::*;
+use serde::Deserialize;
+use std::sync::Arc;
 
 /// Scans a directory for the most-recently-modified `.nc` file and returns its path.
 pub fn find_latest_nc_file(dir: &str) -> Option<String> {
@@ -31,7 +32,9 @@ pub fn find_latest_nc_file(dir: &str) -> Option<String> {
 
 /// Loads dimension sizes and coordinate variables from a NetCDF file and
 /// returns a [`Metadata`] struct suitable for JSON serialisation.
-pub fn load_metadata(file_path: &str) -> Result<Metadata, Box<dyn std::error::Error + Send + Sync>> {
+pub fn load_metadata(
+    file_path: &str,
+) -> Result<Metadata, Box<dyn std::error::Error + Send + Sync>> {
     let file = netcdf::open(file_path)?;
     let ens_var = file
         .variable("ens_number")
@@ -122,10 +125,11 @@ pub fn compute_raw_slice(
         let mut member_slices = Vec::with_capacity(meta.ensembles.len());
         for &ens_val in &meta.ensembles {
             let ens_idx = meta.ensembles.iter().position(|&e| e == ens_val).unwrap();
-            let time_idx = meta.times.iter().position(|&t| t == time).ok_or((
-                StatusCode::BAD_REQUEST,
-                format!("Invalid time: {}", time),
-            ))?;
+            let time_idx = meta
+                .times
+                .iter()
+                .position(|&t| t == time)
+                .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", time)))?;
             let slice = read_netcdf_slice(file_path, ens_idx, time_idx).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -152,14 +156,10 @@ pub fn compute_raw_slice(
             )
         })?;
 
-        let ens_idx = meta
-            .ensembles
-            .iter()
-            .position(|&e| e == ens_num)
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                format!("Invalid ensemble number: {}", ens_num),
-            ))?;
+        let ens_idx = meta.ensembles.iter().position(|&e| e == ens_num).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("Invalid ensemble number: {}", ens_num),
+        ))?;
 
         let time_idx = meta
             .times
@@ -176,7 +176,6 @@ pub fn compute_raw_slice(
     }
 }
 
-/// Precalculates all packed WebP data in the background.
 pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
     let target_version = meta.version;
     let file_path = state.file_path.read().await.clone();
@@ -194,18 +193,14 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         .unwrap_or(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
 
+    let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+
     // Loop over time steps
     for (time_idx, &time_val) in meta.times.iter().enumerate() {
         // Check for cancellation
-        {
-            let current_meta = state.metadata.read().await;
-            if current_meta.as_ref().map(|m| m.version) != Some(target_version) {
-                println!(
-                    "Precalculation for version {} cancelled.",
-                    target_version
-                );
-                return;
-            }
+        if state.metadata.read().await.as_ref().map(|m| m.version) != Some(target_version) {
+            println!("Precalculation for version {} cancelled.", target_version);
+            return;
         }
 
         if time_idx % 10 == 0 || time_idx == num_times - 1 {
@@ -218,8 +213,14 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             );
         }
 
-        // Read all ensemble member slices for this time step in a single sequential I/O read call
-        let all_members_data = match read_netcdf_all_ensembles(&file_path, time_idx, num_ensembles) {
+        // 1. Offload file I/O to a blocking thread so it doesn't freeze the Tokio executor
+        let file_path_clone = file_path.clone();
+        let all_members_data = match tokio::task::spawn_blocking(move || {
+            read_netcdf_all_ensembles(&file_path_clone, time_idx, num_ensembles)
+        })
+        .await
+        .unwrap()
+        {
             Ok(data) => data,
             Err(e) => {
                 eprintln!(
@@ -230,139 +231,134 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             }
         };
 
-        // Transpose the data once to make ensemble members for a given pixel contiguous in memory.
-        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
-        let mut transposed = vec![0u16; grid_size * num_ensembles];
-        for ens_idx in 0..num_ensembles {
-            let offset = ens_idx * grid_size;
-            let src_slice = &all_members_data[offset..offset + grid_size];
-            for i in 0..grid_size {
-                transposed[i * num_ensembles + ens_idx] = src_slice[i];
-            }
-        }
-
-        // Compute stats in parallel using rayon
-        let mut med_slice = vec![NODATA; grid_size];
-        let mut max_slice = vec![NODATA; grid_size];
-        let mut prob_slice = vec![NODATA; grid_size];
-        let mut spread_slice = vec![NODATA; grid_size];
-
-        use rayon::prelude::*;
-        transposed.par_chunks_exact(num_ensembles)
-            .zip(med_slice.par_iter_mut())
-            .zip(max_slice.par_iter_mut())
-            .zip(prob_slice.par_iter_mut())
-            .zip(spread_slice.par_iter_mut())
-            .for_each(|((((ens_vals, med_val), max_val), prob_val), spread_val)| {
-                if ens_vals[0] == NODATA {
-                    *med_val = NODATA;
-                    *max_val = NODATA;
-                    *prob_val = NODATA;
-                    *spread_val = NODATA;
-                    return;
-                }
-
-                let mut local_vals = [0u16; 128];
-                let n = ens_vals.len();
-                if n <= 128 {
-                    local_vals[..n].copy_from_slice(ens_vals);
-                    let active_vals = &mut local_vals[..n];
-                    active_vals.sort_unstable();
-
-                    *med_val = active_vals[n / 2];
-
-                    let mut max = 0;
-                    for &v in active_vals.iter().rev() {
-                        if v != NODATA {
-                            max = v;
-                            break;
+        // 2. Offload heavy CPU-bound (Rayon) work to prevent starving the Tokio runtime
+        let (arc_med, arc_max, arc_prob, arc_spread, all_members_data) =
+            tokio::task::spawn_blocking(move || {
+                // Fast, Cache-Friendly Parallel Transpose
+                let mut transposed = vec![0u16; grid_size * num_ensembles];
+                transposed
+                    .par_chunks_exact_mut(num_ensembles)
+                    .enumerate()
+                    .for_each(|(i, dest_chunk)| {
+                        for ens_idx in 0..num_ensembles {
+                            // Writes are contiguous, reads jump (hardware prefetchers handle this better)
+                            dest_chunk[ens_idx] = all_members_data[ens_idx * grid_size + i];
                         }
-                    }
-                    *max_val = max;
+                    });
 
-                    let mut count = 0;
-                    for &v in active_vals.iter() {
-                        if v >= RAIN_THRESHOLD && v != NODATA {
-                            count += 1;
+                // Allocate stats slices
+                let mut med_slice = vec![NODATA; grid_size];
+                let mut max_slice = vec![NODATA; grid_size];
+                let mut prob_slice = vec![NODATA; grid_size];
+                let mut spread_slice = vec![NODATA; grid_size];
+
+                // Compute stats in parallel
+                transposed
+                    .par_chunks_exact(num_ensembles)
+                    .zip(med_slice.par_iter_mut())
+                    .zip(max_slice.par_iter_mut())
+                    .zip(prob_slice.par_iter_mut())
+                    .zip(spread_slice.par_iter_mut())
+                    .for_each(|((((ens_vals, med_val), max_val), prob_val), spread_val)| {
+                        if ens_vals[0] == NODATA {
+                            *med_val = NODATA;
+                            *max_val = NODATA;
+                            *prob_val = NODATA;
+                            *spread_val = NODATA;
+                            return;
                         }
-                    }
-                    *prob_val = ((count * 100) / n) as u16;
 
-                    // compute spread (standard deviation)
-                    let valid_vals: Vec<f64> = active_vals
-                        .iter()
-                        .copied()
-                        .filter(|&v| v != NODATA)
-                        .map(|v| v as f64)
-                        .collect();
-                    if valid_vals.is_empty() {
-                        *spread_val = NODATA;
-                    } else {
-                        let n_f = valid_vals.len() as f64;
-                        let sum: f64 = valid_vals.iter().sum();
-                        let mean = sum / n_f;
-                        let variance: f64 = valid_vals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n_f;
-                        *spread_val = variance.sqrt().round() as u16;
-                    }
-                } else {
-                    let mut active_vals = ens_vals.to_vec();
-                    active_vals.sort_unstable();
+                        let n = ens_vals.len();
+                        let mut max = 0;
+                        let mut rain_count = 0;
+                        let mut valid_count = 0;
+                        let mut sum = 0.0;
+                        let mut sum_sq = 0.0;
 
-                    *med_val = active_vals[n / 2];
-
-                    let mut max = 0;
-                    for &v in active_vals.iter().rev() {
-                        if v != NODATA {
-                            max = v;
-                            break;
+                        let use_heap = n > 128;
+                        let mut local_vals = [0u16; 128];
+                        let mut heap_vals = Vec::new();
+                        if use_heap {
+                            heap_vals.reserve(n);
                         }
-                    }
-                    *max_val = max;
 
-                    let mut count = 0;
-                    for &v in active_vals.iter() {
-                        if v >= RAIN_THRESHOLD && v != NODATA {
-                            count += 1;
+                        for &v in ens_vals {
+                            if v != NODATA {
+                                if v > max {
+                                    max = v;
+                                }
+                                if v >= RAIN_THRESHOLD {
+                                    rain_count += 1;
+                                }
+
+                                let fv = v as f64;
+                                sum += fv;
+                                sum_sq += fv * fv;
+
+                                if use_heap {
+                                    heap_vals.push(v);
+                                } else {
+                                    local_vals[valid_count] = v;
+                                }
+                                valid_count += 1;
+                            }
                         }
-                    }
-                    *prob_val = ((count * 100) / n) as u16;
 
-                    // compute spread (standard deviation)
-                    let valid_vals: Vec<f64> = active_vals
-                        .iter()
-                        .copied()
-                        .filter(|&v| v != NODATA)
-                        .map(|v| v as f64)
-                        .collect();
-                    if valid_vals.is_empty() {
-                        *spread_val = NODATA;
-                    } else {
-                        let n_f = valid_vals.len() as f64;
-                        let sum: f64 = valid_vals.iter().sum();
-                        let mean = sum / n_f;
-                        let variance: f64 = valid_vals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n_f;
-                        *spread_val = variance.sqrt().round() as u16;
-                    }
-                }
-            });
+                        *max_val = max;
+                        *prob_val = ((rain_count * 100) / n) as u16;
+
+                        if valid_count == 0 {
+                            *med_val = NODATA;
+                            *spread_val = NODATA;
+                        } else {
+                            let n_f = valid_count as f64;
+                            let variance = (sum_sq - (sum * sum) / n_f) / n_f;
+                            *spread_val = variance.max(0.0).sqrt().round() as u16;
+
+                            let mid = valid_count / 2;
+                            *med_val = if use_heap {
+                                *heap_vals.select_nth_unstable(mid).1
+                            } else {
+                                *local_vals[..valid_count].select_nth_unstable(mid).1
+                            };
+                        }
+                    });
+
+                // Return data back to Tokio domain
+                (
+                    Arc::new(med_slice),
+                    Arc::new(max_slice),
+                    Arc::new(prob_slice),
+                    Arc::new(spread_slice),
+                    all_members_data,
+                )
+            })
+            .await
+            .unwrap();
 
         // Insert stats into grid_cache
-        let arc_med = Arc::new(med_slice);
-        let arc_max = Arc::new(max_slice);
-        let arc_prob = Arc::new(prob_slice);
-        let arc_spread = Arc::new(spread_slice);
+        state
+            .grid_cache
+            .insert(("med".to_string(), time_val), arc_med.clone());
+        state
+            .grid_cache
+            .insert(("max".to_string(), time_val), arc_max.clone());
+        state
+            .grid_cache
+            .insert(("prob".to_string(), time_val), arc_prob.clone());
+        state
+            .grid_cache
+            .insert(("spread".to_string(), time_val), arc_spread.clone());
 
-        state.grid_cache.insert(("med".to_string(), time_val), arc_med.clone());
-        state.grid_cache.insert(("max".to_string(), time_val), arc_max.clone());
-        state.grid_cache.insert(("prob".to_string(), time_val), arc_prob.clone());
-        state.grid_cache.insert(("spread".to_string(), time_val), arc_spread.clone());
-
-        // Insert individual member slices into grid_cache
-        for (ens_idx, &ens_num) in meta.ensembles.iter().enumerate() {
-            let start = ens_idx * grid_size;
-            let end = start + grid_size;
-            let slice = all_members_data[start..end].to_vec();
-            state.grid_cache.insert((ens_num.to_string(), time_val), Arc::new(slice));
+        // Insert individual member slices utilizing zero-math chunking
+        for (ens_num, chunk) in meta
+            .ensembles
+            .iter()
+            .zip(all_members_data.chunks_exact(grid_size))
+        {
+            state
+                .grid_cache
+                .insert((ens_num.to_string(), time_val), Arc::new(chunk.to_vec()));
         }
 
         // Render WebPs for stats (med, max, prob, spread)
@@ -374,22 +370,32 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         ];
 
         for (ens_str, slice) in render_items {
+            // 3. Acquire BEFORE spawning. This exerts backpressure so the loop doesn't read gigabytes
+            // of NetCDF files into memory while waiting for the GPU/CPU to finish rendering WebPs.
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+
             let state_clone = state.clone();
-            let state_clone_for_blocking = state.clone();
-            let sem = semaphore.clone();
-            let ens_str_clone = ens_str.clone();
-            let time_val_clone = time_val;
-            
+
             tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
+                let state_for_blocking = state_clone.clone();
+                let slice_clone = slice.clone();
+
                 let webp_bytes = tokio::task::spawn_blocking(move || {
-                    render_data_webp_bytes(&slice, &state_clone_for_blocking.projection_lut)
-                }).await.unwrap();
-                state_clone.data_cache.insert((ens_str_clone, time_val_clone), webp_bytes);
+                    render_data_webp_bytes(&slice_clone, &state_for_blocking.projection_lut)
+                })
+                .await
+                .unwrap();
+
+                state_clone
+                    .data_cache
+                    .insert((ens_str, time_val), webp_bytes);
+
+                // Drop the permit to signal the semaphore that a core has opened up
+                drop(permit);
             });
         }
 
-        // Yield control back to executor to let other tasks run
+        // Yield control back to executor
         tokio::task::yield_now().await;
     }
 
@@ -439,9 +445,11 @@ pub async fn download_and_update_nc_file(
 
     let file_res = client.get(&download_url).send().await?;
     if !file_res.status().is_success() {
-        return Err(
-            format!("Failed to download file content, HTTP status: {}", file_res.status()).into(),
-        );
+        return Err(format!(
+            "Failed to download file content, HTTP status: {}",
+            file_res.status()
+        )
+        .into());
     }
 
     let bytes = file_res.bytes().await?;
@@ -478,12 +486,14 @@ pub async fn download_and_update_nc_file(
 }
 
 /// Fetches the latest NetCDF filename from the KNMI listing endpoint and downloads it.
-pub async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn fetch_latest_nc_file(
+    dest_dir: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
         .map_err(|_| "KNMI_OPEN_DATA_API_KEY environment variable missing")?;
 
     let client = reqwest::Client::new();
-    
+
     // 1. Query the list endpoint to find the latest file
     let list_url = "https://api.dataplatform.knmi.nl/open-data/v1/datasets/seamless_precipitation_ensemble_forecast_members/versions/1.0/files?maxKeys=1&sorting=desc";
     let list_res = client
@@ -511,7 +521,10 @@ pub async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std:
         .json()
         .await
         .map_err(|e| format!("Failed to parse file listing JSON: {}", e))?;
-    let entry = list_data.files.first().ok_or("No files returned by KNMI API")?;
+    let entry = list_data
+        .files
+        .first()
+        .ok_or("No files returned by KNMI API")?;
     let filename = &entry.filename;
 
     println!("Latest file on KNMI API: {}", filename);
@@ -529,7 +542,11 @@ pub async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std:
         .map_err(|e| format!("Failed to request download URL: {}", e))?;
 
     if !url_res.status().is_success() {
-        return Err(format!("Failed to get download URL, HTTP status: {}", url_res.status()).into());
+        return Err(format!(
+            "Failed to get download URL, HTTP status: {}",
+            url_res.status()
+        )
+        .into());
     }
 
     let url_resp: FileUrlResponse = url_res
@@ -546,7 +563,11 @@ pub async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std:
         .await
         .map_err(|e| format!("Failed to send download request: {}", e))?;
     if !file_res.status().is_success() {
-        return Err(format!("Failed to download file content, HTTP status: {}", file_res.status()).into());
+        return Err(format!(
+            "Failed to download file content, HTTP status: {}",
+            file_res.status()
+        )
+        .into());
     }
 
     let bytes = file_res
@@ -562,7 +583,10 @@ pub async fn fetch_latest_nc_file(dest_dir: &str) -> Result<String, Box<dyn std:
     tokio::fs::rename(&temp_path, &final_path)
         .await
         .map_err(|e| format!("Failed to rename final file: {}", e))?;
-    println!("Successfully downloaded and saved initial file: {}", final_path);
+    println!(
+        "Successfully downloaded and saved initial file: {}",
+        final_path
+    );
 
     Ok(final_path)
 }

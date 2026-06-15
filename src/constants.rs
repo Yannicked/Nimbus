@@ -34,4 +34,3 @@ pub const KNMI_GRID_H: usize = 765;
 
 /// Directory where all cached/downloaded files are stored.
 pub const CACHE_DIR: &str = "./cache";
-
