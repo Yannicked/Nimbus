@@ -26,7 +26,7 @@ use tower_http::services::ServeDir;
 use state::AppState;
 use interpolation::{init_projection_lut, init_temp_projection_lut};
 use radar::{find_latest_nc_file, fetch_latest_nc_file, load_metadata, precalculate_all_data};
-use harmonie::{load_or_fetch_combined_forecast, precalculate_temp_data, precalculate_wind_data, cleanup_tar_files};
+use harmonie::{load_or_fetch_combined_forecast, precalculate_temp_data, precalculate_wind_data, precalculate_solar_data, cleanup_tar_files};
 use mqtt::{start_knmi_mqtt_listener, start_knmi_harmonie_mqtt_listener};
 use handlers::*;
 
@@ -47,8 +47,8 @@ async fn main() {
     // Clean up leftover tar files on startup
     cleanup_tar_files();
 
-    // Load or fetch temperature and wind forecasts (combined)
-    let (temp_fc, wind_fc) = load_or_fetch_combined_forecast(&open_data_api_key).await;
+    // Load or fetch temperature, wind, and solar forecasts (combined)
+    let (temp_fc, wind_fc, solar_fc) = load_or_fetch_combined_forecast(&open_data_api_key).await;
 
     // 1. Find the latest netcdf file in the cache directory, or download it if none exists
     let initial_file = match find_latest_nc_file(constants::CACHE_DIR) {
@@ -88,6 +88,10 @@ async fn main() {
         wind_forecast: tokio::sync::RwLock::new(Some(wind_fc)),
         wind_projection_lut: init_temp_projection_lut(),
         wind_data_cache: dashmap::DashMap::new(),
+
+        solar_forecast: tokio::sync::RwLock::new(Some(solar_fc)),
+        solar_projection_lut: init_temp_projection_lut(),
+        solar_data_cache: dashmap::DashMap::new(),
     });
 
     if let Some(ref meta) = metadata_val {
@@ -111,6 +115,14 @@ async fn main() {
         let state_clone = state.clone();
         tokio::spawn(async move {
             precalculate_wind_data(state_clone).await;
+        });
+    }
+
+    // Precalculate solar PNGs in background
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            precalculate_solar_data(state_clone).await;
         });
     }
 
@@ -197,6 +209,10 @@ async fn main() {
         .route("/api/data/wind/{height}/{time}", get(get_wind_data_image))
         .route("/api/value/wind", get(get_wind_value))
         .route("/api/timeseries/wind", get(get_wind_timeseries))
+        .route("/api/metadata/solar", get(get_solar_metadata))
+        .route("/api/data/solar/{time}", get(get_solar_data_image))
+        .route("/api/value/solar", get(get_solar_value))
+        .route("/api/timeseries/solar", get(get_solar_timeseries))
         .fallback_service(ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state);

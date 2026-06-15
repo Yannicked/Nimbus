@@ -245,17 +245,20 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         let mut med_slice = vec![NODATA; grid_size];
         let mut max_slice = vec![NODATA; grid_size];
         let mut prob_slice = vec![NODATA; grid_size];
+        let mut spread_slice = vec![NODATA; grid_size];
 
         use rayon::prelude::*;
         transposed.par_chunks_exact(num_ensembles)
             .zip(med_slice.par_iter_mut())
             .zip(max_slice.par_iter_mut())
             .zip(prob_slice.par_iter_mut())
-            .for_each(|(((ens_vals, med_val), max_val), prob_val)| {
+            .zip(spread_slice.par_iter_mut())
+            .for_each(|((((ens_vals, med_val), max_val), prob_val), spread_val)| {
                 if ens_vals[0] == NODATA {
                     *med_val = NODATA;
                     *max_val = NODATA;
                     *prob_val = NODATA;
+                    *spread_val = NODATA;
                     return;
                 }
 
@@ -284,6 +287,23 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                         }
                     }
                     *prob_val = ((count * 100) / n) as u16;
+
+                    // compute spread (standard deviation)
+                    let valid_vals: Vec<f64> = active_vals
+                        .iter()
+                        .copied()
+                        .filter(|&v| v != NODATA)
+                        .map(|v| v as f64)
+                        .collect();
+                    if valid_vals.is_empty() {
+                        *spread_val = NODATA;
+                    } else {
+                        let n_f = valid_vals.len() as f64;
+                        let sum: f64 = valid_vals.iter().sum();
+                        let mean = sum / n_f;
+                        let variance: f64 = valid_vals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n_f;
+                        *spread_val = variance.sqrt().round() as u16;
+                    }
                 } else {
                     let mut active_vals = ens_vals.to_vec();
                     active_vals.sort_unstable();
@@ -306,6 +326,23 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                         }
                     }
                     *prob_val = ((count * 100) / n) as u16;
+
+                    // compute spread (standard deviation)
+                    let valid_vals: Vec<f64> = active_vals
+                        .iter()
+                        .copied()
+                        .filter(|&v| v != NODATA)
+                        .map(|v| v as f64)
+                        .collect();
+                    if valid_vals.is_empty() {
+                        *spread_val = NODATA;
+                    } else {
+                        let n_f = valid_vals.len() as f64;
+                        let sum: f64 = valid_vals.iter().sum();
+                        let mean = sum / n_f;
+                        let variance: f64 = valid_vals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n_f;
+                        *spread_val = variance.sqrt().round() as u16;
+                    }
                 }
             });
 
@@ -313,10 +350,12 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         let arc_med = Arc::new(med_slice);
         let arc_max = Arc::new(max_slice);
         let arc_prob = Arc::new(prob_slice);
+        let arc_spread = Arc::new(spread_slice);
 
         state.grid_cache.insert(("med".to_string(), time_val), arc_med.clone());
         state.grid_cache.insert(("max".to_string(), time_val), arc_max.clone());
         state.grid_cache.insert(("prob".to_string(), time_val), arc_prob.clone());
+        state.grid_cache.insert(("spread".to_string(), time_val), arc_spread.clone());
 
         // Insert individual member slices into grid_cache
         for (ens_idx, &ens_num) in meta.ensembles.iter().enumerate() {
@@ -326,11 +365,12 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             state.grid_cache.insert((ens_num.to_string(), time_val), Arc::new(slice));
         }
 
-        // Render WebPs for stats (med, max, prob)
+        // Render WebPs for stats (med, max, prob, spread)
         let render_items = vec![
             ("med".to_string(), arc_med),
             ("max".to_string(), arc_max),
             ("prob".to_string(), arc_prob),
+            ("spread".to_string(), arc_spread),
         ];
 
         for (ens_str, slice) in render_items {

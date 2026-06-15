@@ -5,7 +5,7 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Tr
 use crate::constants::KNMI_DATASET;
 use crate::state::AppState;
 use crate::radar::download_and_update_nc_file;
-use crate::harmonie::{download_and_process_combined_tar, precalculate_temp_data, precalculate_wind_data};
+use crate::harmonie::{download_and_process_combined_tar, precalculate_temp_data, precalculate_wind_data, precalculate_solar_data};
 
 /// Connects to the KNMI MQTT broker and listens for new dataset notifications.
 ///
@@ -205,12 +205,15 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                     let api_key = open_data_api_key.to_string();
                                     tokio::spawn(async move {
                                         match download_and_process_combined_tar(&name_clone, url_opt.as_deref(), &api_key).await {
-                                            Ok((temp_fc, wind_fc)) => {
+                                            Ok((temp_fc, wind_fc, solar_fc)) => {
                                                 if let Err(e) = temp_fc.write_to_file(&format!("{}/harmonie_temp.bin", crate::constants::CACHE_DIR)) {
                                                     eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
                                                 }
                                                 if let Err(e) = wind_fc.write_to_file(&format!("{}/harmonie_wind.bin", crate::constants::CACHE_DIR)) {
                                                     eprintln!("Failed to save new wind forecast to bin: {:?}", e);
+                                                }
+                                                if let Err(e) = solar_fc.write_to_file(&format!("{}/harmonie_solar.bin", crate::constants::CACHE_DIR)) {
+                                                    eprintln!("Failed to save new solar forecast to bin: {:?}", e);
                                                 }
                                                 
                                                 // Update temperature forecast in state
@@ -226,10 +229,17 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                     *wind_write = Some(wind_fc);
                                                     state_clone.wind_data_cache.clear();
                                                 }
+
+                                                // Update solar forecast in state
+                                                {
+                                                    let mut solar_write = state_clone.solar_forecast.write().await;
+                                                    *solar_write = Some(solar_fc);
+                                                    state_clone.solar_data_cache.clear();
+                                                }
                                                 
-                                                println!("Successfully updated temperature and wind forecasts and cleared caches.");
+                                                println!("Successfully updated temperature, wind, and solar forecasts and cleared caches.");
                                                 
-                                                // Trigger both precalculations in background
+                                                // Trigger precalculations in background
                                                 let state_precalc_temp = state_clone.clone();
                                                 tokio::spawn(async move {
                                                     precalculate_temp_data(state_precalc_temp).await;
@@ -238,6 +248,11 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                 let state_precalc_wind = state_clone.clone();
                                                 tokio::spawn(async move {
                                                     precalculate_wind_data(state_precalc_wind).await;
+                                                });
+
+                                                let state_precalc_solar = state_clone.clone();
+                                                tokio::spawn(async move {
+                                                    precalculate_solar_data(state_precalc_solar).await;
                                                 });
                                             }
                                             Err(e) => {

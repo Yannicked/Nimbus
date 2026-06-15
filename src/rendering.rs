@@ -97,3 +97,7 @@ pub fn render_wind_webp_bytes(u_slice: &[u16], v_slice: &[u16], lut: &[LutEntry]
     }
     webp_bytes
 }
+
+pub fn render_solar_webp_bytes(raw_slice: &[u16], lut: &[LutEntry]) -> Vec<u8> {
+    render_temp_webp_bytes(raw_slice, lut)
+}

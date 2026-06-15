@@ -15,10 +15,11 @@ use crate::models::{
     ValueQuery, ValueResponse, TimeseriesQuery, TimeseriesResponse,
     WindMetadata, WindValueQuery, WindValueResponse, WindTimeseriesQuery, WindTimeseriesResponse,
     TempMetadata, TempValueQuery, TempTimeseriesQuery, TempTimeseriesResponse,
+    SolarMetadata, SolarValueQuery, SolarTimeseriesQuery, SolarTimeseriesResponse,
     EnsembleStat, reduce_ensemble
 };
 use crate::projection;
-use crate::rendering::{render_data_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes};
+use crate::rendering::{render_data_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes, render_solar_webp_bytes};
 use crate::interpolation::interpolate_bilinear;
 use crate::radar::{compute_raw_slice, raw_to_value};
 
@@ -707,6 +708,168 @@ pub async fn get_temp_timeseries(
     }
 
     Ok(axum::Json(TempTimeseriesResponse {
+        status: "ok".to_string(),
+        lat: q.lat,
+        lon: q.lon,
+        times,
+        values,
+    }))
+}
+
+pub async fn get_solar_metadata(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let forecast_opt = state.solar_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Solar forecast not loaded".to_string(),
+    ))?;
+
+    let times: Vec<i64> = forecast
+        .steps
+        .iter()
+        .map(|s| (s.forecast_hour as i64) * 3600)
+        .collect();
+
+    let reference_time_str = {
+        use chrono::TimeZone;
+        if let Some(utc_dt) = chrono::Utc.timestamp_opt(forecast.reference_time, 0).single() {
+            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
+        } else {
+            "seconds since 1970-01-01 00:00:00".to_string()
+        }
+    };
+
+    Ok(axum::Json(SolarMetadata {
+        left: MERCATOR_LEFT,
+        right: MERCATOR_RIGHT,
+        bottom: MERCATOR_BOTTOM,
+        top: MERCATOR_TOP,
+        width: GRID_W,
+        height: GRID_H,
+        times,
+        reference_time: forecast.reference_time,
+        reference_time_str,
+        version: forecast.reference_time as u64,
+    }))
+}
+
+pub async fn get_solar_data_image(
+    Path(time): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if let Some(cached) = state.solar_data_cache.get(&time) {
+        return Ok(Response::builder()
+            .header("Content-Type", "image/webp")
+            .header("Cache-Control", "no-store, no-cache, must-revalidate")
+            .body(axum::body::Body::from(cached.value().clone()))
+            .unwrap());
+    }
+
+    let forecast_opt = state.solar_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Solar forecast not loaded".to_string(),
+    ))?;
+
+    if forecast.steps.is_empty() {
+        return Err((StatusCode::NOT_FOUND, "No solar forecast steps".to_string()));
+    }
+
+    let step = forecast
+        .steps
+        .iter()
+        .min_by_key(|s| {
+            let step_offset = (s.forecast_hour as i64) * 3600;
+            (step_offset - time).abs()
+        })
+        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
+
+    let vals = step.values.clone();
+    let state_clone = state.clone();
+    let webp_bytes = tokio::task::spawn_blocking(move || {
+        render_solar_webp_bytes(&vals, &state_clone.solar_projection_lut)
+    }).await.unwrap();
+    state.solar_data_cache.insert(time, webp_bytes.clone());
+
+    Ok(Response::builder()
+        .header("Content-Type", "image/webp")
+        .header("Cache-Control", "no-store, no-cache, must-revalidate")
+        .body(axum::body::Body::from(webp_bytes))
+        .unwrap())
+}
+
+pub async fn get_solar_value(
+    Query(q): Query<SolarValueQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let forecast_opt = state.solar_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Solar forecast not loaded".to_string(),
+    ))?;
+
+    if forecast.steps.is_empty() {
+        return Ok(axum::Json(ValueResponse {
+            status: "no_data".to_string(),
+            value: None,
+        }));
+    }
+
+    let step = forecast
+        .steps
+        .iter()
+        .min_by_key(|s| {
+            let step_offset = (s.forecast_hour as i64) * 3600;
+            (step_offset - q.time).abs()
+        })
+        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
+
+    let fx = (q.lon - 0.0) / 0.029;
+    let fy = (q.lat - 49.0) / 0.018;
+
+    let val_raw = interpolate_bilinear(fx, fy, 390, 390, &step.values);
+    if val_raw == NODATA {
+        Ok(axum::Json(ValueResponse {
+            status: "out_of_bounds".to_string(),
+            value: None,
+        }))
+    } else {
+        let solar_w = val_raw as f64;
+        Ok(axum::Json(ValueResponse {
+            status: "ok".to_string(),
+            value: Some(solar_w),
+        }))
+    }
+}
+
+pub async fn get_solar_timeseries(
+    Query(q): Query<SolarTimeseriesQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let forecast_opt = state.solar_forecast.read().await;
+    let forecast = forecast_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Solar forecast not loaded".to_string(),
+    ))?;
+
+    let fx = (q.lon - 0.0) / 0.029;
+    let fy = (q.lat - 49.0) / 0.018;
+
+    let mut times = Vec::new();
+    let mut values = Vec::new();
+
+    for step in &forecast.steps {
+        let val_raw = interpolate_bilinear(fx, fy, 390, 390, &step.values);
+        if val_raw != NODATA {
+            let solar_w = val_raw as f64;
+            let step_offset = (step.forecast_hour as i64) * 3600;
+            times.push(step_offset);
+            values.push(solar_w);
+        }
+    }
+
+    Ok(axum::Json(SolarTimeseriesResponse {
         status: "ok".to_string(),
         lat: q.lat,
         lon: q.lon,

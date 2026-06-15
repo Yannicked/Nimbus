@@ -3,9 +3,9 @@ use std::time::Duration;
 use chrono::TimeZone;
 use serde::Deserialize;
 use crate::constants::NODATA;
-use crate::models::{TempForecast, TempStep, WindForecast, WindStep, FileUrlResponse};
+use crate::models::{TempForecast, TempStep, WindForecast, WindStep, SolarForecast, SolarStep, FileUrlResponse};
 use crate::state::AppState;
-use crate::rendering::{render_temp_webp_bytes, render_wind_webp_bytes};
+use crate::rendering::{render_temp_webp_bytes, render_wind_webp_bytes, render_solar_webp_bytes};
 
 pub fn parse_run_time_from_name(filename: &str) -> Option<i64> {
     let parts: Vec<&str> = filename.split('_').collect();
@@ -41,7 +41,7 @@ pub fn parse_tar_run_time(filename: &str) -> Option<i64> {
     None
 }
 
-pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, WindForecast), Box<dyn std::error::Error + Send + Sync>> {
+pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, WindForecast, SolarForecast), Box<dyn std::error::Error + Send + Sync>> {
     use std::io::Read;
     let file = std::fs::File::open(tar_path)?;
     let mut archive = tar::Archive::new(file);
@@ -49,6 +49,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
 
     let mut temp_steps = Vec::new();
     let mut wind_steps = Vec::new();
+    let mut solar_steps = Vec::new();
     let mut reference_time = 0;
 
     for entry_res in entries {
@@ -71,6 +72,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
 
         let grib_file = grib_reader::GribFile::from_bytes(data)?;
         let mut temp_vals = None;
+        let mut solar_vals = None;
         let mut wind_by_level: std::collections::HashMap<u32, (Option<Vec<u16>>, Option<Vec<u16>>)> = std::collections::HashMap::new();
         let mut forecast_hour = 0;
 
@@ -88,6 +90,18 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                             }
                         }
                         temp_vals = Some(values);
+                    }
+                } else if pds.parameter_number == 117 && pds.level_type == 105 && pds.level_value == 0 {
+                    forecast_hour = pds.forecast_time().unwrap_or(0) as i32;
+                    let vals_f64 = msg.read_flat_data_as_f64()?;
+                    if vals_f64.len() == 152100 {
+                        let mut values = vec![NODATA; 152100];
+                        for (i, &v) in vals_f64.iter().enumerate() {
+                            if v.is_finite() {
+                                values[i] = v.round() as u16;
+                            }
+                        }
+                        solar_vals = Some(values);
                     }
                 } else if pds.level_type == 105 && [10, 50, 100, 200, 300].contains(&(pds.level_value as u32)) {
                     let lvl = pds.level_value as u32;
@@ -127,6 +141,14 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                 values: Arc::new(t_vals),
             });
         }
+        if let Some(s_vals) = solar_vals {
+            solar_steps.push(SolarStep {
+                forecast_hour,
+                width: 390,
+                height: 390,
+                values: Arc::new(s_vals),
+            });
+        }
         for (lvl, (u_opt, v_opt)) in wind_by_level {
             if let (Some(u), Some(v)) = (u_opt, v_opt) {
                 wind_steps.push(WindStep {
@@ -143,6 +165,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
 
     temp_steps.sort_by_key(|s| s.forecast_hour);
     wind_steps.sort_by_key(|s| (s.forecast_hour, s.height_level));
+    solar_steps.sort_by_key(|s| s.forecast_hour);
 
     Ok((
         TempForecast {
@@ -152,6 +175,10 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
         WindForecast {
             reference_time,
             steps: wind_steps,
+        },
+        SolarForecast {
+            reference_time,
+            steps: solar_steps,
         },
     ))
 }
@@ -188,7 +215,7 @@ pub async fn download_and_process_combined_tar(
     filename: &str,
     file_url: Option<&str>,
     api_key: &str,
-) -> Result<(TempForecast, WindForecast), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(TempForecast, WindForecast, SolarForecast), Box<dyn std::error::Error + Send + Sync>> {
     println!("Requesting download URL for HARMONIE tar (combined): {}...", filename);
     let url = match file_url {
         Some(u) => u.to_string(),
@@ -228,13 +255,14 @@ pub async fn download_and_process_combined_tar(
         res
     }).await??;
 
-    println!("HARMONIE forecast (combined) processed successfully: {} temp steps, {} wind steps", forecasts.0.steps.len(), forecasts.1.steps.len());
+    println!("HARMONIE forecast (combined) processed successfully: {} temp steps, {} wind steps, {} solar steps", forecasts.0.steps.len(), forecasts.1.steps.len(), forecasts.2.steps.len());
     Ok(forecasts)
 }
 
-pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, WindForecast) {
+pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, WindForecast, SolarForecast) {
     let temp_bin_path = format!("{}/harmonie_temp.bin", crate::constants::CACHE_DIR);
     let wind_bin_path = format!("{}/harmonie_wind.bin", crate::constants::CACHE_DIR);
+    let solar_bin_path = format!("{}/harmonie_solar.bin", crate::constants::CACHE_DIR);
 
     let temp_fc_opt = if std::path::Path::new(&temp_bin_path).exists() {
         println!("Found local temperature cache: {}", temp_bin_path);
@@ -250,28 +278,38 @@ pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, Wi
         None
     };
 
-    // If both exist, check if there's a newer run
-    if let (Some(temp_fc), Some(wind_fc)) = (temp_fc_opt, wind_fc_opt) {
-        let cached_ref_time = temp_fc.reference_time.min(wind_fc.reference_time);
-        println!("Successfully loaded cached temperature and wind forecast runs. Cached ref time: {}", cached_ref_time);
+    let solar_fc_opt = if std::path::Path::new(&solar_bin_path).exists() {
+        println!("Found local solar cache: {}", solar_bin_path);
+        SolarForecast::read_from_file(&solar_bin_path).ok()
+    } else {
+        None
+    };
+
+    // If all three exist, check if there's a newer run
+    if let (Some(temp_fc), Some(wind_fc), Some(solar_fc)) = (temp_fc_opt, wind_fc_opt, solar_fc_opt) {
+        let cached_ref_time = temp_fc.reference_time.min(wind_fc.reference_time).min(solar_fc.reference_time);
+        println!("Successfully loaded cached temperature, wind and solar forecast runs. Cached ref time: {}", cached_ref_time);
         
         match fetch_latest_harmonie_filename(api_key).await {
             Ok(latest_filename) => {
                 if let Some(api_time) = parse_tar_run_time(&latest_filename) {
                     if api_time > cached_ref_time {
                         println!("Newer run available on KNMI API: {} (cached is {}). Downloading...", api_time, cached_ref_time);
-                        if let Ok((new_temp, new_wind)) = download_and_process_combined_tar(&latest_filename, None, api_key).await {
+                        if let Ok((new_temp, new_wind, new_solar)) = download_and_process_combined_tar(&latest_filename, None, api_key).await {
                             if let Err(e) = new_temp.write_to_file(&temp_bin_path) {
                                 eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
                             }
                             if let Err(e) = new_wind.write_to_file(&wind_bin_path) {
                                 eprintln!("Failed to save new wind forecast to bin: {:?}", e);
                             }
-                            return (new_temp, new_wind);
+                            if let Err(e) = new_solar.write_to_file(&solar_bin_path) {
+                                eprintln!("Failed to save new solar forecast to bin: {:?}", e);
+                            }
+                            return (new_temp, new_wind, new_solar);
                         }
                     } else {
                         println!("Local forecast caches are up to date with API: {}", cached_ref_time);
-                        return (temp_fc, wind_fc);
+                        return (temp_fc, wind_fc, solar_fc);
                     }
                 }
             }
@@ -279,23 +317,26 @@ pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, Wi
                 eprintln!("Failed to query latest run from KNMI API: {:?}", e);
             }
         }
-        return (temp_fc, wind_fc);
+        return (temp_fc, wind_fc, solar_fc);
     }
 
-    // If either is missing, we must download the latest run
-    println!("One or both HARMONIE caches are missing or invalid. Downloading latest run...");
+    // If any is missing, we must download the latest run
+    println!("One or more HARMONIE caches are missing or invalid. Downloading latest run...");
     loop {
         match fetch_latest_harmonie_filename(api_key).await {
             Ok(latest_filename) => {
                 match download_and_process_combined_tar(&latest_filename, None, api_key).await {
-                    Ok((temp_fc, wind_fc)) => {
+                    Ok((temp_fc, wind_fc, solar_fc)) => {
                         if let Err(e) = temp_fc.write_to_file(&temp_bin_path) {
                             eprintln!("Failed to save temperature forecast to bin: {:?}", e);
                         }
                         if let Err(e) = wind_fc.write_to_file(&wind_bin_path) {
                             eprintln!("Failed to save wind forecast to bin: {:?}", e);
                         }
-                        return (temp_fc, wind_fc);
+                        if let Err(e) = solar_fc.write_to_file(&solar_bin_path) {
+                            eprintln!("Failed to save solar forecast to bin: {:?}", e);
+                        }
+                        return (temp_fc, wind_fc, solar_fc);
                     }
                     Err(e) => {
                         eprintln!("Failed to download/process latest combined run: {:?}. Retrying in 10 seconds...", e);
@@ -456,3 +497,68 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
 
     println!("Wind WebP precalculation tasks spawned for all {} steps.", num_steps);
 }
+
+pub async fn precalculate_solar_data(state: Arc<AppState>) {
+    let forecast_opt = state.solar_forecast.read().await;
+    let forecast = match forecast_opt.as_ref() {
+        Some(fc) => fc,
+        None => {
+            println!("No solar forecast loaded, skipping precalculation.");
+            return;
+        }
+    };
+
+    let num_steps = forecast.steps.len();
+    if num_steps == 0 {
+        return;
+    }
+
+    println!(
+        "Starting solar WebP precalculation for {} steps...",
+        num_steps
+    );
+
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+
+    // Collect step info while we hold the read lock
+    let steps_info: Vec<(i64, Arc<Vec<u16>>)> = forecast
+        .steps
+        .iter()
+        .map(|s| {
+            let time_key = (s.forecast_hour as i64) * 3600;
+            (time_key, s.values.clone())
+        })
+        .collect();
+
+    // Drop the read lock before spawning tasks
+    drop(forecast_opt);
+
+    for (i, (time_key, values)) in steps_info.into_iter().enumerate() {
+        let state_clone = state.clone();
+        let state_clone_for_blocking = state.clone();
+        let sem = semaphore.clone();
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let webp_bytes = tokio::task::spawn_blocking(move || {
+                render_solar_webp_bytes(&values, &state_clone_for_blocking.solar_projection_lut)
+            }).await.unwrap();
+            state_clone.solar_data_cache.insert(time_key, webp_bytes);
+        });
+
+        if (i + 1) % 10 == 0 || i == num_steps - 1 {
+            println!(
+                "Solar precalculation... {}% done ({}/{})",
+                ((i + 1) * 100) / num_steps,
+                i + 1,
+                num_steps
+            );
+        }
+    }
+
+    println!("Solar WebP precalculation tasks spawned for all {} steps.", num_steps);
+}
+

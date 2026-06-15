@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use dashmap::DashMap;
-use crate::models::{Metadata, TempForecast, WindForecast, LutEntry};
+use crate::models::{Metadata, TempForecast, WindForecast, SolarForecast, LutEntry};
 
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
@@ -22,4 +22,9 @@ pub struct AppState {
     pub wind_forecast: RwLock<Option<WindForecast>>,
     pub wind_projection_lut: Vec<LutEntry>,
     pub wind_data_cache: DashMap<(u32, i64), Vec<u8>>,
+
+    // Solar Radiation Forecast
+    pub solar_forecast: RwLock<Option<SolarForecast>>,
+    pub solar_projection_lut: Vec<LutEntry>,
+    pub solar_data_cache: DashMap<i64, Vec<u8>>,
 }

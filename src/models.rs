@@ -262,6 +262,8 @@ pub enum EnsembleStat {
     Maximum,
     /// Compute the percentage of members exceeding [`RAIN_THRESHOLD`].
     Probability,
+    /// Compute the standard deviation (spread) across members.
+    Spread,
 }
 
 impl EnsembleStat {
@@ -271,6 +273,7 @@ impl EnsembleStat {
             "med" => Some(Self::Median),
             "max" => Some(Self::Maximum),
             "prob" => Some(Self::Probability),
+            "spread" => Some(Self::Spread),
             _ => None,
         }
     }
@@ -305,6 +308,22 @@ pub fn reduce_ensemble(stat: &EnsembleStat, member_vals: &mut [u16]) -> u16 {
         EnsembleStat::Median => {
             member_vals.sort_unstable();
             member_vals[member_vals.len() / 2]
+        }
+        EnsembleStat::Spread => {
+            let valid_vals: Vec<f64> = member_vals
+                .iter()
+                .copied()
+                .filter(|&v| v != NODATA)
+                .map(|v| v as f64)
+                .collect();
+            if valid_vals.is_empty() {
+                return NODATA;
+            }
+            let n = valid_vals.len() as f64;
+            let sum: f64 = valid_vals.iter().sum();
+            let mean = sum / n;
+            let variance: f64 = valid_vals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n;
+            variance.sqrt().round() as u16
         }
     }
 }
@@ -385,7 +404,7 @@ pub struct TempTimeseriesQuery {
     pub lon: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 pub struct TempTimeseriesResponse {
     pub status: String,
     pub lat: f64,
@@ -393,3 +412,127 @@ pub struct TempTimeseriesResponse {
     pub times: Vec<i64>,
     pub values: Vec<f64>,
 }
+
+#[derive(Serialize, Clone, Debug)]
+pub struct SolarTimeseriesResponse {
+    pub status: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub times: Vec<i64>,
+    pub values: Vec<f64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SolarStep {
+    pub forecast_hour: i32,
+    pub width: usize,
+    pub height: usize,
+    pub values: Arc<Vec<u16>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SolarForecast {
+    pub reference_time: i64,
+    pub steps: Vec<SolarStep>,
+}
+
+impl SolarForecast {
+    pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+        f.write_all(b"HRMS")?; // Magic bytes: HaRMonie Solar
+        f.write_all(&self.reference_time.to_le_bytes())?;
+        f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
+        
+        for step in &self.steps {
+            f.write_all(&step.forecast_hour.to_le_bytes())?;
+            f.write_all(&(step.width as u32).to_le_bytes())?;
+            f.write_all(&(step.height as u32).to_le_bytes())?;
+            for &val in step.values.as_ref() {
+                f.write_all(&val.to_le_bytes())?;
+            }
+        }
+        f.flush()?;
+        Ok(())
+    }
+
+    pub fn read_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut f = std::fs::File::open(path)?;
+        let mut magic = [0u8; 4];
+        f.read_exact(&mut magic)?;
+        if &magic != b"HRMS" {
+            return Err("Invalid magic bytes in solar file".into());
+        }
+        
+        let mut ref_time_bytes = [0u8; 8];
+        f.read_exact(&mut ref_time_bytes)?;
+        let reference_time = i64::from_le_bytes(ref_time_bytes);
+        
+        let mut steps_len_bytes = [0u8; 4];
+        f.read_exact(&mut steps_len_bytes)?;
+        let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
+        
+        let mut steps = Vec::with_capacity(steps_len);
+        for _ in 0..steps_len {
+            let mut hour_bytes = [0u8; 4];
+            f.read_exact(&mut hour_bytes)?;
+            let forecast_hour = i32::from_le_bytes(hour_bytes);
+            
+            let mut w_bytes = [0u8; 4];
+            f.read_exact(&mut w_bytes)?;
+            let width = u32::from_le_bytes(w_bytes) as usize;
+            
+            let mut h_bytes = [0u8; 4];
+            f.read_exact(&mut h_bytes)?;
+            let height = u32::from_le_bytes(h_bytes) as usize;
+            
+            let len = width * height;
+            let mut values = vec![0u16; len];
+            let mut byte_buf = vec![0u8; len * 2];
+            f.read_exact(&mut byte_buf)?;
+            for i in 0..len {
+                values[i] = u16::from_le_bytes([byte_buf[i * 2], byte_buf[i * 2 + 1]]);
+            }
+            
+            steps.push(SolarStep {
+                forecast_hour,
+                width,
+                height,
+                values: Arc::new(values),
+            });
+        }
+        
+        Ok(SolarForecast {
+            reference_time,
+            steps,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SolarMetadata {
+    pub left: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub top: f64,
+    pub width: u32,
+    pub height: u32,
+    pub times: Vec<i64>,
+    pub reference_time: i64,
+    pub reference_time_str: String,
+    pub version: u64,
+}
+
+#[derive(Deserialize)]
+pub struct SolarValueQuery {
+    pub lat: f64,
+    pub lon: f64,
+    pub time: i64,
+}
+
+#[derive(Deserialize)]
+pub struct SolarTimeseriesQuery {
+    pub lat: f64,
+    pub lon: f64,
+}
+
