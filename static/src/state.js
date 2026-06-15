@@ -8,6 +8,7 @@ export const state = {
     windMetadata: null,
     currentLayerMode: 'rain',
     currentEns: CONFIG.defaults.ensemble,
+    selectedWindHeight: 10,
     currentTimeIndex: CONFIG.defaults.timeIndex,
     isPlaying: false,
     playInterval: null,

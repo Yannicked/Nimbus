@@ -121,7 +121,7 @@ export async function showTimeseriesChart(lat, lon) {
             borderColor = "#f87171"; // Warm red
             backgroundColor = "rgba(248, 113, 113, 0.15)";
         } else if (state.currentLayerMode === 'wind') {
-            labelText = "10m Wind Speed (m/s)";
+            labelText = `${state.selectedWindHeight}m Wind Speed (m/s)`;
             borderColor = "#22d3ee"; // Neon cyan
             backgroundColor = "rgba(34, 211, 238, 0.15)";
         } else {

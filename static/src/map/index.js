@@ -87,7 +87,7 @@ export function getOrLoadTexture(gl, timeVal) {
     };
     const srcPath = state.currentLayerMode === 'temp'
         ? `/api/data/temp/${timeVal}`
-        : (state.currentLayerMode === 'wind' ? `/api/data/wind/${timeVal}` : `/api/data/${state.currentEns}/${timeVal}`);
+        : (state.currentLayerMode === 'wind' ? `/api/data/wind/${state.selectedWindHeight}/${timeVal}` : `/api/data/${state.currentEns}/${timeVal}`);
     img.src = `${window.location.origin}${srcPath}?v=${state.metadata.version}`;
     
     return null;

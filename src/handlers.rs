@@ -348,11 +348,13 @@ pub async fn get_wind_metadata(
         "Wind forecast not loaded".to_string(),
     ))?;
 
-    let times: Vec<i64> = forecast
+    let mut times: Vec<i64> = forecast
         .steps
         .iter()
         .map(|s| (s.forecast_hour as i64) * 3600)
         .collect();
+    times.sort_unstable();
+    times.dedup();
 
     let reference_time_str = {
         use chrono::TimeZone;
@@ -374,14 +376,15 @@ pub async fn get_wind_metadata(
         reference_time: forecast.reference_time,
         reference_time_str,
         version: 1,
+        heights: vec![10, 50, 100, 200, 300],
     }))
 }
 
 pub async fn get_wind_data_image(
-    Path(time): Path<i64>,
+    Path((height, time)): Path<(u32, i64)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.wind_data_cache.get(&time) {
+    if let Some(cached) = state.wind_data_cache.get(&(height, time)) {
         return Ok(Response::builder()
             .header("Content-Type", "image/png")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -402,6 +405,7 @@ pub async fn get_wind_data_image(
     let step = forecast
         .steps
         .iter()
+        .filter(|s| s.height_level == height)
         .min_by_key(|s| {
             let step_offset = (s.forecast_hour as i64) * 3600;
             (step_offset - time).abs()
@@ -414,13 +418,20 @@ pub async fn get_wind_data_image(
     let png_bytes = tokio::task::spawn_blocking(move || {
         render_wind_png_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
     }).await.unwrap();
-    state.wind_data_cache.insert(time, png_bytes.clone());
+    state.wind_data_cache.insert((height, time), png_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/png")
         .header("Cache-Control", "no-store, no-cache, must-revalidate")
         .body(axum::body::Body::from(png_bytes))
         .unwrap())
+}
+
+pub async fn get_wind_data_image_legacy(
+    Path(time): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    get_wind_data_image(Path((10, time)), State(state)).await
 }
 
 pub async fn get_wind_value(
@@ -443,9 +454,12 @@ pub async fn get_wind_value(
         }));
     }
 
+    let req_height = q.height.unwrap_or(10);
+
     let step = forecast
         .steps
         .iter()
+        .filter(|s| s.height_level == req_height)
         .min_by_key(|s| {
             let step_offset = (s.forecast_hour as i64) * 3600;
             (step_offset - q.time).abs()
@@ -503,7 +517,12 @@ pub async fn get_wind_timeseries(
     let mut speeds = Vec::new();
     let mut directions = Vec::new();
 
+    let req_height = q.height.unwrap_or(10);
+
     for step in &forecast.steps {
+        if step.height_level != req_height {
+            continue;
+        }
         let u_raw = interpolate_bilinear(fx, fy, 390, 390, &step.u_values);
         let v_raw = interpolate_bilinear(fx, fy, 390, 390, &step.v_values);
 

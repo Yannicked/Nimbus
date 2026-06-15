@@ -165,6 +165,7 @@ export function selectLayerMode(mode) {
     
     if (mode === 'temp') {
         if (viewSelector) viewSelector.classList.add('hidden');
+        if (DOM.windHeightSelector) DOM.windHeightSelector.classList.add('hidden');
         if (ensembleContainer) ensembleContainer.classList.add('hidden');
         if (legendRain) legendRain.classList.add('hidden');
         if (legendWind) legendWind.classList.add('hidden');
@@ -173,6 +174,7 @@ export function selectLayerMode(mode) {
         state.metadata = state.tempMetadata;
     } else if (mode === 'wind') {
         if (viewSelector) viewSelector.classList.add('hidden');
+        if (DOM.windHeightSelector) DOM.windHeightSelector.classList.remove('hidden');
         if (ensembleContainer) ensembleContainer.classList.add('hidden');
         if (legendRain) legendRain.classList.add('hidden');
         if (legendTemp) legendTemp.classList.add('hidden');
@@ -181,6 +183,7 @@ export function selectLayerMode(mode) {
         state.metadata = state.windMetadata;
     } else {
         if (viewSelector) viewSelector.classList.remove('hidden');
+        if (DOM.windHeightSelector) DOM.windHeightSelector.classList.add('hidden');
         if (ensembleContainer) ensembleContainer.classList.remove('hidden');
         if (legendRain) legendRain.classList.remove('hidden');
         if (legendTemp) legendTemp.classList.add('hidden');
@@ -222,7 +225,13 @@ export function selectLayerMode(mode) {
     // Update hover panel label
     const hoverLabel = DOM.hoverLabel;
     if (hoverLabel) {
-        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : (mode === 'wind' ? '10M WIND' : 'PRECIPITATION');
+        hoverLabel.textContent = mode === 'temp' ? 'TEMPERATURE' : (mode === 'wind' ? `${state.selectedWindHeight}M WIND` : 'PRECIPITATION');
+    }
+
+    // Update legend title
+    const legendWindTitle = document.querySelector('#legend-wind .section-label');
+    if (legendWindTitle) {
+        legendWindTitle.textContent = `${state.selectedWindHeight}m Wind Speed (m/s / Bft)`;
     }
     
     // Update hover panel & trend chart if open
@@ -329,6 +338,13 @@ export function initControls() {
         localStorage.setItem('nimbus_settings_expanded', isExpanded);
     });
 
+    // Attach height buttons event listeners
+    document.querySelectorAll('.height-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            selectWindHeight(btn.dataset.height);
+        });
+    });
+
     // Attach quick view toggle event listeners
     document.querySelectorAll('.view-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -351,4 +367,40 @@ export function initControls() {
         }
         selectEnsemble(val);
     });
+}
+
+// Select wind height
+export function selectWindHeight(height) {
+    state.selectedWindHeight = parseInt(height);
+    clearRadarLayers();
+    
+    const heightMap = { '10': '0', '50': '1', '100': '2', '200': '3', '300': '4' };
+    
+    document.querySelectorAll('.height-btn').forEach(btn => {
+        btn.classList.toggle('active', parseInt(btn.dataset.height) === state.selectedWindHeight);
+    });
+    
+    const selector = DOM.windHeightSelector;
+    if (selector && heightMap[height] !== undefined) {
+        selector.dataset.active = heightMap[height];
+    }
+    
+    // Update hover panel label
+    const hoverLabel = DOM.hoverLabel;
+    if (hoverLabel) {
+        hoverLabel.textContent = `${state.selectedWindHeight}M WIND`;
+    }
+
+    // Update legend title
+    const legendWindTitle = document.querySelector('#legend-wind .section-label');
+    if (legendWindTitle) {
+        legendWindTitle.textContent = `${state.selectedWindHeight}m Wind Speed (m/s / Bft)`;
+    }
+    
+    updateRadarOverlay();
+    triggerHoverQuery();
+    
+    if (state.activeCoords) {
+        showTimeseriesChart(state.activeCoords.lat, state.activeCoords.lon);
+    }
 }

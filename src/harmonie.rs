@@ -71,8 +71,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
 
         let grib_file = grib_reader::GribFile::from_bytes(data)?;
         let mut temp_vals = None;
-        let mut u_vals = None;
-        let mut v_vals = None;
+        let mut wind_by_level: std::collections::HashMap<u32, (Option<Vec<u16>>, Option<Vec<u16>>)> = std::collections::HashMap::new();
         let mut forecast_hour = 0;
 
         for idx in 0..grib_file.message_count() {
@@ -90,7 +89,8 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                         }
                         temp_vals = Some(values);
                     }
-                } else if pds.level_type == 105 && pds.level_value == 10 {
+                } else if pds.level_type == 105 && [10, 50, 100, 200, 300].contains(&(pds.level_value as u32)) {
+                    let lvl = pds.level_value as u32;
                     if pds.parameter_number == 33 {
                         forecast_hour = pds.forecast_time().unwrap_or(0) as i32;
                         let vals_f64 = msg.read_flat_data_as_f64()?;
@@ -101,7 +101,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                                     values[i] = ((v + 100.0) * 100.0).round() as u16;
                                 }
                             }
-                            u_vals = Some(values);
+                            wind_by_level.entry(lvl).or_insert((None, None)).0 = Some(values);
                         }
                     } else if pds.parameter_number == 34 {
                         let vals_f64 = msg.read_flat_data_as_f64()?;
@@ -112,7 +112,7 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                                     values[i] = ((v + 100.0) * 100.0).round() as u16;
                                 }
                             }
-                            v_vals = Some(values);
+                            wind_by_level.entry(lvl).or_insert((None, None)).1 = Some(values);
                         }
                     }
                 }
@@ -127,19 +127,22 @@ pub fn process_harmonie_tar_combined(tar_path: &str) -> Result<(TempForecast, Wi
                 values: Arc::new(t_vals),
             });
         }
-        if let (Some(u), Some(v)) = (u_vals, v_vals) {
-            wind_steps.push(WindStep {
-                forecast_hour,
-                width: 390,
-                height: 390,
-                u_values: Arc::new(u),
-                v_values: Arc::new(v),
-            });
+        for (lvl, (u_opt, v_opt)) in wind_by_level {
+            if let (Some(u), Some(v)) = (u_opt, v_opt) {
+                wind_steps.push(WindStep {
+                    forecast_hour,
+                    height_level: lvl,
+                    width: 390,
+                    height: 390,
+                    u_values: Arc::new(u),
+                    v_values: Arc::new(v),
+                });
+            }
         }
     }
 
     temp_steps.sort_by_key(|s| s.forecast_hour);
-    wind_steps.sort_by_key(|s| s.forecast_hour);
+    wind_steps.sort_by_key(|s| (s.forecast_hour, s.height_level));
 
     Ok((
         TempForecast {
@@ -422,13 +425,13 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
         .iter()
         .map(|s| {
             let time_key = (s.forecast_hour as i64) * 3600;
-            (time_key, s.u_values.clone(), s.v_values.clone())
+            (s.height_level, time_key, s.u_values.clone(), s.v_values.clone())
         })
         .collect();
 
     drop(forecast_opt);
 
-    for (i, (time_key, u_vals, v_vals)) in steps_info.into_iter().enumerate() {
+    for (i, (height_level, time_key, u_vals, v_vals)) in steps_info.into_iter().enumerate() {
         let state_clone = state.clone();
         let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
@@ -438,7 +441,7 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
             let png_bytes = tokio::task::spawn_blocking(move || {
                 render_wind_png_bytes(&u_vals, &v_vals, &state_clone_for_blocking.wind_projection_lut)
             }).await.unwrap();
-            state_clone.wind_data_cache.insert(time_key, png_bytes);
+            state_clone.wind_data_cache.insert((height_level, time_key), png_bytes);
         });
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {

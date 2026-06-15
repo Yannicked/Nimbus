@@ -32,6 +32,7 @@ export const DOM = {
     viewSelector: document.querySelector('.view-selector'),
     layerSelector: document.querySelector('.layer-selector'),
     rainViewSelector: document.getElementById('rain-view-selector'),
+    windHeightSelector: document.getElementById('wind-height-selector'),
     ensembleContainer: document.querySelector('.ensemble-select-container'),
     hoverLabel: document.getElementById('hover-label'),
     rainfallChart: document.getElementById('rainfall-chart'),

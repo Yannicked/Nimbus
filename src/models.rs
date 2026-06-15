@@ -111,6 +111,7 @@ impl TempForecast {
 
 pub struct WindStep {
     pub forecast_hour: i32,
+    pub height_level: u32,
     pub width: usize,
     pub height: usize,
     pub u_values: Arc<Vec<u16>>,
@@ -126,12 +127,13 @@ impl WindForecast {
     pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-        f.write_all(b"HRMW")?;
+        f.write_all(b"HRW2")?;
         f.write_all(&self.reference_time.to_le_bytes())?;
         f.write_all(&(self.steps.len() as u32).to_le_bytes())?;
         
         for step in &self.steps {
             f.write_all(&step.forecast_hour.to_le_bytes())?;
+            f.write_all(&step.height_level.to_le_bytes())?;
             f.write_all(&(step.width as u32).to_le_bytes())?;
             f.write_all(&(step.height as u32).to_le_bytes())?;
             for &val in step.u_values.as_ref() {
@@ -149,7 +151,7 @@ impl WindForecast {
         let mut f = std::fs::File::open(path)?;
         let mut magic = [0u8; 4];
         f.read_exact(&mut magic)?;
-        if &magic != b"HRMW" {
+        if &magic != b"HRW2" {
             return Err("Invalid magic bytes in wind file".into());
         }
         
@@ -166,6 +168,10 @@ impl WindForecast {
             let mut hour_bytes = [0u8; 4];
             f.read_exact(&mut hour_bytes)?;
             let forecast_hour = i32::from_le_bytes(hour_bytes);
+            
+            let mut hl_bytes = [0u8; 4];
+            f.read_exact(&mut hl_bytes)?;
+            let height_level = u32::from_le_bytes(hl_bytes);
             
             let mut w_bytes = [0u8; 4];
             f.read_exact(&mut w_bytes)?;
@@ -191,6 +197,7 @@ impl WindForecast {
             
             steps.push(WindStep {
                 forecast_hour,
+                height_level,
                 width,
                 height,
                 u_values: Arc::new(u_values),
@@ -314,6 +321,7 @@ pub struct WindMetadata {
     pub reference_time: i64,
     pub reference_time_str: String,
     pub version: u64,
+    pub heights: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -321,6 +329,7 @@ pub struct WindValueQuery {
     pub lat: f64,
     pub lon: f64,
     pub time: i64,
+    pub height: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -336,6 +345,7 @@ pub struct WindValueResponse {
 pub struct WindTimeseriesQuery {
     pub lat: f64,
     pub lon: f64,
+    pub height: Option<u32>,
 }
 
 #[derive(Serialize)]

@@ -21,5 +21,5 @@ pub struct AppState {
     // 10m Wind Forecast
     pub wind_forecast: RwLock<Option<WindForecast>>,
     pub wind_projection_lut: Vec<LutEntry>,
-    pub wind_data_cache: DashMap<i64, Vec<u8>>,
+    pub wind_data_cache: DashMap<(u32, i64), Vec<u8>>,
 }

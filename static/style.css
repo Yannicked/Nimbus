@@ -342,6 +342,81 @@ header .ref-time .value {
     color: var(--text-primary);
 }
 
+/* 5-way Height Selector styles */
+.height-selector {
+    display: flex;
+    position: relative;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-glass);
+    border-radius: 20px;
+    padding: 2px;
+    gap: 2px;
+}
+
+.height-selector::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: calc((100% - 12px) / 5);
+    height: calc(100% - 4px);
+    background: var(--primary-color);
+    border-radius: 18px;
+    box-shadow: 0 2px 10px var(--primary-glow);
+    transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 0;
+}
+
+.height-selector[data-active="0"]::before {
+    left: 2px;
+}
+
+.height-selector[data-active="1"]::before {
+    left: calc(2px + (100% - 12px) / 5 + 2px);
+}
+
+.height-selector[data-active="2"]::before {
+    left: calc(2px + 2 * (100% - 12px) / 5 + 4px);
+}
+
+.height-selector[data-active="3"]::before {
+    left: calc(2px + 3 * (100% - 12px) / 5 + 6px);
+}
+
+.height-selector[data-active="4"]::before {
+    left: calc(2px + 4 * (100% - 12px) / 5 + 8px);
+}
+
+.height-btn {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 4px 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: 18px;
+    cursor: pointer;
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    white-space: nowrap;
+    transition: color 0.25s ease, transform 0.1s ease;
+}
+
+.height-btn:hover {
+    color: var(--text-primary);
+}
+
+.height-btn:active {
+    transform: scale(0.95);
+}
+
+.height-btn.active {
+    color: var(--text-primary);
+}
+
 .layer-selector {
     display: flex;
     position: relative;
