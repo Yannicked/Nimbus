@@ -7,3 +7,6 @@ scratch/
 .idea/
 .vscode/
 temp_knmi_download.nc
+cache/
+*.bin
+

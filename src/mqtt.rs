@@ -206,10 +206,10 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                     tokio::spawn(async move {
                                         match download_and_process_combined_tar(&name_clone, url_opt.as_deref(), &api_key).await {
                                             Ok((temp_fc, wind_fc)) => {
-                                                if let Err(e) = temp_fc.write_to_file("./harmonie_temp.bin") {
+                                                if let Err(e) = temp_fc.write_to_file(&format!("{}/harmonie_temp.bin", crate::constants::CACHE_DIR)) {
                                                     eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
                                                 }
-                                                if let Err(e) = wind_fc.write_to_file("./harmonie_wind.bin") {
+                                                if let Err(e) = wind_fc.write_to_file(&format!("{}/harmonie_wind.bin", crate::constants::CACHE_DIR)) {
                                                     eprintln!("Failed to save new wind forecast to bin: {:?}", e);
                                                 }
                                                 

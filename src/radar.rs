@@ -406,15 +406,15 @@ pub async fn download_and_update_nc_file(
 
     let bytes = file_res.bytes().await?;
 
-    let temp_path = "temp_knmi_download.nc";
-    tokio::fs::write(temp_path, &bytes).await?;
+    let temp_path = format!("{}/temp_knmi_download.nc", crate::constants::CACHE_DIR);
+    tokio::fs::write(&temp_path, &bytes).await?;
 
-    let final_path = format!("./{}", filename);
-    tokio::fs::rename(temp_path, &final_path).await?;
+    let final_path = format!("{}/{}", crate::constants::CACHE_DIR, filename);
+    tokio::fs::rename(&temp_path, &final_path).await?;
     println!("Successfully downloaded and saved: {}", final_path);
 
     // Delete old NetCDF files to save space
-    if let Ok(mut entries) = tokio::fs::read_dir(".").await {
+    if let Ok(mut entries) = tokio::fs::read_dir(crate::constants::CACHE_DIR).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.is_file() {

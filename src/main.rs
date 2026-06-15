@@ -39,18 +39,23 @@ async fn main() {
     let open_data_api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
         .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
 
+    // Create cache directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(constants::CACHE_DIR) {
+        eprintln!("Failed to create cache directory '{}': {:?}", constants::CACHE_DIR, e);
+    }
+
     // Clean up leftover tar files on startup
     cleanup_tar_files();
 
     // Load or fetch temperature and wind forecasts (combined)
     let (temp_fc, wind_fc) = load_or_fetch_combined_forecast(&open_data_api_key).await;
 
-    // 1. Find the latest netcdf file in the current directory, or download it if none exists
-    let initial_file = match find_latest_nc_file(".") {
+    // 1. Find the latest netcdf file in the cache directory, or download it if none exists
+    let initial_file = match find_latest_nc_file(constants::CACHE_DIR) {
         Some(f) => f,
         None => {
-            println!("No NetCDF (.nc) files found in workspace root. Fetching latest file from KNMI Open Data API...");
-            match fetch_latest_nc_file(".").await {
+            println!("No NetCDF (.nc) files found in cache directory. Fetching latest file from KNMI Open Data API...");
+            match fetch_latest_nc_file(constants::CACHE_DIR).await {
                 Ok(f) => f,
                 Err(e) => {
                     panic!("Failed to download initial NetCDF file on startup: {}", e);
@@ -135,8 +140,8 @@ async fn main() {
         .expect("Failed to create file watcher");
 
     watcher
-        .watch(std::path::Path::new("."), RecursiveMode::NonRecursive)
-        .expect("Failed to watch current directory");
+        .watch(std::path::Path::new(constants::CACHE_DIR), RecursiveMode::NonRecursive)
+        .expect("Failed to watch cache directory");
 
     tokio::spawn(async move {
         // Keep watcher reference alive in task
@@ -145,7 +150,7 @@ async fn main() {
             // Wait for file write to complete
             tokio::time::sleep(Duration::from_millis(1000)).await;
 
-            if let Some(new_file) = find_latest_nc_file(".") {
+            if let Some(new_file) = find_latest_nc_file(constants::CACHE_DIR) {
                 let current_file = state_clone.file_path.read().await.clone();
                 if current_file != new_file {
                     println!("Detected new NetCDF file: {}", new_file);

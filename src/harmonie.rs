@@ -213,9 +213,9 @@ pub async fn download_and_process_combined_tar(
         return Err(format!("Failed to download tar content, HTTP status: {}", file_res.status()).into());
     }
 
-    let temp_tar_path = "temp_harmonie_combined.tar";
+    let temp_tar_path = format!("{}/temp_harmonie_combined.tar", crate::constants::CACHE_DIR);
     {
-        let mut f = tokio::fs::File::create(temp_tar_path).await?;
+        let mut f = tokio::fs::File::create(&temp_tar_path).await?;
         while let Some(chunk) = file_res.chunk().await? {
             tokio::io::copy(&mut &*chunk, &mut f).await?;
         }
@@ -223,8 +223,8 @@ pub async fn download_and_process_combined_tar(
     
     println!("Extracting and processing GRIB1 files from tar (combined)...");
     let forecasts = tokio::task::spawn_blocking(move || {
-        let res = process_harmonie_tar_combined(temp_tar_path);
-        let _ = std::fs::remove_file(temp_tar_path);
+        let res = process_harmonie_tar_combined(&temp_tar_path);
+        let _ = std::fs::remove_file(&temp_tar_path);
         res
     }).await??;
 
@@ -233,19 +233,19 @@ pub async fn download_and_process_combined_tar(
 }
 
 pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, WindForecast) {
-    let temp_bin_path = "./harmonie_temp.bin";
-    let wind_bin_path = "./harmonie_wind.bin";
+    let temp_bin_path = format!("{}/harmonie_temp.bin", crate::constants::CACHE_DIR);
+    let wind_bin_path = format!("{}/harmonie_wind.bin", crate::constants::CACHE_DIR);
 
-    let temp_fc_opt = if std::path::Path::new(temp_bin_path).exists() {
+    let temp_fc_opt = if std::path::Path::new(&temp_bin_path).exists() {
         println!("Found local temperature cache: {}", temp_bin_path);
-        TempForecast::read_from_file(temp_bin_path).ok()
+        TempForecast::read_from_file(&temp_bin_path).ok()
     } else {
         None
     };
 
-    let wind_fc_opt = if std::path::Path::new(wind_bin_path).exists() {
+    let wind_fc_opt = if std::path::Path::new(&wind_bin_path).exists() {
         println!("Found local wind cache: {}", wind_bin_path);
-        WindForecast::read_from_file(wind_bin_path).ok()
+        WindForecast::read_from_file(&wind_bin_path).ok()
     } else {
         None
     };
@@ -261,10 +261,10 @@ pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, Wi
                     if api_time > cached_ref_time {
                         println!("Newer run available on KNMI API: {} (cached is {}). Downloading...", api_time, cached_ref_time);
                         if let Ok((new_temp, new_wind)) = download_and_process_combined_tar(&latest_filename, None, api_key).await {
-                            if let Err(e) = new_temp.write_to_file(temp_bin_path) {
+                            if let Err(e) = new_temp.write_to_file(&temp_bin_path) {
                                 eprintln!("Failed to save new temperature forecast to bin: {:?}", e);
                             }
-                            if let Err(e) = new_wind.write_to_file(wind_bin_path) {
+                            if let Err(e) = new_wind.write_to_file(&wind_bin_path) {
                                 eprintln!("Failed to save new wind forecast to bin: {:?}", e);
                             }
                             return (new_temp, new_wind);
@@ -289,10 +289,10 @@ pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, Wi
             Ok(latest_filename) => {
                 match download_and_process_combined_tar(&latest_filename, None, api_key).await {
                     Ok((temp_fc, wind_fc)) => {
-                        if let Err(e) = temp_fc.write_to_file(temp_bin_path) {
+                        if let Err(e) = temp_fc.write_to_file(&temp_bin_path) {
                             eprintln!("Failed to save temperature forecast to bin: {:?}", e);
                         }
-                        if let Err(e) = wind_fc.write_to_file(wind_bin_path) {
+                        if let Err(e) = wind_fc.write_to_file(&wind_bin_path) {
                             eprintln!("Failed to save wind forecast to bin: {:?}", e);
                         }
                         return (temp_fc, wind_fc);
@@ -311,7 +311,7 @@ pub async fn load_or_fetch_combined_forecast(api_key: &str) -> (TempForecast, Wi
 }
 
 pub fn cleanup_tar_files() {
-    if let Ok(entries) = std::fs::read_dir(".") {
+    if let Ok(entries) = std::fs::read_dir(crate::constants::CACHE_DIR) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {

@@ -23,3 +23,7 @@ wheels/
 # Environment variables
 .env
 
+# Cached files
+/cache/
+*.bin
+

@@ -31,3 +31,7 @@ pub const KNMI_X0: f64 = 500.00130649042126;
 pub const KNMI_Y0: f64 = -3650495.413595936;
 pub const KNMI_GRID_W: usize = 700;
 pub const KNMI_GRID_H: usize = 765;
+
+/// Directory where all cached/downloaded files are stored.
+pub const CACHE_DIR: &str = "./cache";
+
