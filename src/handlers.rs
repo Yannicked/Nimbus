@@ -67,7 +67,14 @@ pub async fn get_data_image(
     let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
         cached.value().clone()
     } else {
-        let computed = compute_raw_slice(&file_path, &meta, &ens_str, time)?;
+        let file_path_clone = file_path.clone();
+        let meta_clone = meta.clone();
+        let ens_str_clone = ens_str.clone();
+        let computed = tokio::task::spawn_blocking(move || {
+            compute_raw_slice(&file_path_clone, &meta_clone, &ens_str_clone, time)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
         let arc = Arc::new(computed);
         state
             .grid_cache
@@ -137,66 +144,73 @@ pub async fn get_value(
     }
 
     // Read value based on query type
-    let file =
-        netcdf::open(&file_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let var = file.variable(PRECIP_VAR).ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "precip_intensity variable missing".to_string(),
-    ))?;
+    let file_path_clone = file_path.clone();
+    let q_ens_clone = q.ens.clone();
+    let meta_clone = meta.clone();
+    let (status_out, value_out) = tokio::task::spawn_blocking(move || {
+        let file = netcdf::open(&file_path_clone)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let var = file.variable(PRECIP_VAR).ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "precip_intensity variable missing".to_string(),
+        ))?;
 
-    let (status_out, value_out) = if let Some(stat) = EnsembleStat::from_str(&q.ens) {
-        // Read value at target cell across all members
-        let time_idx = meta
-            .times
-            .iter()
-            .position(|&t| t == q.time)
-            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", q.time)))?;
-        let mut vals = Vec::with_capacity(meta.ensembles.len());
-        for (ens_idx, _) in meta.ensembles.iter().enumerate() {
+        if let Some(stat) = EnsembleStat::from_str(&q_ens_clone) {
+            // Read value at target cell across all members
+            let time_idx = meta_clone
+                .times
+                .iter()
+                .position(|&t| t == q.time)
+                .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", q.time)))?;
+            let mut vals = Vec::with_capacity(meta_clone.ensembles.len());
+            for (ens_idx, _) in meta_clone.ensembles.iter().enumerate() {
+                let val_raw: u16 = var
+                    .get_value((ens_idx, time_idx, iy as usize, ix as usize))
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                vals.push(val_raw);
+            }
+
+            let reduced = reduce_ensemble(&stat, &mut vals);
+
+            Ok(match stat {
+                EnsembleStat::Probability => ("probability".to_string(), reduced as f64),
+                _ => {
+                    let val_mmh = raw_to_value(reduced);
+                    let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
+                    (status.to_string(), val_mmh)
+                }
+            })
+        } else {
+            // Individual member
+            let ens_num: i32 = q_ens_clone.parse().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid ensemble parameter: {}", q_ens_clone),
+                )
+            })?;
+
+            let ens_idx = meta_clone.ensembles.iter().position(|&e| e == ens_num).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("Invalid ensemble: {}", ens_num),
+            ))?;
+
+            let time_idx = meta_clone
+                .times
+                .iter()
+                .position(|&t| t == q.time)
+                .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", q.time)))?;
+
             let val_raw: u16 = var
                 .get_value((ens_idx, time_idx, iy as usize, ix as usize))
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            vals.push(val_raw);
+
+            let val_mmh = raw_to_value(val_raw);
+            let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
+            Ok((status.to_string(), val_mmh))
         }
-
-        let reduced = reduce_ensemble(&stat, &mut vals);
-
-        match stat {
-            EnsembleStat::Probability => ("probability".to_string(), reduced as f64),
-            _ => {
-                let val_mmh = raw_to_value(reduced);
-                let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
-                (status.to_string(), val_mmh)
-            }
-        }
-    } else {
-        // Individual member
-        let ens_num: i32 = q.ens.parse().map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid ensemble parameter: {}", q.ens),
-            )
-        })?;
-
-        let ens_idx = meta.ensembles.iter().position(|&e| e == ens_num).ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("Invalid ensemble: {}", ens_num),
-        ))?;
-
-        let time_idx = meta
-            .times
-            .iter()
-            .position(|&t| t == q.time)
-            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", q.time)))?;
-
-        let val_raw: u16 = var
-            .get_value((ens_idx, time_idx, iy as usize, ix as usize))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let val_mmh = raw_to_value(val_raw);
-        let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
-        (status.to_string(), val_mmh)
-    };
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
 
     Ok(axum::Json(ValueResponse {
         status: status_out,
@@ -265,63 +279,71 @@ pub async fn get_timeseries(
         }));
     }
 
-    let file =
-        netcdf::open(&file_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let var = file.variable(PRECIP_VAR).ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "precip_intensity variable missing".to_string(),
-    ))?;
-
-    let num_times = meta.times.len();
-    let num_ensembles = meta.ensembles.len();
-    let mut values = Vec::with_capacity(num_times);
-
-    if let Some(stat) = EnsembleStat::from_str(&q.ens) {
-        // Read values for all ensembles and all times at the target pixel
-        let raw_grid = var
-            .get_values::<u16, _>((
-                &[0, 0, iy as usize, ix as usize][..],
-                &[num_ensembles, num_times, 1, 1][..],
-            ))
+    let file_path_clone = file_path.clone();
+    let q_ens_clone = q.ens.clone();
+    let meta_clone = meta.clone();
+    let values = tokio::task::spawn_blocking(move || {
+        let file = netcdf::open(&file_path_clone)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        for t in 0..num_times {
-            let mut member_vals: Vec<u16> = (0..num_ensembles)
-                .map(|e| raw_grid[e * num_times + t])
-                .collect();
-
-            let reduced = reduce_ensemble(&stat, &mut member_vals);
-
-            match stat {
-                EnsembleStat::Probability => values.push(reduced as f64),
-                _ => values.push(raw_to_value(reduced)),
-            }
-        }
-    } else {
-        // Individual member
-        let ens_num: i32 = q.ens.parse().map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid ensemble parameter: {}", q.ens),
-            )
-        })?;
-
-        let ens_idx = meta.ensembles.iter().position(|&e| e == ens_num).ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("Invalid ensemble: {}", ens_num),
+        let var = file.variable(PRECIP_VAR).ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "precip_intensity variable missing".to_string(),
         ))?;
 
-        let raw_values = var
-            .get_values::<u16, _>((
-                &[ens_idx, 0, iy as usize, ix as usize][..],
-                &[1, num_times, 1, 1][..],
-            ))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let num_times = meta_clone.times.len();
+        let num_ensembles = meta_clone.ensembles.len();
+        let mut values = Vec::with_capacity(num_times);
 
-        for val_raw in raw_values {
-            values.push(raw_to_value(val_raw));
+        if let Some(stat) = EnsembleStat::from_str(&q_ens_clone) {
+            // Read values for all ensembles and all times at the target pixel
+            let raw_grid = var
+                .get_values::<u16, _>((
+                    &[0, 0, iy as usize, ix as usize][..],
+                    &[num_ensembles, num_times, 1, 1][..],
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            for t in 0..num_times {
+                let mut member_vals: Vec<u16> = (0..num_ensembles)
+                    .map(|e| raw_grid[e * num_times + t])
+                    .collect();
+
+                let reduced = reduce_ensemble(&stat, &mut member_vals);
+
+                match stat {
+                    EnsembleStat::Probability => values.push(reduced as f64),
+                    _ => values.push(raw_to_value(reduced)),
+                }
+            }
+        } else {
+            // Individual member
+            let ens_num: i32 = q_ens_clone.parse().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid ensemble parameter: {}", q_ens_clone),
+                )
+            })?;
+
+            let ens_idx = meta_clone.ensembles.iter().position(|&e| e == ens_num).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("Invalid ensemble: {}", ens_num),
+            ))?;
+
+            let raw_values = var
+                .get_values::<u16, _>((
+                    &[ens_idx, 0, iy as usize, ix as usize][..],
+                    &[1, num_times, 1, 1][..],
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            for val_raw in raw_values {
+                values.push(raw_to_value(val_raw));
+            }
         }
-    }
+        Ok(values)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
 
     Ok(axum::Json(TimeseriesResponse {
         status: "ok".to_string(),

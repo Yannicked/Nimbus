@@ -13,7 +13,6 @@ ndarray = "0.17"
 image = { version = "0.25", features = ["png", "webp"] }
 dashmap = "6"
 tower-http = { version = "0.7", features = ["fs", "cors"] }
-notify = "8"
 rumqttc = { version = "0.25", features = ["websocket", "use-rustls"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 dotenvy = "0.15"

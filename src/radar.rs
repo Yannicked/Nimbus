@@ -411,18 +411,33 @@ pub async fn download_and_update_nc_file(
     filename: &str,
     file_url: Option<&str>,
     api_key: &str,
-    _state: Arc<AppState>,
+    state: Arc<AppState>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Sanitize filename to prevent path traversal
+    let safe_filename = std::path::Path::new(filename)
+        .file_name()
+        .ok_or("Invalid filename in MQTT notification")?
+        .to_str()
+        .ok_or("Invalid filename characters")?;
+
     println!(
         "Requesting download URL for {} from KNMI Open Data API...",
-        filename
+        safe_filename
     );
+
+    // Validate that the file_url uses the trusted KNMI domain to prevent SSRF / credential leakage
+    let trusted_base = "https://api.dataplatform.knmi.nl/";
+    if let Some(ref u) = file_url {
+        if !u.starts_with(trusted_base) {
+            return Err(format!("Untrusted download URL in MQTT payload: {}", u).into());
+        }
+    }
 
     let url = match file_url {
         Some(u) => u.to_string(),
         None => format!(
             "https://api.dataplatform.knmi.nl/open-data/v1/datasets/{}/versions/1.0/files/{}/url",
-            KNMI_DATASET, filename
+            KNMI_DATASET, safe_filename
         ),
     };
 
@@ -441,7 +456,13 @@ pub async fn download_and_update_nc_file(
     let url_resp: FileUrlResponse = res.json().await?;
     let download_url = url_resp.temporary_download_url;
 
-    println!("Downloading file from temporary URL: {}...", filename);
+    // Validate download url is also trusted
+    if !download_url.starts_with("https://open-data.dataplatform.knmi.nl/") 
+       && !download_url.starts_with(trusted_base) {
+        println!("Warning: Download URL domain differs from KNMI API: {}", download_url);
+    }
+
+    println!("Downloading file from temporary URL: {}...", safe_filename);
 
     let file_res = client.get(&download_url).send().await?;
     if !file_res.status().is_success() {
@@ -454,12 +475,36 @@ pub async fn download_and_update_nc_file(
 
     let bytes = file_res.bytes().await?;
 
-    let temp_path = format!("{}/temp_knmi_download.nc", crate::constants::CACHE_DIR);
+    // Use .tmp extension to prevent directory watcher/scanners from opening a half-written file
+    let temp_path = format!("{}/{}.tmp", crate::constants::CACHE_DIR, safe_filename);
     tokio::fs::write(&temp_path, &bytes).await?;
 
-    let final_path = format!("{}/{}", crate::constants::CACHE_DIR, filename);
+    let final_path = format!("{}/{}", crate::constants::CACHE_DIR, safe_filename);
     tokio::fs::rename(&temp_path, &final_path).await?;
     println!("Successfully downloaded and saved: {}", final_path);
+
+    // Perform atomic in-memory state reloading
+    match load_metadata(&final_path) {
+        Ok(meta) => {
+            let mut file_write = state.file_path.write().await;
+            *file_write = final_path.clone();
+
+            let mut meta_write = state.metadata.write().await;
+            *meta_write = Some(meta.clone());
+
+            state.grid_cache.clear();
+            state.data_cache.clear();
+            println!("Successfully reloaded metadata and cleared caches for new file: {}", final_path);
+
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                precalculate_all_data(state_clone, meta).await;
+            });
+        }
+        Err(e) => {
+            eprintln!("Failed to load new NetCDF metadata from {}: {}", final_path, e);
+        }
+    }
 
     // Delete old NetCDF files to save space
     if let Ok(mut entries) = tokio::fs::read_dir(crate::constants::CACHE_DIR).await {
@@ -469,7 +514,7 @@ pub async fn download_and_update_nc_file(
                 if let Some(ext) = path.extension() {
                     if ext == "nc" {
                         if let Some(file_name_str) = path.file_name().and_then(|n| n.to_str()) {
-                            if file_name_str != filename
+                            if file_name_str != safe_filename
                                 && file_name_str.starts_with("KNMI_PYSTEPS_BLEND_ENS_")
                             {
                                 println!("Deleting old NetCDF file: {:?}", path);
@@ -527,12 +572,19 @@ pub async fn fetch_latest_nc_file(
         .ok_or("No files returned by KNMI API")?;
     let filename = &entry.filename;
 
-    println!("Latest file on KNMI API: {}", filename);
+    // Sanitize filename
+    let safe_filename = std::path::Path::new(filename)
+        .file_name()
+        .ok_or("Invalid filename from listing")?
+        .to_str()
+        .ok_or("Invalid characters in filename")?;
+
+    println!("Latest file on KNMI API: {}", safe_filename);
 
     // 2. Request download URL for this file
     let url_endpoint = format!(
         "https://api.dataplatform.knmi.nl/open-data/v1/datasets/{}/versions/1.0/files/{}/url",
-        KNMI_DATASET, filename
+        KNMI_DATASET, safe_filename
     );
     let url_res = client
         .get(&url_endpoint)
@@ -556,7 +608,7 @@ pub async fn fetch_latest_nc_file(
     let download_url = url_resp.temporary_download_url;
 
     // 3. Download and save the file
-    println!("Downloading file: {}...", filename);
+    println!("Downloading file: {}...", safe_filename);
     let file_res = client
         .get(&download_url)
         .send()
@@ -574,12 +626,12 @@ pub async fn fetch_latest_nc_file(
         .bytes()
         .await
         .map_err(|e| format!("Failed to read file bytes: {}", e))?;
-    let temp_path = format!("{}/temp_knmi_download.nc", dest_dir);
+    let temp_path = format!("{}/{}.tmp", dest_dir, safe_filename);
     tokio::fs::write(&temp_path, &bytes)
         .await
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    let final_path = format!("{}/{}", dest_dir, filename);
+    let final_path = format!("{}/{}", dest_dir, safe_filename);
     tokio::fs::rename(&temp_path, &final_path)
         .await
         .map_err(|e| format!("Failed to rename final file: {}", e))?;
