@@ -17,9 +17,7 @@ mod rendering;
 mod state;
 
 use axum::{routing::get, Router};
-use notify::{EventKind, RecursiveMode, Watcher};
 use std::sync::Arc;
-use std::time::Duration;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -145,63 +143,8 @@ async fn main() {
         start_knmi_harmonie_mqtt_listener(state_clone_harmonie_mqtt).await;
     });
 
-    // 4. Set up directory watcher to monitor file updates
-    let state_clone = state.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-    let mut watcher =
-        notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-                    let _ = tx.blocking_send(());
-                }
-            }
-        })
-        .expect("Failed to create file watcher");
-
-    watcher
-        .watch(
-            std::path::Path::new(constants::CACHE_DIR),
-            RecursiveMode::NonRecursive,
-        )
-        .expect("Failed to watch cache directory");
-
-    tokio::spawn(async move {
-        // Keep watcher reference alive in task
-        let _watcher = watcher;
-        while rx.recv().await.is_some() {
-            // Wait for file write to complete
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-
-            if let Some(new_file) = find_latest_nc_file(constants::CACHE_DIR) {
-                let current_file = state_clone.file_path.read().await.clone();
-                if current_file != new_file {
-                    println!("Detected new NetCDF file: {}", new_file);
-                    match load_metadata(&new_file) {
-                        Ok(meta) => {
-                            let mut file_write = state_clone.file_path.write().await;
-                            *file_write = new_file;
-
-                            let mut meta_write = state_clone.metadata.write().await;
-                            *meta_write = Some(meta.clone());
-
-                            state_clone.grid_cache.clear();
-                            state_clone.data_cache.clear();
-                            println!("Successfully reloaded metadata and cleared caches.");
-
-                            let state_clone2 = state_clone.clone();
-                            let meta_clone = meta.clone();
-                            tokio::spawn(async move {
-                                precalculate_all_data(state_clone2, meta_clone).await;
-                            });
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load new NetCDF metadata: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-    });
+    // Note: State reloads are now triggered directly in-memory upon successful download completion
+    // in download_and_update_nc_file.
 
     // 5. Configure Router
     let app = Router::new()

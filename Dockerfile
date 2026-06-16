@@ -33,11 +33,21 @@ FROM alpine:latest
 # Install runtime dependencies (NetCDF and HDF5 C libraries, TLS certificates, GCC runtime libraries)
 RUN apk add --no-cache netcdf hdf5 ca-certificates libgcc libstdc++
 
+# Create non-root user and group
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
 WORKDIR /app
+
+# Create cache directory and ensure appuser has permissions
+RUN mkdir -p /app/cache && chown -R appuser:appgroup /app
 
 # Copy release binary and static assets
 COPY --from=builder /usr/src/nimbus/target/release/weer-service /app/weer-service
 COPY static/ /app/static/
+
+RUN chown -R appuser:appgroup /app/weer-service /app/static
+
+USER appuser
 
 EXPOSE 8080
 

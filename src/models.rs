@@ -86,6 +86,10 @@ impl TempForecast {
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
 
+            if width != 390 || height != 390 {
+                return Err("Invalid grid dimensions in temperature forecast binary file".into());
+            }
+
             let len = width * height;
             let mut values = vec![0u16; len];
             let mut byte_buf = vec![0u8; len * 2];
@@ -180,6 +184,10 @@ impl WindForecast {
             let mut h_bytes = [0u8; 4];
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
+
+            if width != 390 || height != 390 {
+                return Err("Invalid grid dimensions in wind forecast binary file".into());
+            }
 
             let len = width * height;
             let mut u_values = vec![0u16; len];
@@ -483,6 +491,10 @@ impl SolarForecast {
             let mut h_bytes = [0u8; 4];
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
+
+            if width != 390 || height != 390 {
+                return Err("Invalid grid dimensions in solar forecast binary file".into());
+            }
 
             let len = width * height;
             let mut values = vec![0u16; len];

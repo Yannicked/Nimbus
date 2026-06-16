@@ -83,6 +83,12 @@ pub fn process_harmonie_tar_combined(
             }
         }
 
+        // Limit maximum size read from tar entry to prevent OOM / Tar Bomb attacks
+        let entry_size = entry.size();
+        if entry_size > 50_000_000 {
+            return Err("Tar entry exceeds maximum size limit (50MB)".into());
+        }
+
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
 
@@ -275,15 +281,31 @@ pub async fn download_and_process_combined_tar(
     file_url: Option<&str>,
     api_key: &str,
 ) -> Result<(TempForecast, WindForecast, SolarForecast), Box<dyn std::error::Error + Send + Sync>> {
+    // Sanitize filename to prevent path traversal
+    let safe_filename = std::path::Path::new(filename)
+        .file_name()
+        .ok_or("Invalid filename in MQTT notification")?
+        .to_str()
+        .ok_or("Invalid filename characters")?;
+
     println!(
         "Requesting download URL for HARMONIE tar (combined): {}...",
-        filename
+        safe_filename
     );
+
+    // Validate that the file_url uses the trusted KNMI domain to prevent SSRF / credential leakage
+    let trusted_base = "https://api.dataplatform.knmi.nl/";
+    if let Some(ref u) = file_url {
+        if !u.starts_with(trusted_base) {
+            return Err(format!("Untrusted download URL in MQTT payload: {}", u).into());
+        }
+    }
+
     let url = match file_url {
         Some(u) => u.to_string(),
         None => format!(
             "https://api.dataplatform.knmi.nl/open-data/v1/datasets/harmonie_arome_cy43_p1/versions/1.0/files/{}/url",
-            filename
+            safe_filename
         ),
     };
 
@@ -299,6 +321,12 @@ pub async fn download_and_process_combined_tar(
 
     let url_resp: FileUrlResponse = res.json().await?;
     let download_url = url_resp.temporary_download_url;
+
+    // Validate download url is also trusted
+    if !download_url.starts_with("https://open-data.dataplatform.knmi.nl/") 
+       && !download_url.starts_with(trusted_base) {
+        println!("Warning: Download URL domain differs from KNMI API: {}", download_url);
+    }
 
     println!("Downloading HARMONIE tar (combined) from temporary URL to temp file...");
     let mut file_res = client.get(&download_url).send().await?;
