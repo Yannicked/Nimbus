@@ -43,9 +43,10 @@
         <label for="compare-layer-select" class="section-label">Compare Layer (Right Map)</label>
         <select id="compare-layer-select" class="glass-select">
             <optgroup label="Precipitation">
+                <option value="rain-pmm">Rain (PMM)</option>
                 <option value="rain-med">Rain (Median)</option>
                 <option value="rain-max">Rain (Max)</option>
-                <option value="rain-prob">Rain (Probability)</option>
+                <option value="rain-prob">Rain (Neighborhood Prob)</option>
                 <option value="rain-spread">Rain (Uncertainty)</option>
             </optgroup>
             <optgroup label="Harmonie Arome">
@@ -132,9 +133,10 @@
 
                 <!-- Quick View Selector -->
                 <div class="view-selector" id="rain-view-selector" data-active="0">
+                    <button class="view-btn" data-view="pmm" title="Probability Matched Mean (PMM)">PMM</button>
                     <button class="view-btn" data-view="med" title="Median Forecast">Med</button>
                     <button class="view-btn" data-view="max" title="Maximum Forecast">Max</button>
-                    <button class="view-btn" data-view="prob" title="Rain Probability">Prob</button>
+                    <button class="view-btn" data-view="prob" title="Neighborhood Ensemble Probability (10km)">Prob</button>
                     <button class="view-btn" data-view="spread" title="Rain Forecast Uncertainty (Spread)">Uncert</button>
                 </div>
 

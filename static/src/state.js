@@ -108,7 +108,7 @@ export function parseURLState() {
     if (ens) {
         if (!isNaN(ens)) {
             state.currentEns = parseInt(ens);
-        } else if (['med', 'max', 'prob', 'spread'].includes(ens)) {
+        } else if (['pmm', 'med', 'max', 'prob', 'spread'].includes(ens)) {
             state.currentEns = ens;
         }
     }

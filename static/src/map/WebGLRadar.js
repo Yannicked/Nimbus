@@ -73,30 +73,78 @@ export class WebGLRadarLayer {
                 return u_colors[7];
             }
             
-            void main() {
-                // Avoid border/interpolation artifacts by clamping coordinates to pixel centers
-                vec2 clamped_coord = vec2(
-                    0.5 / 700.0 + v_texcoord.x * (699.0 / 700.0),
-                    0.5 / 765.0 + v_texcoord.y * (764.0 / 765.0)
-                );
-                vec4 tex = texture2D(u_texture, clamped_coord);
-                if (tex.a < 0.99) {
-                    discard;
+            float sample_radar_pixel(sampler2D tex, float col, float row) {
+                vec2 uv = vec2((col + 0.5) / 700.0, (row + 0.5) / 765.0);
+                vec4 color = texture2D(tex, uv);
+                if (color.a < 0.99) {
+                    return -9999.0;
                 }
-                float r = tex.r * 255.0;
-                float g = tex.g * 255.0;
+                float r = floor(color.r * 255.0 + 0.5);
+                float g = floor(color.g * 255.0 + 0.5);
                 float raw_val = r * 256.0 + g;
-                if (raw_val >= 65535.0 || raw_val == 0.0) {
+                if (raw_val >= 65535.0) {
+                    return -9999.0;
+                }
+                return raw_val;
+            }
+
+            float interpolate_radar(sampler2D tex, float x_norm, float y_norm) {
+                // Clamp to valid UV range
+                x_norm = clamp(x_norm, 0.0, 1.0);
+                y_norm = clamp(y_norm, 0.0, 1.0);
+                
+                float px = x_norm * 699.0;
+                float py = y_norm * 764.0;
+                
+                float x0 = floor(px);
+                float y0 = floor(py);
+                float x1 = min(x0 + 1.0, 699.0);
+                float y1 = min(y0 + 1.0, 764.0);
+                
+                float tx = px - x0;
+                float ty = py - y0;
+                
+                float p00 = sample_radar_pixel(tex, x0, y0);
+                float p10 = sample_radar_pixel(tex, x1, y0);
+                float p01 = sample_radar_pixel(tex, x0, y1);
+                float p11 = sample_radar_pixel(tex, x1, y1);
+                
+                bool v00 = (p00 != -9999.0);
+                bool v10 = (p10 != -9999.0);
+                bool v01 = (p01 != -9999.0);
+                bool v11 = (p11 != -9999.0);
+                
+                if (!v00 && !v10 && !v01 && !v11) {
+                    return -9999.0;
+                }
+                
+                if (!v00 || !v10 || !v01 || !v11) {
+                    float cx = floor(px + 0.5);
+                    float cy = floor(py + 0.5);
+                    return sample_radar_pixel(tex, cx, cy);
+                }
+                
+                float p0 = mix(p00, p10, tx);
+                float p1 = mix(p01, p11, tx);
+                return mix(p0, p1, ty);
+            }
+            
+            void main() {
+                float raw = interpolate_radar(u_texture, v_texcoord.x, v_texcoord.y);
+                
+                if (raw == -9999.0 || raw == 0.0) {
                     discard;
                 }
+                
                 float val;
                 if (u_layer_mode == 1) {
-                    val = raw_val / 10.0 - 273.15;
+                    val = raw / 10.0 - 273.15;
                 } else if (u_layer_mode == 2) {
-                    val = raw_val;
+                    val = raw;
                 } else {
-                    val = raw_val * 0.01;
+                    val = raw * 0.01;
                 }
+                
                 vec4 c = getColor(val);
                 if (c.a == 0.0) {
                     discard;
@@ -191,9 +239,20 @@ export class WebGLRadarLayer {
         const texBuf = this.isCompare ? state.texcoordBufferRight : state.texcoordBuffer;
         if (!program) return;
         
-        const timeVal = state.metadata.times[state.currentTimeIndex];
+        const layerMode = this.isCompare ? state.compareLayerMode : state.currentLayerMode;
+        const ens = this.isCompare ? state.compareEns : state.currentEns;
+        const currentIndex = Math.round(state.currentTimeIndex);
+        const timeVal = state.metadata.times[currentIndex];
+        if (timeVal === undefined) return;
+        
         const texture = getOrLoadTexture(gl, timeVal, this.isCompare);
-        if (!texture) return; // Wait for texture load
+        if (!texture) return;
+
+        // Force NEAREST filtering so manual 16-bit bilinear interpolation is precise
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, null);
         
         gl.useProgram(program);
         
@@ -223,7 +282,7 @@ export class WebGLRadarLayer {
         // Set projection matrix
         gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_matrix'), false, matrix);
         
-        // Bind texture sampler
+        // Bind texture
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.uniform1i(gl.getUniformLocation(program, 'u_texture'), 0);
@@ -233,9 +292,6 @@ export class WebGLRadarLayer {
         gl.uniform1f(gl.getUniformLocation(program, 'u_opacity'), opacity);
         
         // u_layer_mode uniform
-        const layerMode = this.isCompare ? state.compareLayerMode : state.currentLayerMode;
-        const ens = this.isCompare ? state.compareEns : state.currentEns;
-
         let modeInt = 0;
         if (layerMode === 'temp') {
             modeInt = 1;

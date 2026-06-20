@@ -3,7 +3,7 @@ import { state, parseURLState } from './state.js';
 import { DOM } from './ui/dom.js';
 import { fetchMetadata } from './api.js';
 import { initMap, updateRadarOverlay, clearRadarLayers } from './map/index.js';
-import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble, selectLayerMode, selectWindHeight } from './ui/controls.js';
+import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble, selectLayerMode, selectWindHeight, updateTimelineSlider } from './ui/controls.js';
 import { showTimeseriesChart, closeTimeseriesChart } from './ui/chart.js';
 
 // Fetch Metadata and Load App
@@ -60,11 +60,12 @@ async function loadApp() {
         const statsGroup = document.createElement('optgroup');
         statsGroup.label = 'Statistics / Summary';
         
-        const stats = ['med', 'max', 'prob', 'spread'];
+        const stats = ['pmm', 'med', 'max', 'prob', 'spread'];
         const statLabels = { 
+            'pmm': 'Probability Matched Mean (PMM)',
             'med': 'Median Forecast (MED)', 
             'max': 'Maximum Forecast (MAX)', 
-            'prob': 'Precipitation Probability (PROB)',
+            'prob': 'Neighborhood Probability (NEP)',
             'spread': 'Forecast Uncertainty (SPREAD)'
         };
         stats.forEach(stat => {
@@ -91,11 +92,7 @@ async function loadApp() {
 
         // Initialize Timeline Slider
         DOM.timeSlider.min = 0;
-        DOM.timeSlider.max = state.metadata.times.length - 1;
-        DOM.timeSlider.value = state.currentTimeIndex;
-
-        // Draw ticks on timeline
-        drawSliderTicks();
+        updateTimelineSlider();
 
         // Load initial overlay
         updateRadarOverlay();
@@ -142,14 +139,8 @@ function startMetadataPolling() {
                     state.metadata = state.rainMetadata;
                 }
 
-                // Re-render timeline slider (just in case the number of times changed)
-                DOM.timeSlider.max = state.metadata.times.length - 1;
-                if (state.currentTimeIndex >= state.metadata.times.length) {
-                    state.currentTimeIndex = 0;
-                    DOM.timeSlider.value = 0;
-                }
-                drawSliderTicks();
-                updateTimeStepDisplay();
+                // Re-render timeline slider
+                updateTimelineSlider();
                 updateRadarOverlay();
 
                 // Update reference time display

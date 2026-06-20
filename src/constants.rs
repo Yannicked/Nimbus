@@ -10,6 +10,10 @@ pub const SCALE_FACTOR: f64 = 0.01;
 /// when computing probability.
 pub const RAIN_THRESHOLD: u16 = 10;
 
+/// The radius (in grid cells) for Neighborhood Ensemble Probability.
+/// At 1 km per pixel, this represents 10 km.
+pub const NEP_RADIUS: usize = 10;
+
 /// KNMI Open Data dataset identifier.
 pub const KNMI_DATASET: &str = "seamless_precipitation_ensemble_forecast_members";
 

@@ -1,6 +1,6 @@
 use crate::constants::{
     GRID_H, GRID_W, KNMI_DATASET, KNMI_GRID_H, KNMI_GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT,
-    MERCATOR_RIGHT, MERCATOR_TOP, NODATA, PRECIP_VAR, RAIN_THRESHOLD, SCALE_FACTOR,
+    MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR, RAIN_THRESHOLD, SCALE_FACTOR,
 };
 use crate::models::{reduce_ensemble, EnsembleStat, FileUrlResponse, Metadata};
 use crate::rendering::render_data_webp_bytes;
@@ -61,6 +61,7 @@ pub fn load_metadata(
         .unwrap_or_default()
         .as_secs();
 
+    let radar_times_len = times.len();
     Ok(Metadata {
         left: MERCATOR_LEFT,
         right: MERCATOR_RIGHT,
@@ -72,6 +73,7 @@ pub fn load_metadata(
         times,
         reference_time_str: time_units,
         version,
+        radar_times_len,
     })
 }
 
@@ -111,6 +113,55 @@ pub fn read_netcdf_all_ensembles(
     Ok(values)
 }
 
+/// Helper function to compute the dilated binary mask for Neighborhood Ensemble Probability (NEP).
+/// The mask represents whether there is any precipitation exceeding RAIN_THRESHOLD within
+/// the specified circular radius (in grid cells) of each pixel.
+pub fn compute_dilated_mask(member_data: &[u16], radius: usize) -> Vec<bool> {
+    let mut has_rain = vec![false; KNMI_GRID_H * KNMI_GRID_W];
+    let mut has_any_rain = false;
+    for i in 0..has_rain.len() {
+        let v = member_data[i];
+        if v != NODATA && v >= RAIN_THRESHOLD {
+            has_rain[i] = true;
+            has_any_rain = true;
+        }
+    }
+
+    if !has_any_rain {
+        return vec![false; KNMI_GRID_H * KNMI_GRID_W];
+    }
+
+    let mut dilated = vec![false; KNMI_GRID_H * KNMI_GRID_W];
+    let r_sq = (radius * radius) as i32;
+
+    // Precompute offsets for circular neighborhood of radius
+    let mut offsets = Vec::new();
+    for dy in -(radius as i32)..=radius as i32 {
+        for dx in -(radius as i32)..=radius as i32 {
+            if dx * dx + dy * dy <= r_sq {
+                offsets.push((dx, dy));
+            }
+        }
+    }
+
+    // Dilate
+    for y in 0..KNMI_GRID_H {
+        for x in 0..KNMI_GRID_W {
+            if has_rain[y * KNMI_GRID_W + x] {
+                for &(dx, dy) in &offsets {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && nx < KNMI_GRID_W as i32 && ny >= 0 && ny < KNMI_GRID_H as i32 {
+                        dilated[ny as usize * KNMI_GRID_W + nx as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    dilated
+}
+
 /// Computes (or reads from cache) the raw u16 grid for a given ensemble selector
 /// and time step, applying ensemble statistics when `ens_str` is `"med"`, `"max"`,
 /// or `"prob"`.
@@ -121,22 +172,144 @@ pub fn compute_raw_slice(
     time: i64,
 ) -> Result<Vec<u16>, (StatusCode, String)> {
     if let Some(stat) = EnsembleStat::from_str(ens_str) {
-        // Read all ensemble members
-        let mut member_slices = Vec::with_capacity(meta.ensembles.len());
-        for &ens_val in &meta.ensembles {
-            let ens_idx = meta.ensembles.iter().position(|&e| e == ens_val).unwrap();
-            let time_idx = meta
-                .times
-                .iter()
-                .position(|&t| t == time)
-                .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", time)))?;
-            let slice = read_netcdf_slice(file_path, ens_idx, time_idx).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Error reading slice for E{}: {}", ens_val, e),
-                )
-            })?;
-            member_slices.push(slice);
+        let time_idx = meta
+            .times
+            .iter()
+            .position(|&t| t == time)
+            .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", time)))?;
+
+        let all_members_data = read_netcdf_all_ensembles(file_path, time_idx, meta.ensembles.len()).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error reading all ensembles: {}", e),
+            )
+        })?;
+
+        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+        let member_slices: Vec<&[u16]> = all_members_data.chunks_exact(grid_size).collect();
+
+        if matches!(stat, EnsembleStat::Pmm) {
+            let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+            let num_ensembles = member_slices.len();
+            let mut transposed = vec![0u16; grid_size * num_ensembles];
+            for ens_idx in 0..num_ensembles {
+                for i in 0..grid_size {
+                    transposed[i * num_ensembles + ens_idx] = member_slices[ens_idx][i];
+                }
+            }
+
+            let mut valid_indices = Vec::with_capacity(grid_size);
+            for i in 0..grid_size {
+                if transposed[i * num_ensembles] != NODATA {
+                    valid_indices.push(i);
+                }
+            }
+
+            let mut mean_pairs: Vec<(usize, f32)> = valid_indices
+                .par_iter()
+                .map(|&i| {
+                    let start = i * num_ensembles;
+                    let end = start + num_ensembles;
+                    let slice = &transposed[start..end];
+                    let mut sum = 0.0f32;
+                    let mut count = 0;
+                    for &v in slice {
+                        if v != NODATA {
+                            sum += v as f32;
+                            count += 1;
+                        }
+                    }
+                    let mean = if count > 0 { sum / count as f32 } else { 0.0 };
+                    (i, mean)
+                })
+                .collect();
+
+            let mut pooled_values = Vec::with_capacity(valid_indices.len() * num_ensembles);
+            for &i in &valid_indices {
+                let start = i * num_ensembles;
+                let end = start + num_ensembles;
+                for &v in &transposed[start..end] {
+                    if v != NODATA {
+                        pooled_values.push(v);
+                    }
+                }
+            }
+
+            pooled_values.par_sort_unstable();
+            mean_pairs.par_sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mut pmm_slice = vec![NODATA; grid_size];
+            let n_valid = mean_pairs.len();
+            let n_pooled = pooled_values.len();
+            if n_valid > 0 && n_pooled > 0 {
+                #[derive(Copy, Clone)]
+                struct SendPtr(*mut u16);
+                unsafe impl Send for SendPtr {}
+                unsafe impl Sync for SendPtr {}
+                impl SendPtr {
+                    unsafe fn write(self, idx: usize, val: u16) {
+                        *self.0.add(idx) = val;
+                    }
+                }
+                let pmm_ptr = SendPtr(pmm_slice.as_mut_ptr());
+
+                (0..n_valid).into_par_iter().for_each(move |r| {
+                    let idx = mean_pairs[r].0;
+                    let start_idx = (r * n_pooled) / n_valid;
+                    let end_idx = ((r + 1) * n_pooled) / n_valid;
+                    let block_len = end_idx - start_idx;
+                    let val = if block_len > 0 {
+                        let mut sum = 0u64;
+                        for i in start_idx..end_idx {
+                            sum += pooled_values[i] as u64;
+                        }
+                        ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
+                    } else {
+                        pooled_values[start_idx.min(n_pooled - 1)]
+                    };
+                    unsafe {
+                        pmm_ptr.write(idx, val);
+                    }
+                });
+            }
+            return Ok(pmm_slice);
+        }
+
+        if matches!(stat, EnsembleStat::Probability) {
+            let num_ensembles = member_slices.len();
+            let dilated_masks: Vec<Vec<bool>> = (0..num_ensembles)
+                .into_par_iter()
+                .map(|ens_idx| {
+                    compute_dilated_mask(member_slices[ens_idx], NEP_RADIUS)
+                })
+                .collect();
+
+            let mut raw_slice = vec![NODATA; grid_size];
+            for i in 0..grid_size {
+                let first_val = member_slices[0][i];
+                if first_val == NODATA {
+                    raw_slice[i] = NODATA;
+                    continue;
+                }
+
+                let mut over = 0;
+                let mut count = 0;
+                for ens_idx in 0..num_ensembles {
+                    let v = member_slices[ens_idx][i];
+                    if v != NODATA {
+                        count += 1;
+                        if dilated_masks[ens_idx][i] {
+                            over += 1;
+                        }
+                    }
+                }
+                raw_slice[i] = if count > 0 {
+                    ((over * 100) / count) as u16
+                } else {
+                    NODATA
+                };
+            }
+            return Ok(raw_slice);
         }
 
         // Compute statistics for each cell
@@ -232,7 +405,7 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         };
 
         // 2. Offload heavy CPU-bound (Rayon) work to prevent starving the Tokio runtime
-        let (arc_med, arc_max, arc_prob, arc_spread, all_members_data) =
+        let (arc_med, arc_max, arc_prob, arc_spread, arc_pmm, all_members_data) =
             tokio::task::spawn_blocking(move || {
                 // Fast, Cache-Friendly Parallel Transpose
                 let mut transposed = vec![0u16; grid_size * num_ensembles];
@@ -246,6 +419,16 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                         }
                     });
 
+                // Precompute dilated masks for each member
+                let dilated_masks: Vec<Vec<bool>> = (0..num_ensembles)
+                    .into_par_iter()
+                    .map(|ens_idx| {
+                        let start = ens_idx * grid_size;
+                        let end = start + grid_size;
+                        compute_dilated_mask(&all_members_data[start..end], NEP_RADIUS)
+                    })
+                    .collect();
+
                 // Allocate stats slices
                 let mut med_slice = vec![NODATA; grid_size];
                 let mut max_slice = vec![NODATA; grid_size];
@@ -255,11 +438,12 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                 // Compute stats in parallel
                 transposed
                     .par_chunks_exact(num_ensembles)
+                    .zip(0..grid_size)
                     .zip(med_slice.par_iter_mut())
                     .zip(max_slice.par_iter_mut())
                     .zip(prob_slice.par_iter_mut())
                     .zip(spread_slice.par_iter_mut())
-                    .for_each(|((((ens_vals, med_val), max_val), prob_val), spread_val)| {
+                    .for_each(|(((((ens_vals, i), med_val), max_val), prob_val), spread_val)| {
                         if ens_vals[0] == NODATA {
                             *med_val = NODATA;
                             *max_val = NODATA;
@@ -268,61 +452,133 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                             return;
                         }
 
-                        let n = ens_vals.len();
-                        let mut max = 0;
-                        let mut rain_count = 0;
-                        let mut valid_count = 0;
-                        let mut sum = 0.0;
-                        let mut sum_sq = 0.0;
-
-                        let use_heap = n > 128;
-                        let mut local_vals = [0u16; 128];
-                        let mut heap_vals = Vec::new();
-                        if use_heap {
-                            heap_vals.reserve(n);
-                        }
-
+                        // Copy non-NODATA values into a local array
+                        let mut valid_vals = [0u16; 32];
+                        let mut count = 0;
                         for &v in ens_vals {
                             if v != NODATA {
-                                if v > max {
-                                    max = v;
-                                }
-                                if v >= RAIN_THRESHOLD {
-                                    rain_count += 1;
-                                }
-
-                                let fv = v as f64;
-                                sum += fv;
-                                sum_sq += fv * fv;
-
-                                if use_heap {
-                                    heap_vals.push(v);
-                                } else {
-                                    local_vals[valid_count] = v;
-                                }
-                                valid_count += 1;
+                                valid_vals[count] = v;
+                                count += 1;
                             }
                         }
 
-                        *max_val = max;
-                        *prob_val = ((rain_count * 100) / n) as u16;
-
-                        if valid_count == 0 {
+                        if count == 0 {
                             *med_val = NODATA;
+                            *max_val = NODATA;
+                            *prob_val = NODATA;
                             *spread_val = NODATA;
-                        } else {
-                            let n_f = valid_count as f64;
-                            let variance = (sum_sq - (sum * sum) / n_f) / n_f;
-                            *spread_val = variance.max(0.0).sqrt().round() as u16;
+                            return;
+                        }
 
-                            let mid = valid_count / 2;
-                            *med_val = if use_heap {
-                                *heap_vals.select_nth_unstable(mid).1
-                            } else {
-                                *local_vals[..valid_count].select_nth_unstable(mid).1
-                            };
+                        let active_vals = &mut valid_vals[..count];
+                        active_vals.sort_unstable();
+
+                        // Median
+                        *med_val = active_vals[count / 2];
+
+                        // Max
+                        *max_val = active_vals[count - 1];
+
+                        // Probability (Neighborhood Ensemble Probability)
+                        let mut over = 0;
+                        for ens_idx in 0..num_ensembles {
+                            if ens_vals[ens_idx] != NODATA && dilated_masks[ens_idx][i] {
+                                over += 1;
+                            }
+                        }
+                        *prob_val = ((over * 100) / count) as u16;
+
+                        // Spread (standard deviation)
+                        let mut sum = 0.0f64;
+                        for &v in active_vals.iter() {
+                            sum += v as f64;
+                        }
+                        let mean = sum / count as f64;
+
+                        let mut variance_sum = 0.0f64;
+                        for &v in active_vals.iter() {
+                            let diff = v as f64 - mean;
+                            variance_sum += diff * diff;
+                        }
+                        let variance = variance_sum / count as f64;
+                        *spread_val = variance.sqrt().round() as u16;
+                    });
+
+                // Compute PMM
+                let mut pmm_slice = vec![NODATA; grid_size];
+                let mut valid_indices = Vec::with_capacity(grid_size);
+                for i in 0..grid_size {
+                    if transposed[i * num_ensembles] != NODATA {
+                        valid_indices.push(i);
+                    }
+                }
+
+                let mut mean_pairs: Vec<(usize, f32)> = valid_indices
+                    .par_iter()
+                    .map(|&i| {
+                        let start = i * num_ensembles;
+                        let end = start + num_ensembles;
+                        let slice = &transposed[start..end];
+                        let mut sum = 0.0f32;
+                        let mut count = 0;
+                        for &v in slice {
+                            if v != NODATA {
+                                sum += v as f32;
+                                count += 1;
+                            }
+                        }
+                        let mean = if count > 0 { sum / count as f32 } else { 0.0 };
+                        (i, mean)
+                    })
+                    .collect();
+
+                let mut pooled_values = Vec::with_capacity(valid_indices.len() * num_ensembles);
+                for &i in &valid_indices {
+                    let start = i * num_ensembles;
+                    let end = start + num_ensembles;
+                    for &v in &transposed[start..end] {
+                        if v != NODATA {
+                            pooled_values.push(v);
+                        }
+                    }
+                }
+
+                pooled_values.par_sort_unstable();
+                mean_pairs.par_sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                let n_valid = mean_pairs.len();
+                let n_pooled = pooled_values.len();
+                if n_valid > 0 && n_pooled > 0 {
+                    #[derive(Copy, Clone)]
+                    struct SendPtr(*mut u16);
+                    unsafe impl Send for SendPtr {}
+                    unsafe impl Sync for SendPtr {}
+                    impl SendPtr {
+                        unsafe fn write(self, idx: usize, val: u16) {
+                            *self.0.add(idx) = val;
+                        }
+                    }
+                    let pmm_ptr = SendPtr(pmm_slice.as_mut_ptr());
+
+                    (0..n_valid).into_par_iter().for_each(move |r| {
+                        let idx = mean_pairs[r].0;
+                        let start_idx = (r * n_pooled) / n_valid;
+                        let end_idx = ((r + 1) * n_pooled) / n_valid;
+                        let block_len = end_idx - start_idx;
+                        let val = if block_len > 0 {
+                            let mut sum = 0u64;
+                            for i in start_idx..end_idx {
+                                sum += pooled_values[i] as u64;
+                            }
+                            ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
+                        } else {
+                            pooled_values[start_idx.min(n_pooled - 1)]
+                        };
+                        unsafe {
+                            pmm_ptr.write(idx, val);
                         }
                     });
+                }
 
                 // Return data back to Tokio domain
                 (
@@ -330,6 +586,7 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                     Arc::new(max_slice),
                     Arc::new(prob_slice),
                     Arc::new(spread_slice),
+                    Arc::new(pmm_slice),
                     all_members_data,
                 )
             })
@@ -349,6 +606,9 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         state
             .grid_cache
             .insert(("spread".to_string(), time_val), arc_spread.clone());
+        state
+            .grid_cache
+            .insert(("pmm".to_string(), time_val), arc_pmm.clone());
 
         // Insert individual member slices utilizing zero-math chunking
         for (ens_num, chunk) in meta
@@ -361,12 +621,13 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                 .insert((ens_num.to_string(), time_val), Arc::new(chunk.to_vec()));
         }
 
-        // Render WebPs for stats (med, max, prob, spread)
+        // Render WebPs for stats (med, max, prob, spread, pmm)
         let render_items = vec![
             ("med".to_string(), arc_med),
             ("max".to_string(), arc_max),
             ("prob".to_string(), arc_prob),
             ("spread".to_string(), arc_spread),
+            ("pmm".to_string(), arc_pmm),
         ];
 
         for (ens_str, slice) in render_items {

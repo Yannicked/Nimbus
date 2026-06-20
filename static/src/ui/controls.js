@@ -12,13 +12,13 @@ export function formatRelativeTime(seconds) {
     if (h > 0) {
         return `+${h}h ${m.toString().padStart(2, '0')}m`;
     }
-    return `+${m}`;
+    return `+${m}m`;
 }
 
 // Format absolute forecast time
 export function formatAbsoluteTime(refTimeStr, secondsOffset) {
     const match = refTimeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
-    if (!match) return `+${Math.round(secondsOffset / 60)} mins`;
+    if (!match) return `+${Math.round(secondsOffset / 60)}m`;
     
     const refDate = new Date(`${match[1]}T${match[2]}Z`); // UTC parsed
     const targetDate = new Date(refDate.getTime() + secondsOffset * 1000);
@@ -38,23 +38,49 @@ export function drawSliderTicks() {
     if (!state.metadata) return;
     DOM.sliderTicks.innerHTML = '';
     
-    const stepCount = state.metadata.times.length;
+    const stepCount = parseInt(DOM.timeSlider.max) + 1;
     for (let i = 0; i < stepCount; i++) {
         const span = document.createElement('span');
         const secs = state.metadata.times[i];
         
         // Mark every hour as a larger tick
-        if (secs % 3600 === 0) {
+        if (secs !== undefined && secs % 3600 === 0) {
             span.classList.add('hour-tick');
         }
         DOM.sliderTicks.appendChild(span);
     }
 }
 
+// Dynamically adjust the timeline slider max and clamp current index based on the selected layer/ensemble
+export function updateTimelineSlider() {
+    if (!state.metadata) return;
+
+    let maxIndex = state.metadata.times.length - 1;
+    if (state.currentLayerMode === 'rain') {
+        if (state.currentEns !== 'pmm') {
+            maxIndex = (state.metadata.radar_times_len || state.metadata.times.length) - 1;
+        }
+    }
+    
+    DOM.timeSlider.max = maxIndex;
+    
+    // Clamp currentTimeIndex if it exceeds the new max
+    if (state.currentTimeIndex > maxIndex) {
+        state.currentTimeIndex = maxIndex;
+    }
+    DOM.timeSlider.value = state.currentTimeIndex;
+    
+    drawSliderTicks();
+    updateTimeStepDisplay();
+}
+
 // Update time text displays
 export function updateTimeStepDisplay() {
     if (!state.metadata) return;
-    const timeVal = state.metadata.times[state.currentTimeIndex];
+    const index = Math.round(state.currentTimeIndex);
+    const timeVal = state.metadata.times[index];
+    if (timeVal === undefined) return;
+    
     DOM.currentTimeStep.textContent = formatAbsoluteTime(state.metadata.reference_time_str, timeVal);
     DOM.timeStepRelative.textContent = formatRelativeTime(timeVal);
 }
@@ -85,13 +111,15 @@ export function updateLegend() {
 
 // Start playback animation
 export function startPlayer() {
+    if (state.isPlaying) return;
     state.isPlaying = true;
     DOM.btnPlay.innerHTML = '<i class="fa-solid fa-pause"></i>';
     DOM.btnPlay.classList.add('btn-active');
     
-    const fps = parseInt(DOM.speedSlider.value);
-    const intervalMs = 1000 / fps;
-    state.playInterval = setInterval(stepForward, intervalMs);
+    const fps = parseFloat(DOM.speedSlider.value) || 2;
+    state.playInterval = setInterval(() => {
+        stepForward();
+    }, 1000 / fps);
 }
 
 // Stop playback animation
@@ -100,13 +128,24 @@ export function stopPlayer() {
     state.isPlaying = false;
     DOM.btnPlay.innerHTML = '<i class="fa-solid fa-play"></i>';
     DOM.btnPlay.classList.remove('btn-active');
-    clearInterval(state.playInterval);
+    
+    if (state.playInterval) {
+        clearInterval(state.playInterval);
+        state.playInterval = null;
+    }
+    triggerHoverQuery();
 }
 
 // Advance one step forward in timeline
 export function stepForward() {
     if (!state.metadata) return;
-    if (state.currentTimeIndex < state.metadata.times.length - 1) {
+    const layerMode = state.currentLayerMode;
+    const ens = state.currentEns;
+    const maxIndex = (layerMode === 'rain' && ens !== 'pmm') 
+        ? (state.metadata.radar_times_len || state.metadata.times.length) - 1 
+        : state.metadata.times.length - 1;
+        
+    if (state.currentTimeIndex < maxIndex) {
         state.currentTimeIndex++;
     } else {
         state.currentTimeIndex = 0; // loop
@@ -128,7 +167,7 @@ export function selectEnsemble(ens) {
     }
 
     // Update quick selector buttons active state and sliding indicator
-    const viewMap = { 'med': '0', 'max': '1', 'prob': '2', 'spread': '3' };
+    const viewMap = { 'pmm': '0', 'med': '1', 'max': '2', 'prob': '3', 'spread': '4' };
     document.querySelectorAll('.view-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.view === ens.toString());
     });
@@ -137,6 +176,7 @@ export function selectEnsemble(ens) {
         selector.dataset.active = viewMap[ens];
     }
     
+    updateTimelineSlider();
     updateRadarOverlay();
     updateLegend();
     triggerHoverQuery(); // update hover panel if mouse is over map
@@ -215,7 +255,12 @@ export function selectLayerMode(mode) {
     
     // Re-initialize slider and select index closest to current time
     if (state.metadata) {
-        DOM.timeSlider.max = state.metadata.times.length - 1;
+        let maxIndex = state.metadata.times.length - 1;
+        if (state.currentLayerMode === 'rain') {
+            if (state.currentEns !== 'pmm') {
+                maxIndex = (state.metadata.radar_times_len || state.metadata.times.length) - 1;
+            }
+        }
         
         const refMatch = state.metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
         let refTimeMs = Date.now();
@@ -225,7 +270,7 @@ export function selectLayerMode(mode) {
         const targetOffset = (Date.now() - refTimeMs) / 1000;
         let closestIndex = 0;
         let minDiff = Infinity;
-        for (let i = 0; i < state.metadata.times.length; i++) {
+        for (let i = 0; i <= maxIndex; i++) {
             const diff = Math.abs(state.metadata.times[i] - targetOffset);
             if (diff < minDiff) {
                 minDiff = diff;
@@ -234,9 +279,7 @@ export function selectLayerMode(mode) {
         }
         state.currentTimeIndex = closestIndex;
         
-        DOM.timeSlider.value = state.currentTimeIndex;
-        drawSliderTicks();
-        updateTimeStepDisplay();
+        updateTimelineSlider();
     }
     
     clearRadarLayers();
@@ -310,7 +353,7 @@ export function initControls() {
     }
 
     // Set initial quick view selector state
-    const viewMap = { 'med': '0', 'max': '1', 'prob': '2', 'spread': '3' };
+    const viewMap = { 'pmm': '0', 'med': '1', 'max': '2', 'prob': '3', 'spread': '4' };
     document.querySelectorAll('.view-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.view === state.currentEns.toString());
     });
@@ -349,10 +392,16 @@ export function initControls() {
 
     DOM.btnPrev.addEventListener('click', () => {
         stopPlayer();
+        const layerMode = state.currentLayerMode;
+        const ens = state.currentEns;
+        const maxIndex = (layerMode === 'rain' && ens !== 'pmm') 
+            ? (state.metadata.radar_times_len || state.metadata.times.length) - 1 
+            : state.metadata.times.length - 1;
+            
         if (state.currentTimeIndex > 0) {
             state.currentTimeIndex--;
         } else if (state.metadata) {
-            state.currentTimeIndex = state.metadata.times.length - 1; // loop
+            state.currentTimeIndex = maxIndex;
         }
         DOM.timeSlider.value = state.currentTimeIndex;
         updateRadarOverlay();

@@ -1,4 +1,4 @@
-use crate::models::{LutEntry, Metadata, SolarForecast, TempForecast, WindForecast};
+use crate::models::{LutEntry, Metadata, SolarForecast, TempForecast, WindForecast, RainForecast};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -27,4 +27,7 @@ pub struct AppState {
     pub solar_forecast: RwLock<Option<SolarForecast>>,
     pub solar_projection_lut: Vec<LutEntry>,
     pub solar_data_cache: DashMap<i64, Vec<u8>>,
+
+    // Rain Forecast (Harmonie)
+    pub rain_forecast: RwLock<Option<RainForecast>>,
 }
