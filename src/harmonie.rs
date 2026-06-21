@@ -404,7 +404,7 @@ pub async fn download_and_process_combined_tar(
     let download_url = url_resp.temporary_download_url;
 
     // Validate download url is also trusted
-    if !download_url.starts_with("https://open-data.dataplatform.knmi.nl/") 
+    if !download_url.starts_with("https://knmi-kdp-datasets-eu-west-1.s3.eu-west-1.amazonaws.com/") 
        && !download_url.starts_with(trusted_base) {
         println!("Warning: Download URL domain differs from KNMI API: {}", download_url);
     }
