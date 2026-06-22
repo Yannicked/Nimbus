@@ -108,7 +108,7 @@ body {
     left: 50%;
     transform: translateX(-50%);
     width: calc(100% - 32px);
-    max-width: 680px;
+    max-width: 760px;
     padding: 12px 18px;
     display: flex;
     flex-direction: column;
@@ -310,7 +310,7 @@ header .ref-time .value {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: calc((100% - 10px) / 4);
+    width: calc((100% - 12px) / 5);
     height: calc(100% - 4px);
     background: var(--primary-color);
     border-radius: 18px;
@@ -324,15 +324,19 @@ header .ref-time .value {
 }
 
 .view-selector[data-active="1"]::before {
-    left: calc(2px + (100% - 10px) / 4 + 2px);
+    left: calc(2px + (100% - 12px) / 5 + 2px);
 }
 
 .view-selector[data-active="2"]::before {
-    left: calc(2px + 2 * (100% - 10px) / 4 + 4px);
+    left: calc(2px + 2 * (100% - 12px) / 5 + 4px);
 }
 
 .view-selector[data-active="3"]::before {
-    left: calc(2px + 3 * (100% - 10px) / 4 + 6px);
+    left: calc(2px + 3 * (100% - 12px) / 5 + 6px);
+}
+
+.view-selector[data-active="4"]::before {
+    left: calc(2px + 4 * (100% - 12px) / 5 + 8px);
 }
 
 .view-btn {
@@ -341,7 +345,7 @@ header .ref-time .value {
     background: transparent;
     border: none;
     color: var(--text-secondary);
-    padding: 4px 10px;
+    padding: 4px 8px;
     font-size: 0.75rem;
     font-weight: 600;
     border-radius: 18px;
@@ -486,7 +490,7 @@ header .ref-time .value {
     background: transparent;
     border: none;
     color: var(--text-secondary);
-    padding: 4px 10px;
+    padding: 4px 8px;
     font-size: 0.75rem;
     font-weight: 600;
     border-radius: 18px;
@@ -1002,12 +1006,34 @@ header .ref-time .value {
 
     .setting-group input[type="range"] {
         flex: 1;
+        width: auto !important; /* added to override desktop width: 65px */
+    }
+
+    /* Hide control panel on mobile when trend chart panel is open to prevent complete overlap */
+    #chart-panel:not(.hidden) ~ #control-panel {
+        display: none !important;
+    }
+
+    /* Reposition MapLibre bottom right attribution control above the control panel / chart panel */
+    .maplibregl-ctrl-bottom-right {
+        bottom: 145px !important;
+        right: 12px !important;
+        z-index: 999;
+        transition: bottom 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    body:has(.settings-content.expanded) .maplibregl-ctrl-bottom-right {
+        bottom: 265px !important;
+    }
+    
+    body:has(#chart-panel:not(.hidden)) .maplibregl-ctrl-bottom-right {
+        bottom: 290px !important;
     }
 }
 
 /* Info Modal Styles */
 #info-modal-backdrop {
-    position: absolute;
+    position: fixed; /* changed from absolute */
     top: 0;
     left: 0;
     width: 100vw;
@@ -1020,7 +1046,7 @@ header .ref-time .value {
 }
 
 #info-modal {
-    position: absolute;
+    position: fixed; /* changed from absolute */
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);

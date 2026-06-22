@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::constants::KNMI_DATASET;
 use crate::harmonie::{
     download_and_process_combined_tar, precalculate_solar_data, precalculate_temp_data,
-    precalculate_wind_data,
+    precalculate_wind_data, precalculate_rain_data,
 };
 use crate::radar::download_and_update_nc_file;
 use crate::state::AppState;
@@ -214,7 +214,7 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                         )
                                         .await
                                         {
-                                            Ok((temp_fc, wind_fc, solar_fc)) => {
+                                            Ok((temp_fc, wind_fc, solar_fc, rain_fc)) => {
                                                 if let Err(e) = temp_fc.write_to_file(&format!(
                                                     "{}/harmonie_temp.bin",
                                                     crate::constants::CACHE_DIR
@@ -232,6 +232,12 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                     crate::constants::CACHE_DIR
                                                 )) {
                                                     eprintln!("Failed to save new solar forecast to bin: {:?}", e);
+                                                }
+                                                if let Err(e) = rain_fc.write_to_file(&format!(
+                                                    "{}/harmonie_rain.bin",
+                                                    crate::constants::CACHE_DIR
+                                                )) {
+                                                    eprintln!("Failed to save new rain forecast to bin: {:?}", e);
                                                 }
 
                                                 // Update temperature forecast in state
@@ -258,7 +264,15 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                     state_clone.solar_data_cache.clear();
                                                 }
 
-                                                println!("Successfully updated temperature, wind, and solar forecasts and cleared caches.");
+                                                // Update rain forecast in state
+                                                {
+                                                    let mut rain_write =
+                                                        state_clone.rain_forecast.write().await;
+                                                    *rain_write = Some(rain_fc);
+                                                    state_clone.data_cache.clear();
+                                                }
+
+                                                println!("Successfully updated temperature, wind, solar, and rain forecasts and cleared caches.");
 
                                                 // Trigger precalculations in background
                                                 let state_precalc_temp = state_clone.clone();
@@ -276,6 +290,12 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                 let state_precalc_solar = state_clone.clone();
                                                 tokio::spawn(async move {
                                                     precalculate_solar_data(state_precalc_solar)
+                                                        .await;
+                                                });
+
+                                                let state_precalc_rain = state_clone.clone();
+                                                tokio::spawn(async move {
+                                                    precalculate_rain_data(state_precalc_rain)
                                                         .await;
                                                 });
                                             }

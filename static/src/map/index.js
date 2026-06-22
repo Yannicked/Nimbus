@@ -308,6 +308,10 @@ export async function triggerHoverQuery() {
     if (!metadata) return;
     const timeVal = metadata.times[state.currentTimeIndex];
 
+    // Ensure hover label matches the current queried mode and side
+    const prefix = state.isCompareModeActive ? (isRight ? "RIGHT: " : "LEFT: ") : "";
+    DOM.hoverLabel.textContent = prefix + (mode === 'temp' ? 'TEMPERATURE' : (mode === 'solar' ? 'SOLAR RADIATION' : (mode === 'wind' ? `${windHeight}M WIND` : 'PRECIPITATION')));
+
     if (mode === 'temp') {
         try {
             const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);

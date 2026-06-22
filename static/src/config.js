@@ -31,7 +31,7 @@ export const CONFIG = {
     // Legend and visualization colors
     radarVisualization: {
         prob: {
-            title: "Rain Probability",
+            title: "Neighborhood Probability",
             colors: [
                 "rgba(180, 200, 220, 0.0)",
                 "rgba(100, 160, 255, 0.5)",
