@@ -1,4 +1,4 @@
-use crate::models::{LutEntry, Metadata, SolarForecast, TempForecast, WindForecast, RainForecast};
+use crate::models::{LutEntry, Metadata, RainForecast, SolarForecast, TempForecast, WindForecast};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

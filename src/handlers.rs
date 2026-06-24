@@ -41,7 +41,8 @@ pub async fn get_metadata(
                     let last_radar_time = m.times.last().copied().unwrap_or(0);
                     let mut extended_times = m.times.clone();
                     for step in &rain_fc.steps {
-                        let absolute_time = rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
+                        let absolute_time =
+                            rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
                         let relative_offset = absolute_time - radar_ref_time;
                         if relative_offset > last_radar_time {
                             extended_times.push(relative_offset);
@@ -94,11 +95,18 @@ pub async fn get_data_image(
                 let cursor = std::io::Cursor::new(&mut webp_bytes);
                 let encoder = WebPEncoder::new_lossless(cursor);
                 encoder
-                    .write_image(&empty_pixels, GRID_W, GRID_H, image::ExtendedColorType::Rgba8)
+                    .write_image(
+                        &empty_pixels,
+                        GRID_W,
+                        GRID_H,
+                        image::ExtendedColorType::Rgba8,
+                    )
                     .unwrap();
             }
             // Cache it
-            state.data_cache.insert((ens_str.clone(), time), webp_bytes.clone());
+            state
+                .data_cache
+                .insert((ens_str.clone(), time), webp_bytes.clone());
 
             return Ok(Response::builder()
                 .header("Content-Type", "image/webp")
@@ -127,7 +135,10 @@ pub async fn get_data_image(
                 let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
                 (step_abs - absolute_time).abs()
             })
-            .ok_or((StatusCode::NOT_FOUND, "No matching Harmonie step".to_string()))?;
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "No matching Harmonie step".to_string(),
+            ))?;
 
         let raw_values = step.values.clone();
         let state_clone = state.clone();
@@ -135,7 +146,12 @@ pub async fn get_data_image(
             render_data_webp_bytes(&raw_values, &state_clone.temp_projection_lut)
         })
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Blocking task join error: {}", e),
+            )
+        })?;
 
         // Cache results
         state.data_cache.insert((ens_str, time), webp_bytes.clone());
@@ -158,7 +174,12 @@ pub async fn get_data_image(
             compute_raw_slice(&file_path_clone, &meta_clone, &ens_str_clone, time)
         })
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Blocking task join error: {}", e),
+            )
+        })??;
         let arc = Arc::new(computed);
         state
             .grid_cache
@@ -229,7 +250,10 @@ pub async fn get_value(
                 let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
                 (step_abs - absolute_time).abs()
             })
-            .ok_or((StatusCode::NOT_FOUND, "No matching Harmonie step".to_string()))?;
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "No matching Harmonie step".to_string(),
+            ))?;
 
         let fx = (q.lon - 0.0) / 0.029;
         let fy = (q.lat - 49.0) / 0.018;
@@ -273,9 +297,16 @@ pub async fn get_value(
                 compute_raw_slice(&file_path_clone, &meta_clone, &ens_clone, q.time)
             })
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Blocking task join error: {}", e),
+                )
+            })??;
             let arc = Arc::new(computed);
-            state.grid_cache.insert((q.ens.clone(), q.time), arc.clone());
+            state
+                .grid_cache
+                .insert((q.ens.clone(), q.time), arc.clone());
             arc
         };
         let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
@@ -332,17 +363,19 @@ pub async fn get_value(
                     let center_val: u16 = var
                         .get_value((ens_idx, time_idx, iy as usize, ix as usize))
                         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                    
+
                     if center_val == NODATA {
                         continue;
                     }
                     count += 1;
 
                     let mut member_has_rain = false;
-                    let y_min = std::cmp::max(0, iy as i32 - NEP_RADIUS as i32) as usize;
-                    let y_max = std::cmp::min(KNMI_GRID_H as i32 - 1, iy as i32 + NEP_RADIUS as i32) as usize;
-                    let x_min = std::cmp::max(0, ix as i32 - NEP_RADIUS as i32) as usize;
-                    let x_max = std::cmp::min(KNMI_GRID_W as i32 - 1, ix as i32 + NEP_RADIUS as i32) as usize;
+                    let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
+                    let y_max =
+                        std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
+                    let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
+                    let x_max =
+                        std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
 
                     let height_box = y_max - y_min + 1;
                     let width_box = x_max - x_min + 1;
@@ -356,10 +389,10 @@ pub async fn get_value(
 
                     for dy_idx in 0..height_box {
                         let ny = y_min + dy_idx;
-                        let dy = ny as i32 - iy as i32;
+                        let dy = ny as i32 - iy;
                         for dx_idx in 0..width_box {
                             let nx = x_min + dx_idx;
-                            let dx = nx as i32 - ix as i32;
+                            let dx = nx as i32 - ix;
                             if dx * dx + dy * dy <= r_sq {
                                 let val = subgrid[dy_idx * width_box + dx_idx];
                                 if val != NODATA && val >= RAIN_THRESHOLD {
@@ -414,10 +447,14 @@ pub async fn get_value(
                 )
             })?;
 
-            let ens_idx = meta_clone.ensembles.iter().position(|&e| e == ens_num).ok_or((
-                StatusCode::BAD_REQUEST,
-                format!("Invalid ensemble: {}", ens_num),
-            ))?;
+            let ens_idx = meta_clone
+                .ensembles
+                .iter()
+                .position(|&e| e == ens_num)
+                .ok_or((
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid ensemble: {}", ens_num),
+                ))?;
 
             let time_idx = meta_clone
                 .times
@@ -435,7 +472,12 @@ pub async fn get_value(
         }
     })
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Blocking task join error: {}", e),
+        )
+    })??;
 
     Ok(axum::Json(ValueResponse {
         status: status_out,
@@ -529,16 +571,26 @@ pub async fn get_timeseries(
                         compute_raw_slice(&file_path_clone, &meta_clone, &ens_for_block, time_val)
                     })
                     .await
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
+                    .map_err(|e| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Blocking task join error: {}", e),
+                        )
+                    })??;
                     let arc = Arc::new(computed);
-                    state_clone.grid_cache.insert((ens_clone, time_val), arc.clone());
+                    state_clone
+                        .grid_cache
+                        .insert((ens_clone, time_val), arc.clone());
                     Ok(arc)
                 }));
             }
         }
         for handle in handles {
             let raw_slice = handle.await.map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Task join error: {}", e))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Task join error: {}", e),
+                )
             })??;
             let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
             values.push(raw_to_value(val_raw));
@@ -562,11 +614,13 @@ pub async fn get_timeseries(
             if let Some(stat) = EnsembleStat::from_str(&q_ens_clone) {
                 if matches!(stat, EnsembleStat::Probability) {
                     let r_sq = (NEP_RADIUS * NEP_RADIUS) as i32;
-                    let y_min = std::cmp::max(0, iy as i32 - NEP_RADIUS as i32) as usize;
-                    let y_max = std::cmp::min(KNMI_GRID_H as i32 - 1, iy as i32 + NEP_RADIUS as i32) as usize;
-                    let x_min = std::cmp::max(0, ix as i32 - NEP_RADIUS as i32) as usize;
-                    let x_max = std::cmp::min(KNMI_GRID_W as i32 - 1, ix as i32 + NEP_RADIUS as i32) as usize;
-                    
+                    let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
+                    let y_max =
+                        std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
+                    let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
+                    let x_max =
+                        std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
+
                     let height_box = y_max - y_min + 1;
                     let width_box = x_max - x_min + 1;
 
@@ -600,10 +654,10 @@ pub async fn get_timeseries(
                             let mut member_has_rain = false;
                             for dy_idx in 0..height_box {
                                 let ny = y_min + dy_idx;
-                                let dy = ny as i32 - iy as i32;
+                                let dy = ny as i32 - iy;
                                 for dx_idx in 0..width_box {
                                     let nx = x_min + dx_idx;
-                                    let dx = nx as i32 - ix as i32;
+                                    let dx = nx as i32 - ix;
                                     if dx * dx + dy * dy <= r_sq {
                                         let idx = ens_idx * (num_times * height_box * width_box)
                                             + t * (height_box * width_box)
@@ -660,10 +714,14 @@ pub async fn get_timeseries(
                     )
                 })?;
 
-                let ens_idx = meta_clone.ensembles.iter().position(|&e| e == ens_num).ok_or((
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid ensemble: {}", ens_num),
-                ))?;
+                let ens_idx = meta_clone
+                    .ensembles
+                    .iter()
+                    .position(|&e| e == ens_num)
+                    .ok_or((
+                        StatusCode::BAD_REQUEST,
+                        format!("Invalid ensemble: {}", ens_num),
+                    ))?;
 
                 let raw_values = var
                     .get_values::<u16, _>((
@@ -679,7 +737,12 @@ pub async fn get_timeseries(
             Ok(vals)
         })
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Blocking task join error: {}", e)))??;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Blocking task join error: {}", e),
+            )
+        })??;
 
         values = radar_values;
     }
@@ -692,26 +755,21 @@ pub async fn get_timeseries(
             let fy = (q.lat - 49.0) / 0.018;
 
             for &time_val in &extended_times {
-                if time_val > last_radar_time {
-                    if q.ens == "pmm" {
-                        let absolute_time = radar_ref_time + time_val;
-                        let step = rain_fc
-                            .steps
-                            .iter()
-                            .min_by_key(|s| {
-                                let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
-                                (step_abs - absolute_time).abs()
-                            });
-                        if let Some(s) = step {
-                            let val_raw = interpolate_bilinear(fx, fy, 390, 390, &s.values);
-                            if val_raw != NODATA {
-                                values.push(raw_to_value(val_raw));
-                            } else {
-                                values.push(0.0);
-                            }
+                if time_val > last_radar_time && q.ens == "pmm" {
+                    let absolute_time = radar_ref_time + time_val;
+                    let step = rain_fc.steps.iter().min_by_key(|s| {
+                        let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
+                        (step_abs - absolute_time).abs()
+                    });
+                    if let Some(s) = step {
+                        let val_raw = interpolate_bilinear(fx, fy, 390, 390, &s.values);
+                        if val_raw != NODATA {
+                            values.push(raw_to_value(val_raw));
                         } else {
                             values.push(0.0);
                         }
+                    } else {
+                        values.push(0.0);
                     }
                 }
             }
