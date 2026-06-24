@@ -5,6 +5,7 @@ import { fetchMetadata } from './api.js';
 import { initMap, updateRadarOverlay, clearRadarLayers } from './map/index.js';
 import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble, selectLayerMode, selectWindHeight, updateTimelineSlider } from './ui/controls.js';
 import { showTimeseriesChart, closeTimeseriesChart } from './ui/chart.js';
+import { checkRainAndNotify } from './notifications.js';
 
 // Fetch Metadata and Load App
 async function loadApp() {
@@ -99,6 +100,9 @@ async function loadApp() {
         updateTimeStepDisplay();
         updateLegend();
 
+        // Trigger background rain alert notification check
+        checkRainAndNotify(state.rainMetadata);
+
     } catch (e) {
         console.error(e);
         DOM.refTimeVal.textContent = "Error loading data!";
@@ -137,6 +141,9 @@ function startMetadataPolling() {
                 } else {
                     state.rainMetadata = newMetadata;
                     state.metadata = state.rainMetadata;
+                    
+                    // Trigger notification check when rain data updates
+                    checkRainAndNotify(newMetadata);
                 }
 
                 // Re-render timeline slider
@@ -145,6 +152,22 @@ function startMetadataPolling() {
 
                 // Update reference time display
                 DOM.refTimeVal.textContent = formatAbsoluteTime(state.metadata.reference_time_str, 0);
+            }
+
+            // If we are not on the rain layer, we still need to poll rain metadata separately to trigger notifications
+            if (state.currentLayerMode !== 'rain') {
+                try {
+                    const rainResponse = await fetch('/api/metadata');
+                    if (rainResponse.ok) {
+                        const newRainMetadata = await rainResponse.json();
+                        if (state.rainMetadata && newRainMetadata.version !== state.rainMetadata.version) {
+                            state.rainMetadata = newRainMetadata;
+                            checkRainAndNotify(newRainMetadata);
+                        }
+                    }
+                } catch (err) {
+                    console.error("Failed to check rain metadata for notifications:", err);
+                }
             }
         } catch (e) {
             console.error("Failed to check for metadata update:", e);

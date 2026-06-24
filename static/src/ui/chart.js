@@ -37,6 +37,9 @@ export async function showTimeseriesChart(lat, lon) {
     // Show the panel
     DOM.chartPanel.classList.remove('hidden');
     DOM.chartCoords.textContent = `lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`;
+    if (DOM.btnStandaloneLink) {
+        DOM.btnStandaloneLink.href = `/graphs.html?lat=${lat}&lon=${lon}`;
+    }
     
     try {
         const data = await fetchTimeseries(state.currentLayerMode, state.currentEns, lat, lon);

@@ -877,6 +877,29 @@ header .ref-time .value {
     color: #38bdf8; /* sky blue */
 }
 
+.chart-actions {
+    margin-top: 12px;
+    text-align: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    padding-top: 12px;
+}
+
+.standalone-link {
+    color: var(--primary-hover);
+    text-decoration: none;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.standalone-link:hover {
+    color: var(--text-primary);
+    transform: translateY(-1px);
+}
+
 /* Responsive Mobile Layout Overrides */
 @media (max-width: 768px) {
     #control-panel {

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nimbus - Standalone Forecast & Alerts</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+    
+    <!-- Core and Standalone Stylesheets -->
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="graphs.css">
+</head>
+<body class="dashboard-body">
+    <div class="dashboard-container">
+        <!-- Standalone Page Header -->
+        <header class="dashboard-header glass-panel">
+            <div class="logo">
+                <i class="fa-solid fa-cloud-showers-heavy rain-icon"></i>
+                <h1>Nimbus <span class="badge">Forecast Dashboard</span></h1>
+            </div>
+            <div class="header-right">
+                <div class="ref-time">
+                    <span class="label">Forecast Reference:</span>
+                    <span id="ref-time-value" class="value">Loading...</span>
+                </div>
+                <a id="btn-back-to-map" href="/" class="header-back-btn" title="Back to Interactive Map">
+                    <i class="fa-solid fa-map"></i> <span>Interactive Map</span>
+                </a>
+            </div>
+        </header>
+
+        <!-- Main Workspace: Config panels on side/top, graphs in a grid -->
+        <main class="dashboard-content">
+            <div class="sidebar-layout">
+                <!-- Location Selector Card -->
+                <section class="glass-panel control-card">
+                    <header class="card-header">
+                        <h3><i class="fa-solid fa-location-crosshairs icon-accent"></i> Selected Location</h3>
+                    </header>
+                    <div class="card-body">
+                        <form id="coords-form" class="coords-form">
+                            <div class="form-group">
+                                <label for="input-lat">Latitude</label>
+                                <input type="number" id="input-lat" step="0.0001" min="49.0" max="56.0" placeholder="52.1" required class="glass-input">
+                            </div>
+                            <div class="form-group">
+                                <label for="input-lon">Longitude</label>
+                                <input type="number" id="input-lon" step="0.0001" min="2.0" max="8.0" placeholder="5.2" required class="glass-input">
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn-action btn-primary"><i class="fa-solid fa-arrows-rotate"></i> Update</button>
+                                <button type="button" id="btn-geolocation" class="btn-action btn-secondary"><i class="fa-solid fa-location-arrow"></i> GPS</button>
+                            </div>
+                        </form>
+                        <div id="location-display" class="location-display">
+                            lat: <span id="display-lat">--</span>, lon: <span id="display-lon">--</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Rain Alert & Settings Card -->
+                <section class="glass-panel control-card">
+                    <header class="card-header">
+                        <h3><i class="fa-solid fa-bell icon-accent"></i> Rain Alerts & Notifications</h3>
+                    </header>
+                    <div class="card-body">
+                        <!-- Live calculated rain forecast status -->
+                        <div id="rain-status-box" class="alert-status-box info">
+                            <div class="status-icon"><i class="fa-solid fa-circle-info"></i></div>
+                            <div class="status-content">
+                                <h4 id="rain-status-title">Analyzing forecast...</h4>
+                                <p id="rain-status-desc">Loading timeseries data to search for upcoming rainfall.</p>
+                            </div>
+                        </div>
+
+                        <!-- Notification Settings Form -->
+                        <form id="notification-form" class="notification-form">
+                            <div class="toggle-group">
+                                <label class="switch-label">
+                                    <input type="checkbox" id="notify-email" class="glass-switch">
+                                    <span class="switch-custom"></span>
+                                    <span>Enable Email Alerts</span>
+                                </label>
+                            </div>
+                            <div class="form-group hidden" id="group-email">
+                                <label for="input-email">Email Address</label>
+                                <input type="email" id="input-email" placeholder="you@example.com" class="glass-input">
+                            </div>
+
+                            <div class="toggle-group">
+                                <label class="switch-label">
+                                    <input type="checkbox" id="notify-push" class="glass-switch">
+                                    <span class="switch-custom"></span>
+                                    <span>Enable Push Notifications</span>
+                                </label>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="alert-threshold">Rain Threshold</label>
+                                <select id="alert-threshold" class="glass-select">
+                                    <option value="0.05">Light Drizzle (&ge; 0.05 mm/h)</option>
+                                    <option value="0.2">Light Rain (&ge; 0.2 mm/h)</option>
+                                    <option value="1.0" selected>Moderate Rain (&ge; 1.0 mm/h)</option>
+                                    <option value="5.0">Heavy Rain (&ge; 5.0 mm/h)</option>
+                                </select>
+                            </div>
+
+                            <button type="submit" class="btn-action btn-submit-alert"><i class="fa-solid fa-bell-concierge"></i> Save Alert Rules</button>
+                        </form>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Standalone Graphs Grid -->
+            <div class="graphs-grid">
+                <!-- Rainfall Chart Card -->
+                <section class="glass-panel graph-card">
+                    <header class="graph-card-header">
+                        <div class="graph-card-title">
+                            <i class="fa-solid fa-cloud-showers-heavy icon-accent"></i>
+                            <h3>Rainfall Rate Forecast</h3>
+                        </div>
+                        <div class="graph-card-stats">
+                            <div class="badge-stat">Peak: <span id="stat-rain-peak">--</span></div>
+                            <div class="badge-stat">Total: <span id="stat-rain-total">--</span></div>
+                        </div>
+                    </header>
+                    <div class="graph-canvas-container">
+                        <canvas id="chart-rain"></canvas>
+                    </div>
+                </section>
+
+                <!-- Temperature Chart Card -->
+                <section class="glass-panel graph-card">
+                    <header class="graph-card-header">
+                        <div class="graph-card-title">
+                            <i class="fa-solid fa-temperature-half icon-accent"></i>
+                            <h3>2m Temperature Trend</h3>
+                        </div>
+                        <div class="graph-card-stats">
+                            <div class="badge-stat">Max: <span id="stat-temp-max">--</span></div>
+                            <div class="badge-stat">Min: <span id="stat-temp-min">--</span></div>
+                        </div>
+                    </header>
+                    <div class="graph-canvas-container">
+                        <canvas id="chart-temp"></canvas>
+                    </div>
+                </section>
+
+                <!-- Wind Speed & Direction Chart Card -->
+                <section class="glass-panel graph-card">
+                    <header class="graph-card-header">
+                        <div class="graph-card-title">
+                            <i class="fa-solid fa-wind icon-accent"></i>
+                            <h3>Wind Speed Trend</h3>
+                        </div>
+                        <div class="graph-card-controls">
+                            <select id="wind-height-select" class="glass-select-compact">
+                                <option value="10" selected>10m</option>
+                                <option value="50">50m</option>
+                                <option value="100">100m</option>
+                                <option value="200">200m</option>
+                                <option value="300">300m</option>
+                            </select>
+                        </div>
+                        <div class="graph-card-stats">
+                            <div class="badge-stat">Peak: <span id="stat-wind-peak">--</span></div>
+                            <div class="badge-stat">Avg: <span id="stat-wind-avg">--</span></div>
+                        </div>
+                    </header>
+                    <div class="graph-canvas-container">
+                        <canvas id="chart-wind"></canvas>
+                    </div>
+                </section>
+
+                <!-- Solar Radiation Chart Card -->
+                <section class="glass-panel graph-card">
+                    <header class="graph-card-header">
+                        <div class="graph-card-title">
+                            <i class="fa-solid fa-sun icon-accent"></i>
+                            <h3>Solar Radiation Trend</h3>
+                        </div>
+                        <div class="graph-card-stats">
+                            <div class="badge-stat">Peak: <span id="stat-solar-peak">--</span></div>
+                            <div class="badge-stat">Avg: <span id="stat-solar-avg">--</span></div>
+                        </div>
+                    </header>
+                    <div class="graph-canvas-container">
+                        <canvas id="chart-solar"></canvas>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden">Alert preferences saved successfully!</div>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Standalone Page Logic -->
+    <script type="module" src="src/graphs.js"></script>
+</body>
+</html>
