@@ -47,5 +47,6 @@ export const DOM = {
     btnCompareToggle: document.getElementById('btn-compare-toggle'),
     compareMenu: document.getElementById('compare-menu'),
     compareLayerSelect: document.getElementById('compare-layer-select'),
-    swipeDivider: document.getElementById('swipe-divider')
+    swipeDivider: document.getElementById('swipe-divider'),
+    btnStandaloneLink: document.getElementById('btn-standalone-link')
 };
