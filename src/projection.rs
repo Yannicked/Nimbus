@@ -53,3 +53,40 @@ pub fn lonlat_to_polar_stereographic(lon: f64, lat: f64) -> (f64, f64) {
 
     (x, y)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mercator_to_lonlat_origin() {
+        let (lon, lat) = mercator_to_lonlat(0.0, 0.0);
+        assert!((lon - 0.0).abs() < 1e-7);
+        assert!((lat - 0.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_mercator_to_lonlat_amsterdam() {
+        // Approximate Amsterdam Web Mercator
+        let (lon, lat) = mercator_to_lonlat(545465.0, 6865660.0);
+        assert!((lon - 4.9).abs() < 0.1);
+        assert!((lat - 52.36).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_lonlat_to_polar_stereographic_pole() {
+        let (x, y) = lonlat_to_polar_stereographic(0.0, 90.0);
+        assert!(x.abs() < 1e-7);
+        assert!(y.abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_lonlat_to_polar_stereographic_netherlands() {
+        // Point in NL: 5.18, 52.10 (De Bilt)
+        let (x, y) = lonlat_to_polar_stereographic(5.18, 52.10);
+        // We don't have the exact expected values, but we can verify it returns something sane
+        // and doesn't crash.
+        assert!(x > 0.0);
+        assert!(y < 0.0); // South of pole in this projection results in negative Y
+    }
+}

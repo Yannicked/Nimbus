@@ -194,3 +194,61 @@ pub fn interpolate_bilinear(
         NODATA
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::LutEntry;
+    use crate::constants::NODATA;
+
+    #[test]
+    fn test_interpolate_bilinear_exact() {
+        let grid = vec![10, 20, 30, 40];
+        let val = interpolate_bilinear(0.0, 0.0, 2, 2, &grid);
+        assert_eq!(val, 10);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_center() {
+        let grid = vec![
+            10, 20,
+            30, 40
+        ];
+        // Center of the 4 pixels
+        let val = interpolate_bilinear(0.5, 0.5, 2, 2, &grid);
+        assert_eq!(val, 25); // (10+20+30+40)/4 = 100/4 = 25
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_nodata() {
+        let grid = vec![
+            10, NODATA,
+            30, 40
+        ];
+        // Point where one neighbor is NODATA
+        let val = interpolate_bilinear(0.5, 0.5, 2, 2, &grid);
+        // Weights: 0.25 each.
+        // sum_val = 10*0.25 + 30*0.25 + 40*0.25 = 2.5 + 7.5 + 10 = 20
+        // sum_weight = 0.25 + 0.25 + 0.25 = 0.75
+        // result = 20 / 0.75 = 26.666 -> 27
+        assert_eq!(val, 27);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_out_of_bounds() {
+        let grid = vec![10, 20, 30, 40];
+        let val = interpolate_bilinear(5.0, 5.0, 2, 2, &grid);
+        assert_eq!(val, NODATA);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_lut_basic() {
+        let grid = vec![10, 20, 30, 40];
+        let entry = LutEntry {
+            indices: [0, 1, 2, 3],
+            weights: [0.25, 0.25, 0.25, 0.25],
+        };
+        let val = interpolate_bilinear_lut(&entry, &grid);
+        assert_eq!(val, 25);
+    }
+}

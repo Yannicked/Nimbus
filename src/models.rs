@@ -644,3 +644,117 @@ pub struct SolarTimeseriesQuery {
     pub lon: f64,
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::NODATA;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_reduce_ensemble_median() {
+        let mut vals = vec![10, 50, 20, 30, 40];
+        let res = reduce_ensemble(&EnsembleStat::Median, &mut vals);
+        assert_eq!(res, 30);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_maximum() {
+        let mut vals = vec![10, 50, 20, 30, 40];
+        let res = reduce_ensemble(&EnsembleStat::Maximum, &mut vals);
+        assert_eq!(res, 50);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_probability() {
+        let mut vals = vec![5, 10, 15, 20, 8];
+        let res = reduce_ensemble(&EnsembleStat::Probability, &mut vals);
+        assert_eq!(res, 60);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_spread() {
+        let mut vals = vec![10, 10, 10, 10];
+        let res = reduce_ensemble(&EnsembleStat::Spread, &mut vals);
+        assert_eq!(res, 0);
+
+        let mut vals = vec![10, 20];
+        let res = reduce_ensemble(&EnsembleStat::Spread, &mut vals);
+        assert_eq!(res, 5);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_nodata() {
+        let mut vals = vec![NODATA, 10, 20];
+        let res = reduce_ensemble(&EnsembleStat::Median, &mut vals);
+        assert_eq!(res, NODATA);
+    }
+
+    #[test]
+    fn test_temp_forecast_roundtrip() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let values = Arc::new(vec![100u16; 390 * 390]);
+        let forecast = TempForecast {
+            reference_time: 123456789,
+            steps: vec![TempStep {
+                forecast_hour: 1,
+                width: 390,
+                height: 390,
+                values: values.clone(),
+            }],
+        };
+
+        forecast.write_to_file(path).unwrap();
+        let read_back = TempForecast::read_from_file(path).unwrap();
+
+        assert_eq!(read_back.reference_time, 123456789);
+        assert_eq!(read_back.steps.len(), 1);
+        assert_eq!(read_back.steps[0].forecast_hour, 1);
+        assert_eq!(read_back.steps[0].values.as_ref(), values.as_ref());
+    }
+
+    #[test]
+    fn test_wind_forecast_roundtrip() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let u_values = Arc::new(vec![50u16; 390 * 390]);
+        let v_values = Arc::new(vec![150u16; 390 * 390]);
+        let forecast = WindForecast {
+            reference_time: 987654321,
+            steps: vec![WindStep {
+                forecast_hour: 2,
+                height_level: 10,
+                width: 390,
+                height: 390,
+                u_values: u_values.clone(),
+                v_values: v_values.clone(),
+            }],
+        };
+
+        forecast.write_to_file(path).unwrap();
+        let read_back = WindForecast::read_from_file(path).unwrap();
+
+        assert_eq!(read_back.reference_time, 987654321);
+        assert_eq!(read_back.steps[0].u_values.as_ref(), u_values.as_ref());
+        assert_eq!(read_back.steps[0].v_values.as_ref(), v_values.as_ref());
+    }
+
+    #[test]
+    fn test_forecast_invalid_magic() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        std::fs::write(path, b"WRNGsomeotherdata").unwrap();
+
+        let res = TempForecast::read_from_file(path);
+        assert!(res.is_err());
+        if let Err(e) = res {
+            assert!(e.to_string().contains("Invalid magic bytes"));
+        } else {
+            panic!("Expected error");
+        }
+    }
+}
