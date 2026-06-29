@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::constants::KNMI_DATASET;
 use crate::harmonie::{
-    download_and_process_combined_tar, precalculate_solar_data, precalculate_temp_data,
-    precalculate_wind_data, precalculate_rain_data,
+    download_and_process_combined_tar, precalculate_rain_data, precalculate_solar_data,
+    precalculate_temp_data, precalculate_wind_data,
 };
 use crate::radar::download_and_update_nc_file;
 use crate::state::AppState;
