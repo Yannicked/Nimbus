@@ -1,9 +1,11 @@
 use crate::constants::NODATA;
 use crate::models::{
-    FileUrlResponse, SolarForecast, SolarStep, TempForecast, TempStep, WindForecast, WindStep,
-    RainForecast, RainStep,
+    FileUrlResponse, RainForecast, RainStep, SolarForecast, SolarStep, TempForecast, TempStep,
+    WindForecast, WindStep,
 };
-use crate::rendering::{render_solar_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes, render_data_webp_bytes};
+use crate::rendering::{
+    render_data_webp_bytes, render_solar_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes,
+};
 use crate::state::AppState;
 use chrono::TimeZone;
 use serde::Deserialize;
@@ -22,7 +24,6 @@ pub fn parse_forecast_hour_from_name(filename: &str) -> Option<i32> {
     }
     None
 }
-
 
 pub fn parse_run_time_from_name(filename: &str) -> Option<i64> {
     let parts: Vec<&str> = filename.split('_').collect();
@@ -64,7 +65,10 @@ pub fn parse_tar_run_time(filename: &str) -> Option<i64> {
 
 pub fn process_harmonie_tar_combined(
     tar_path: &str,
-) -> Result<(TempForecast, WindForecast, SolarForecast, RainForecast), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<
+    (TempForecast, WindForecast, SolarForecast, RainForecast),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     use std::io::Read;
     let file = std::fs::File::open(tar_path)?;
     let mut archive = tar::Archive::new(file);
@@ -116,11 +120,12 @@ pub fn process_harmonie_tar_combined(
         let mut temp_vals = None;
         let mut solar_vals = None;
         let mut rain_vals = None;
+        #[allow(clippy::type_complexity)]
         let mut wind_by_level: std::collections::HashMap<
             u32,
             (Option<Vec<u16>>, Option<Vec<u16>>),
         > = std::collections::HashMap::new();
-        
+
         let entry_filename = filename.clone();
         let mut forecast_hour = parse_forecast_hour_from_name(&entry_filename).unwrap_or(0);
 
@@ -243,6 +248,7 @@ pub fn process_harmonie_tar_combined(
         let dt_seconds = (dt_hours as f64) * 3600.0;
 
         if dt_seconds > 0.0 {
+            #[allow(clippy::needless_range_loop)]
             for i in 0..152100 {
                 let curr_val = current_step.values[i];
                 if curr_val.is_finite() {
@@ -281,6 +287,7 @@ pub fn process_harmonie_tar_combined(
         let dt_hours = current_step.forecast_hour - prev_hour;
 
         if dt_hours > 0 {
+            #[allow(clippy::needless_range_loop)]
             for i in 0..152100 {
                 let curr_val = current_step.values[i];
                 if curr_val.is_finite() {
@@ -361,7 +368,10 @@ pub async fn download_and_process_combined_tar(
     filename: &str,
     file_url: Option<&str>,
     api_key: &str,
-) -> Result<(TempForecast, WindForecast, SolarForecast, RainForecast), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<
+    (TempForecast, WindForecast, SolarForecast, RainForecast),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     // Sanitize filename to prevent path traversal
     let safe_filename = std::path::Path::new(filename)
         .file_name()
@@ -404,9 +414,13 @@ pub async fn download_and_process_combined_tar(
     let download_url = url_resp.temporary_download_url;
 
     // Validate download url is also trusted
-    if !download_url.starts_with("https://knmi-kdp-datasets-eu-west-1.s3.eu-west-1.amazonaws.com/") 
-       && !download_url.starts_with(trusted_base) {
-        println!("Warning: Download URL domain differs from KNMI API: {}", download_url);
+    if !download_url.starts_with("https://knmi-kdp-datasets-eu-west-1.s3.eu-west-1.amazonaws.com/")
+        && !download_url.starts_with(trusted_base)
+    {
+        println!(
+            "Warning: Download URL domain differs from KNMI API: {}",
+            download_url
+        );
     }
 
     println!("Downloading HARMONIE tar (combined) from temporary URL to temp file...");
@@ -476,7 +490,8 @@ pub async fn load_or_fetch_combined_forecast(
     };
 
     // If all four exist, check if there's a newer run
-    if let (Some(temp_fc), Some(wind_fc), Some(solar_fc), Some(rain_fc)) = (temp_fc_opt, wind_fc_opt, solar_fc_opt, rain_fc_opt)
+    if let (Some(temp_fc), Some(wind_fc), Some(solar_fc), Some(rain_fc)) =
+        (temp_fc_opt, wind_fc_opt, solar_fc_opt, rain_fc_opt)
     {
         let cached_ref_time = temp_fc
             .reference_time
@@ -920,4 +935,3 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
         num_steps
     );
 }
-

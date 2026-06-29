@@ -214,9 +214,8 @@ mod tests {
             10, 20,
             30, 40
         ];
-        // Center of the 4 pixels
         let val = interpolate_bilinear(0.5, 0.5, 2, 2, &grid);
-        assert_eq!(val, 25); // (10+20+30+40)/4 = 100/4 = 25
+        assert_eq!(val, 25);
     }
 
     #[test]
@@ -225,12 +224,7 @@ mod tests {
             10, NODATA,
             30, 40
         ];
-        // Point where one neighbor is NODATA
         let val = interpolate_bilinear(0.5, 0.5, 2, 2, &grid);
-        // Weights: 0.25 each.
-        // sum_val = 10*0.25 + 30*0.25 + 40*0.25 = 2.5 + 7.5 + 10 = 20
-        // sum_weight = 0.25 + 0.25 + 0.25 = 0.75
-        // result = 20 / 0.75 = 26.666 -> 27
         assert_eq!(val, 27);
     }
 

@@ -84,9 +84,7 @@ mod tests {
     fn test_lonlat_to_polar_stereographic_netherlands() {
         // Point in NL: 5.18, 52.10 (De Bilt)
         let (x, y) = lonlat_to_polar_stereographic(5.18, 52.10);
-        // We don't have the exact expected values, but we can verify it returns something sane
-        // and doesn't crash.
         assert!(x > 0.0);
-        assert!(y < 0.0); // South of pole in this projection results in negative Y
+        assert!(y < 0.0);
     }
 }

@@ -23,8 +23,8 @@ use tower_http::services::ServeDir;
 
 use handlers::*;
 use harmonie::{
-    cleanup_tar_files, load_or_fetch_combined_forecast, precalculate_solar_data,
-    precalculate_temp_data, precalculate_wind_data, precalculate_rain_data,
+    cleanup_tar_files, load_or_fetch_combined_forecast, precalculate_rain_data,
+    precalculate_solar_data, precalculate_temp_data, precalculate_wind_data,
 };
 use interpolation::{init_projection_lut, init_temp_projection_lut};
 use mqtt::{start_knmi_harmonie_mqtt_listener, start_knmi_mqtt_listener};
@@ -53,7 +53,8 @@ async fn main() {
     cleanup_tar_files();
 
     // Load or fetch temperature, wind, solar, and rain forecasts (combined)
-    let (temp_fc, wind_fc, solar_fc, rain_fc) = load_or_fetch_combined_forecast(&open_data_api_key).await;
+    let (temp_fc, wind_fc, solar_fc, rain_fc) =
+        load_or_fetch_combined_forecast(&open_data_api_key).await;
 
     // 1. Find the latest netcdf file in the cache directory, or download it if none exists
     let initial_file = match find_latest_nc_file(constants::CACHE_DIR) {

@@ -178,12 +178,13 @@ pub fn compute_raw_slice(
             .position(|&t| t == time)
             .ok_or((StatusCode::BAD_REQUEST, format!("Invalid time: {}", time)))?;
 
-        let all_members_data = read_netcdf_all_ensembles(file_path, time_idx, meta.ensembles.len()).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Error reading all ensembles: {}", e),
-            )
-        })?;
+        let all_members_data = read_netcdf_all_ensembles(file_path, time_idx, meta.ensembles.len())
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error reading all ensembles: {}", e),
+                )
+            })?;
 
         let grid_size = KNMI_GRID_H * KNMI_GRID_W;
         let member_slices: Vec<&[u16]> = all_members_data.chunks_exact(grid_size).collect();
@@ -236,7 +237,9 @@ pub fn compute_raw_slice(
             }
 
             pooled_values.par_sort_unstable();
-            mean_pairs.par_sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            mean_pairs.par_sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
 
             let mut pmm_slice = vec![NODATA; grid_size];
             let n_valid = mean_pairs.len();
@@ -260,8 +263,8 @@ pub fn compute_raw_slice(
                     let block_len = end_idx - start_idx;
                     let val = if block_len > 0 {
                         let mut sum = 0u64;
-                        for i in start_idx..end_idx {
-                            sum += pooled_values[i] as u64;
+                        for &pval in &pooled_values[start_idx..end_idx] {
+                            sum += pval as u64;
                         }
                         ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
                     } else {
@@ -279,9 +282,7 @@ pub fn compute_raw_slice(
             let num_ensembles = member_slices.len();
             let dilated_masks: Vec<Vec<bool>> = (0..num_ensembles)
                 .into_par_iter()
-                .map(|ens_idx| {
-                    compute_dilated_mask(member_slices[ens_idx], NEP_RADIUS)
-                })
+                .map(|ens_idx| compute_dilated_mask(member_slices[ens_idx], NEP_RADIUS))
                 .collect();
 
             let mut raw_slice = vec![NODATA; grid_size];
@@ -443,66 +444,68 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                     .zip(max_slice.par_iter_mut())
                     .zip(prob_slice.par_iter_mut())
                     .zip(spread_slice.par_iter_mut())
-                    .for_each(|(((((ens_vals, i), med_val), max_val), prob_val), spread_val)| {
-                        if ens_vals[0] == NODATA {
-                            *med_val = NODATA;
-                            *max_val = NODATA;
-                            *prob_val = NODATA;
-                            *spread_val = NODATA;
-                            return;
-                        }
-
-                        // Copy non-NODATA values into a local array
-                        let mut valid_vals = [0u16; 32];
-                        let mut count = 0;
-                        for &v in ens_vals {
-                            if v != NODATA {
-                                valid_vals[count] = v;
-                                count += 1;
+                    .for_each(
+                        |(((((ens_vals, i), med_val), max_val), prob_val), spread_val)| {
+                            if ens_vals[0] == NODATA {
+                                *med_val = NODATA;
+                                *max_val = NODATA;
+                                *prob_val = NODATA;
+                                *spread_val = NODATA;
+                                return;
                             }
-                        }
 
-                        if count == 0 {
-                            *med_val = NODATA;
-                            *max_val = NODATA;
-                            *prob_val = NODATA;
-                            *spread_val = NODATA;
-                            return;
-                        }
-
-                        let active_vals = &mut valid_vals[..count];
-                        active_vals.sort_unstable();
-
-                        // Median
-                        *med_val = active_vals[count / 2];
-
-                        // Max
-                        *max_val = active_vals[count - 1];
-
-                        // Probability (Neighborhood Ensemble Probability)
-                        let mut over = 0;
-                        for ens_idx in 0..num_ensembles {
-                            if ens_vals[ens_idx] != NODATA && dilated_masks[ens_idx][i] {
-                                over += 1;
+                            // Copy non-NODATA values into a local array
+                            let mut valid_vals = [0u16; 32];
+                            let mut count = 0;
+                            for &v in ens_vals {
+                                if v != NODATA {
+                                    valid_vals[count] = v;
+                                    count += 1;
+                                }
                             }
-                        }
-                        *prob_val = ((over * 100) / count) as u16;
 
-                        // Spread (standard deviation)
-                        let mut sum = 0.0f64;
-                        for &v in active_vals.iter() {
-                            sum += v as f64;
-                        }
-                        let mean = sum / count as f64;
+                            if count == 0 {
+                                *med_val = NODATA;
+                                *max_val = NODATA;
+                                *prob_val = NODATA;
+                                *spread_val = NODATA;
+                                return;
+                            }
 
-                        let mut variance_sum = 0.0f64;
-                        for &v in active_vals.iter() {
-                            let diff = v as f64 - mean;
-                            variance_sum += diff * diff;
-                        }
-                        let variance = variance_sum / count as f64;
-                        *spread_val = variance.sqrt().round() as u16;
-                    });
+                            let active_vals = &mut valid_vals[..count];
+                            active_vals.sort_unstable();
+
+                            // Median
+                            *med_val = active_vals[count / 2];
+
+                            // Max
+                            *max_val = active_vals[count - 1];
+
+                            // Probability (Neighborhood Ensemble Probability)
+                            let mut over = 0;
+                            for ens_idx in 0..num_ensembles {
+                                if ens_vals[ens_idx] != NODATA && dilated_masks[ens_idx][i] {
+                                    over += 1;
+                                }
+                            }
+                            *prob_val = ((over * 100) / count) as u16;
+
+                            // Spread (standard deviation)
+                            let mut sum = 0.0f64;
+                            for &v in active_vals.iter() {
+                                sum += v as f64;
+                            }
+                            let mean = sum / count as f64;
+
+                            let mut variance_sum = 0.0f64;
+                            for &v in active_vals.iter() {
+                                let diff = v as f64 - mean;
+                                variance_sum += diff * diff;
+                            }
+                            let variance = variance_sum / count as f64;
+                            *spread_val = variance.sqrt().round() as u16;
+                        },
+                    );
 
                 // Compute PMM
                 let mut pmm_slice = vec![NODATA; grid_size];
@@ -544,7 +547,9 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                 }
 
                 pooled_values.par_sort_unstable();
-                mean_pairs.par_sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                mean_pairs.par_sort_unstable_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
 
                 let n_valid = mean_pairs.len();
                 let n_pooled = pooled_values.len();
@@ -567,8 +572,8 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                         let block_len = end_idx - start_idx;
                         let val = if block_len > 0 {
                             let mut sum = 0u64;
-                            for i in start_idx..end_idx {
-                                sum += pooled_values[i] as u64;
+                            for &pval in &pooled_values[start_idx..end_idx] {
+                                sum += pval as u64;
                             }
                             ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
                         } else {
@@ -718,9 +723,13 @@ pub async fn download_and_update_nc_file(
     let download_url = url_resp.temporary_download_url;
 
     // Validate download url is also trusted
-    if !download_url.starts_with("https://open-data.dataplatform.knmi.nl/") 
-       && !download_url.starts_with(trusted_base) {
-        println!("Warning: Download URL domain differs from KNMI API: {}", download_url);
+    if !download_url.starts_with("https://open-data.dataplatform.knmi.nl/")
+        && !download_url.starts_with(trusted_base)
+    {
+        println!(
+            "Warning: Download URL domain differs from KNMI API: {}",
+            download_url
+        );
     }
 
     println!("Downloading file from temporary URL: {}...", safe_filename);
@@ -755,7 +764,10 @@ pub async fn download_and_update_nc_file(
 
             state.grid_cache.clear();
             state.data_cache.clear();
-            println!("Successfully reloaded metadata and cleared caches for new file: {}", final_path);
+            println!(
+                "Successfully reloaded metadata and cleared caches for new file: {}",
+                final_path
+            );
 
             let state_clone = state.clone();
             tokio::spawn(async move {
@@ -763,7 +775,10 @@ pub async fn download_and_update_nc_file(
             });
         }
         Err(e) => {
-            eprintln!("Failed to load new NetCDF metadata from {}: {}", final_path, e);
+            eprintln!(
+                "Failed to load new NetCDF metadata from {}: {}",
+                final_path, e
+            );
         }
     }
 

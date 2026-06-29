@@ -644,7 +644,6 @@ pub struct SolarTimeseriesQuery {
     pub lon: f64,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
