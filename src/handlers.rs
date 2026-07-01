@@ -555,17 +555,22 @@ pub async fn get_timeseries(
             }
         }
     } else if q.ens == "pmm" {
-        let mut handles = Vec::with_capacity(meta.times.len());
+        #[allow(clippy::type_complexity)]
+        enum TaskResult {
+            Cached(Arc<Vec<u16>>),
+            Spawned(tokio::task::JoinHandle<Result<Arc<Vec<u16>>, (StatusCode, String)>>),
+        }
+
+        let mut tasks = Vec::with_capacity(meta.times.len());
         for &time_val in &meta.times {
             if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
-                let val = slice.value().clone();
-                handles.push(tokio::spawn(async move { Ok(val) }));
+                tasks.push(TaskResult::Cached(slice.value().clone()));
             } else {
                 let file_path_clone = file_path.clone();
                 let meta_clone = meta.clone();
                 let ens_clone = q.ens.clone();
                 let state_clone = state.clone();
-                handles.push(tokio::spawn(async move {
+                tasks.push(TaskResult::Spawned(tokio::spawn(async move {
                     let ens_for_block = ens_clone.clone();
                     let computed = tokio::task::spawn_blocking(move || {
                         compute_raw_slice(&file_path_clone, &meta_clone, &ens_for_block, time_val)
@@ -582,16 +587,19 @@ pub async fn get_timeseries(
                         .grid_cache
                         .insert((ens_clone, time_val), arc.clone());
                     Ok(arc)
-                }));
+                })));
             }
         }
-        for handle in handles {
-            let raw_slice = handle.await.map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Task join error: {}", e),
-                )
-            })??;
+        for task in tasks {
+            let raw_slice = match task {
+                TaskResult::Cached(val) => val,
+                TaskResult::Spawned(handle) => handle.await.map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Task join error: {}", e),
+                    )
+                })??,
+            };
             let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
             values.push(raw_to_value(val_raw));
         }
