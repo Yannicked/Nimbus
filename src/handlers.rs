@@ -27,6 +27,7 @@ use crate::state::AppState;
 
 /// Generic helper to extract a value from a GRIB-based forecast (Temp, Solar, etc.)
 /// by finding the closest step and interpolating.
+#[allow(clippy::too_many_arguments)]
 fn with_grib_step<S, F, R>(
     forecast: &F,
     time: i64,
