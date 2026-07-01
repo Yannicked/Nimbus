@@ -3,7 +3,7 @@ use axum::{
     routing::get,
     Router,
 };
-use tower::ServiceExt;
+use tower::util::ServiceExt;
 use tower_http::cors::CorsLayer;
 
 #[tokio::test]
