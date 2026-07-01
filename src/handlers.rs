@@ -6,7 +6,7 @@ use axum::{
 use std::sync::Arc;
 
 use crate::constants::{
-    GRID_H, GRID_W, GRIB_H, GRIB_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0,
+    GRIB_H, GRIB_W, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0,
     MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR,
     RAIN_THRESHOLD,
 };
@@ -946,16 +946,12 @@ pub async fn get_wind_value(
 
     let req_height = q.height.unwrap_or(10);
 
-    let steps: Vec<_> = forecast
+    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
+
+    let step = forecast
         .steps
         .iter()
         .filter(|s| s.height_level == req_height)
-        .collect();
-
-    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
-
-    let step = steps
-        .iter()
         .min_by_key(|s| {
             let step_offset = (s.forecast_hour as i64) * 3600;
             (step_offset - q.time).abs()
