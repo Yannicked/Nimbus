@@ -764,6 +764,7 @@ pub async fn download_and_update_nc_file(
 
             state.grid_cache.clear();
             state.data_cache.clear();
+            state.timeseries_cache.clear();
             println!(
                 "Successfully reloaded metadata and cleared caches for new file: {}",
                 final_path
