@@ -935,3 +935,49 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
         num_steps
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_forecast_hour_from_name() {
+        assert_eq!(parse_forecast_hour_from_name("prefix_v1_202310271200_003_suffix.grib"), Some(3));
+        assert_eq!(parse_forecast_hour_from_name("prefix_v1_202310271200_048.grib"), Some(48));
+        assert_eq!(parse_forecast_hour_from_name("a_b_c"), None);
+        assert_eq!(parse_forecast_hour_from_name("a_b_c_0"), None);
+        assert_eq!(parse_forecast_hour_from_name("a_b_c_01"), None);
+        assert_eq!(parse_forecast_hour_from_name("a_b_c_abc"), None);
+    }
+
+    #[test]
+    fn test_parse_run_time_from_name() {
+        // 2023-10-27 12:00:00 UTC = 1698408000
+        assert_eq!(parse_run_time_from_name("prefix_v1_202310271200_003_suffix.grib"), Some(1698408000));
+        assert_eq!(parse_run_time_from_name("a_b"), None);
+        assert_eq!(parse_run_time_from_name("a_b_20231027120"), None); // 11 chars
+        assert_eq!(parse_run_time_from_name("a_b_2023102712000"), None); // 13 chars
+        assert_eq!(parse_run_time_from_name("a_b_202313271200"), None); // Month 13
+        assert_eq!(parse_run_time_from_name("a_b_202310272500"), None); // Hour 25
+    }
+
+    #[test]
+    fn test_parse_tar_run_time() {
+        // 2023-10-27 12:00:00 UTC = 1698408000
+        assert_eq!(parse_tar_run_time("HARM43_V1_P1_2023102712.tar"), Some(1698408000));
+        assert_eq!(parse_tar_run_time("WRONG_V1_P1_2023102712.tar"), None);
+        assert_eq!(parse_tar_run_time("HARM43_V1_P1_2023102712.zip"), None);
+        assert_eq!(parse_tar_run_time("HARM43_V1_P1_202310271.tar"), None); // 9 chars
+        assert_eq!(parse_tar_run_time("HARM43_V1_P1_20231027123.tar"), None); // 11 chars
+        assert_eq!(parse_tar_run_time("HARM43_V1_P1_2023132712.tar"), None); // Month 13
+    }
+
+    #[test]
+    fn test_parse_reference_time() {
+        // 2023-10-27 12:00:00 UTC = 1698408000
+        assert_eq!(parse_reference_time("seconds since 2023-10-27 12:00:00"), Some(1698408000));
+        assert_eq!(parse_reference_time("2023-10-27 12:00:00"), None);
+        assert_eq!(parse_reference_time("since 2023-10-27 12:00"), None); // Missing seconds
+        assert_eq!(parse_reference_time("since 2023-13-27 12:00:00"), None); // Month 13
+    }
+}
