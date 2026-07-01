@@ -245,35 +245,29 @@ pub fn compute_raw_slice(
             let n_valid = mean_pairs.len();
             let n_pooled = pooled_values.len();
             if n_valid > 0 && n_pooled > 0 {
-                #[derive(Copy, Clone)]
-                struct SendPtr(*mut u16);
-                unsafe impl Send for SendPtr {}
-                unsafe impl Sync for SendPtr {}
-                impl SendPtr {
-                    unsafe fn write(self, idx: usize, val: u16) {
-                        *self.0.add(idx) = val;
-                    }
-                }
-                let pmm_ptr = SendPtr(pmm_slice.as_mut_ptr());
+                let updates: Vec<(usize, u16)> = (0..n_valid)
+                    .into_par_iter()
+                    .map(|r| {
+                        let idx = mean_pairs[r].0;
+                        let start_idx = (r * n_pooled) / n_valid;
+                        let end_idx = ((r + 1) * n_pooled) / n_valid;
+                        let block_len = end_idx - start_idx;
+                        let val = if block_len > 0 {
+                            let mut sum = 0u64;
+                            for &pval in &pooled_values[start_idx..end_idx] {
+                                sum += pval as u64;
+                            }
+                            ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
+                        } else {
+                            pooled_values[start_idx.min(n_pooled - 1)]
+                        };
+                        (idx, val)
+                    })
+                    .collect();
 
-                (0..n_valid).into_par_iter().for_each(move |r| {
-                    let idx = mean_pairs[r].0;
-                    let start_idx = (r * n_pooled) / n_valid;
-                    let end_idx = ((r + 1) * n_pooled) / n_valid;
-                    let block_len = end_idx - start_idx;
-                    let val = if block_len > 0 {
-                        let mut sum = 0u64;
-                        for &pval in &pooled_values[start_idx..end_idx] {
-                            sum += pval as u64;
-                        }
-                        ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
-                    } else {
-                        pooled_values[start_idx.min(n_pooled - 1)]
-                    };
-                    unsafe {
-                        pmm_ptr.write(idx, val);
-                    }
-                });
+                for (idx, val) in updates {
+                    pmm_slice[idx] = val;
+                }
             }
             return Ok(pmm_slice);
         }
@@ -554,35 +548,29 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                 let n_valid = mean_pairs.len();
                 let n_pooled = pooled_values.len();
                 if n_valid > 0 && n_pooled > 0 {
-                    #[derive(Copy, Clone)]
-                    struct SendPtr(*mut u16);
-                    unsafe impl Send for SendPtr {}
-                    unsafe impl Sync for SendPtr {}
-                    impl SendPtr {
-                        unsafe fn write(self, idx: usize, val: u16) {
-                            *self.0.add(idx) = val;
-                        }
-                    }
-                    let pmm_ptr = SendPtr(pmm_slice.as_mut_ptr());
+                    let updates: Vec<(usize, u16)> = (0..n_valid)
+                        .into_par_iter()
+                        .map(|r| {
+                            let idx = mean_pairs[r].0;
+                            let start_idx = (r * n_pooled) / n_valid;
+                            let end_idx = ((r + 1) * n_pooled) / n_valid;
+                            let block_len = end_idx - start_idx;
+                            let val = if block_len > 0 {
+                                let mut sum = 0u64;
+                                for &pval in &pooled_values[start_idx..end_idx] {
+                                    sum += pval as u64;
+                                }
+                                ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
+                            } else {
+                                pooled_values[start_idx.min(n_pooled - 1)]
+                            };
+                            (idx, val)
+                        })
+                        .collect();
 
-                    (0..n_valid).into_par_iter().for_each(move |r| {
-                        let idx = mean_pairs[r].0;
-                        let start_idx = (r * n_pooled) / n_valid;
-                        let end_idx = ((r + 1) * n_pooled) / n_valid;
-                        let block_len = end_idx - start_idx;
-                        let val = if block_len > 0 {
-                            let mut sum = 0u64;
-                            for &pval in &pooled_values[start_idx..end_idx] {
-                                sum += pval as u64;
-                            }
-                            ((sum + (block_len as u64 / 2)) / block_len as u64) as u16
-                        } else {
-                            pooled_values[start_idx.min(n_pooled - 1)]
-                        };
-                        unsafe {
-                            pmm_ptr.write(idx, val);
-                        }
-                    });
+                    for (idx, val) in updates {
+                        pmm_slice[idx] = val;
+                    }
                 }
 
                 // Return data back to Tokio domain
