@@ -28,6 +28,12 @@ export function degreesToCardinal(deg) {
     return cardinals[index];
 }
 
+function setChartHeaderTitle(iconClass, text) {
+    const icon = document.createElement('i');
+    icon.className = `fa-solid ${iconClass} chart-header-icon`;
+    DOM.chartHeaderTitle.replaceChildren(icon, document.createTextNode(text));
+}
+
 // Renders the interactive timeseries chart using Chart.js
 export async function showTimeseriesChart(lat, lon) {
     if (!state.metadata) return;
@@ -68,7 +74,7 @@ export async function showTimeseriesChart(lat, lon) {
             
             DOM.statBox1Label.textContent = "Max Temp";
             DOM.statBox2Label.textContent = "Min Temp";
-            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-temperature-half chart-header-icon"></i> Temperature Forecast Trend';
+            setChartHeaderTitle('fa-temperature-half', ' Temperature Forecast Trend');
         } else if (state.currentLayerMode === 'solar') {
             const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
             DOM.chartStatPeak.textContent = `${Math.round(peakVal)} W/m²`;
@@ -76,7 +82,7 @@ export async function showTimeseriesChart(lat, lon) {
             
             DOM.statBox1Label.textContent = "Peak Radiation";
             DOM.statBox2Label.textContent = "Avg Radiation";
-            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-sun chart-header-icon"></i> Solar Forecast Trend';
+            setChartHeaderTitle('fa-sun', ' Solar Forecast Trend');
         } else if (state.currentLayerMode === 'wind') {
             const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(1)} m/s`;
@@ -84,7 +90,7 @@ export async function showTimeseriesChart(lat, lon) {
             
             DOM.statBox1Label.textContent = "Max Wind";
             DOM.statBox2Label.textContent = "Avg Wind";
-            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-wind chart-header-icon"></i> Wind Speed Forecast Trend';
+            setChartHeaderTitle('fa-wind', ' Wind Speed Forecast Trend');
         } else if (state.currentEns === 'prob') {
             DOM.chartStatPeak.textContent = `${Math.round(peakVal)}%`;
             const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
@@ -92,7 +98,7 @@ export async function showTimeseriesChart(lat, lon) {
             
             DOM.statBox1Label.textContent = "Peak Probability";
             DOM.statBox2Label.textContent = "Avg Probability";
-            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend';
+            setChartHeaderTitle('fa-chart-line', ' Rainfall Forecast Trend');
         } else if (state.currentEns === 'spread') {
             const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(2)} mm/h`;
@@ -100,7 +106,7 @@ export async function showTimeseriesChart(lat, lon) {
             
             DOM.statBox1Label.textContent = "Max Uncertainty";
             DOM.statBox2Label.textContent = "Avg Uncertainty";
-            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Forecast Uncertainty Trend';
+            setChartHeaderTitle('fa-chart-line', ' Forecast Uncertainty Trend');
         } else {
             // total_mm = sum(rates) / 12 (5 mins intervals)
             totalVal = chartValues.reduce((a, b) => a + b, 0) / 12.0;
@@ -109,7 +115,7 @@ export async function showTimeseriesChart(lat, lon) {
             
             DOM.statBox1Label.textContent = "Peak Intensity";
             DOM.statBox2Label.textContent = "Total Accumulation";
-            DOM.chartHeaderTitle.innerHTML = '<i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend';
+            setChartHeaderTitle('fa-chart-line', ' Rainfall Forecast Trend');
         }
         
         const labels = data.times.map(secs => {

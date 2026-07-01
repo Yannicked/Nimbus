@@ -30,4 +30,8 @@ pub struct AppState {
 
     // Rain Forecast (Harmonie)
     pub rain_forecast: RwLock<Option<RainForecast>>,
+
+    /// Cache for construction of timeseries.
+    /// Key: (ens, ix, iy), value: raw timeseries values for the radar steps
+    pub timeseries_cache: DashMap<(String, i32, i32), Arc<Vec<f64>>>,
 }

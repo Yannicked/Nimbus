@@ -942,6 +942,30 @@ mod tests {
 
     #[test]
     fn test_parse_forecast_hour_from_name() {
+        // Happy paths (2 prefixes + date + hour)
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_00100_GB"),
+            Some(1)
+        );
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_04800_GB"),
+            Some(48)
+        );
+
+        // Edge cases
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_ABC00_GB"),
+            None
+        );
+        assert_eq!(parse_forecast_hour_from_name("HA43_N25_202411200600"), None);
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_01_GB"),
+            None
+        );
+        assert_eq!(parse_forecast_hour_from_name(""), None);
+        assert_eq!(parse_forecast_hour_from_name("short_name"), None);
+
+        // Additional prefix/suffix formats
         assert_eq!(
             parse_forecast_hour_from_name("prefix_v1_202310271200_003_suffix.grib"),
             Some(3)

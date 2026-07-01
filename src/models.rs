@@ -25,11 +25,27 @@ pub struct Metadata {
     pub radar_times_len: usize,
 }
 
+pub trait ForecastStep {
+    fn forecast_hour(&self) -> i32;
+}
+
 pub struct TempStep {
     pub forecast_hour: i32,
     pub width: usize,
     pub height: usize,
     pub values: Arc<Vec<u16>>,
+}
+
+impl ForecastStep for TempStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &TempStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
 }
 
 pub struct TempForecast {
@@ -121,6 +137,18 @@ pub struct WindStep {
     pub height: usize,
     pub u_values: Arc<Vec<u16>>,
     pub v_values: Arc<Vec<u16>>,
+}
+
+impl ForecastStep for WindStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &WindStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
 }
 
 pub struct WindForecast {
@@ -443,6 +471,18 @@ pub struct SolarStep {
     pub values: Arc<Vec<u16>>,
 }
 
+impl ForecastStep for SolarStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &SolarStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SolarForecast {
     pub reference_time: i64,
@@ -532,6 +572,18 @@ pub struct RainStep {
     pub width: usize,
     pub height: usize,
     pub values: Arc<Vec<u16>>,
+}
+
+impl ForecastStep for RainStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &RainStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -642,4 +694,71 @@ pub struct SolarValueQuery {
 pub struct SolarTimeseriesQuery {
     pub lat: f64,
     pub lon: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::{NODATA, RAIN_THRESHOLD};
+
+    #[test]
+    fn test_reduce_ensemble_empty() {
+        let mut vals: [u16; 0] = [];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals), NODATA);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_first_nodata() {
+        let mut vals = [NODATA, 10, 20];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals), NODATA);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_maximum() {
+        let mut vals = [5, 15, 10, NODATA];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals), 15);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_probability() {
+        let mut vals = [
+            RAIN_THRESHOLD - 5,
+            RAIN_THRESHOLD,
+            RAIN_THRESHOLD + 5,
+            RAIN_THRESHOLD + 10,
+            0,
+        ]; // 3 out of 5 are >= RAIN_THRESHOLD
+        assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals), 60);
+
+        let mut vals2 = [RAIN_THRESHOLD - 1; 5];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals2), 0);
+
+        let mut vals3 = [RAIN_THRESHOLD; 5];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals3), 100);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_median() {
+        let mut vals = [30, 10, 20];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals), 20);
+
+        let mut vals2 = [40, 10, 30, 20]; // sorted: 10, 20, 30, 40. len/2 = 2. index 2 is 30.
+        assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals2), 30);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_spread() {
+        let mut vals = [10, 20, 30]; // mean = 20. var = ((10-20)^2 + (20-20)^2 + (30-20)^2) / 3 = (100 + 0 + 100) / 3 = 66.666. sqrt = 8.16. round = 8.
+        assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut vals), 8);
+
+        let mut vals2 = [10, 10, 10];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut vals2), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "PMM cannot be computed on a single grid cell")]
+    fn test_reduce_ensemble_pmm_panics() {
+        let mut vals = [10, 20, 30];
+        reduce_ensemble(&EnsembleStat::Pmm, &mut vals);
+    }
 }
