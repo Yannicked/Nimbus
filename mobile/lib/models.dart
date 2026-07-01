@@ -1,3 +1,7 @@
+double? parseDouble(dynamic value) {
+  return (value as num?)?.toDouble();
+}
+
 class ForecastMetadata {
   final String referenceTimeStr;
   final List<int> times;
@@ -29,7 +33,7 @@ class ValueQueryResult {
 
   factory ValueQueryResult.fromJson(Map<String, dynamic> json) {
     return ValueQueryResult(
-      value: json['value'] != null ? (json['value'] as num).toDouble() : null,
+      value: parseDouble(json['value']),
       status: json['status'] ?? '',
     );
   }
@@ -44,10 +48,8 @@ class WindValueQueryResult {
 
   factory WindValueQueryResult.fromJson(Map<String, dynamic> json) {
     return WindValueQueryResult(
-      speed: json['speed'] != null ? (json['speed'] as num).toDouble() : null,
-      direction: json['direction'] != null
-          ? (json['direction'] as num).toDouble()
-          : null,
+      speed: parseDouble(json['speed']),
+      direction: parseDouble(json['direction']),
       status: json['status'] ?? '',
     );
   }
@@ -65,7 +67,7 @@ class TimeseriesResult {
     return TimeseriesResult(
       times: List<int>.from(json['times'] ?? []),
       values: List<double>.from(
-          (json['values'] ?? []).map((v) => (v as num).toDouble())),
+          (json['values'] ?? []).map((v) => parseDouble(v)!)),
       status: json['status'] ?? '',
     );
   }
@@ -88,9 +90,9 @@ class WindTimeseriesResult {
     return WindTimeseriesResult(
       times: List<int>.from(json['times'] ?? []),
       speeds: List<double>.from(
-          (json['speeds'] ?? []).map((v) => (v as num).toDouble())),
+          (json['speeds'] ?? []).map((v) => parseDouble(v)!)),
       directions: List<double>.from(
-          (json['directions'] ?? []).map((v) => (v as num).toDouble())),
+          (json['directions'] ?? []).map((v) => parseDouble(v)!)),
       status: json['status'] ?? '',
     );
   }
