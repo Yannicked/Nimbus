@@ -36,7 +36,7 @@ export function formatAbsoluteTime(refTimeStr, secondsOffset) {
 // Render ticks on the timeline slider
 export function drawSliderTicks() {
     if (!state.metadata) return;
-    DOM.sliderTicks.innerHTML = '';
+    DOM.sliderTicks.replaceChildren();
     
     const stepCount = parseInt(DOM.timeSlider.max) + 1;
     for (let i = 0; i < stepCount; i++) {
@@ -100,20 +100,26 @@ export function updateLegend() {
     
     DOM.legendTitle.textContent = visConfig.title;
     
-    DOM.legendBar.innerHTML = visConfig.colors
-        .map(color => `<span style="background: ${color};"></span>`)
-        .join('');
+    DOM.legendBar.replaceChildren(...visConfig.colors.map(color => {
+        const span = document.createElement('span');
+        span.style.background = color;
+        return span;
+    }));
         
-    DOM.legendLabels.innerHTML = visConfig.labels
-        .map(label => `<span>${label}</span>`)
-        .join('');
+    DOM.legendLabels.replaceChildren(...visConfig.labels.map(label => {
+        const span = document.createElement('span');
+        span.textContent = label;
+        return span;
+    }));
 }
 
 // Start playback animation
 export function startPlayer() {
     if (state.isPlaying) return;
     state.isPlaying = true;
-    DOM.btnPlay.innerHTML = '<i class="fa-solid fa-pause"></i>';
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-pause';
+    DOM.btnPlay.replaceChildren(icon);
     DOM.btnPlay.classList.add('btn-active');
     
     const fps = parseFloat(DOM.speedSlider.value) || 2;
@@ -126,7 +132,9 @@ export function startPlayer() {
 export function stopPlayer() {
     if (!state.isPlaying) return;
     state.isPlaying = false;
-    DOM.btnPlay.innerHTML = '<i class="fa-solid fa-play"></i>';
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-play';
+    DOM.btnPlay.replaceChildren(icon);
     DOM.btnPlay.classList.remove('btn-active');
     
     if (state.playInterval) {
