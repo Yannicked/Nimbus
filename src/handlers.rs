@@ -557,9 +557,7 @@ pub async fn get_timeseries(
     } else if q.ens == "pmm" {
         enum TaskResult {
             Cached(Arc<Vec<u16>>),
-            Spawned(
-                tokio::task::JoinHandle<Result<Arc<Vec<u16>>, (StatusCode, String)>>,
-            ),
+            Spawned(tokio::task::JoinHandle<Result<Arc<Vec<u16>>, (StatusCode, String)>>),
         }
 
         let mut tasks = Vec::with_capacity(meta.times.len());
@@ -594,14 +592,12 @@ pub async fn get_timeseries(
         for task in tasks {
             let raw_slice = match task {
                 TaskResult::Cached(val) => val,
-                TaskResult::Spawned(handle) => {
-                    handle.await.map_err(|e| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Task join error: {}", e),
-                        )
-                    })??
-                }
+                TaskResult::Spawned(handle) => handle.await.map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Task join error: {}", e),
+                    )
+                })??,
             };
             let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
             values.push(raw_to_value(val_raw));
