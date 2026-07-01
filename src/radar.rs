@@ -929,3 +929,22 @@ pub fn raw_to_value(raw: u16) -> f64 {
         raw as f64 * SCALE_FACTOR
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_raw_to_value() {
+        // NODATA should be mapped to 0.0
+        assert_eq!(raw_to_value(NODATA), 0.0);
+
+        // 0 should be 0.0
+        assert_eq!(raw_to_value(0), 0.0);
+
+        // Typical values
+        assert!((raw_to_value(1) - 0.01).abs() < f64::EPSILON);
+        assert!((raw_to_value(100) - 1.0).abs() < f64::EPSILON);
+        assert!((raw_to_value(1234) - 12.34).abs() < f64::EPSILON);
+    }
+}
