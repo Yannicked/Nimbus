@@ -25,11 +25,27 @@ pub struct Metadata {
     pub radar_times_len: usize,
 }
 
+pub trait ForecastStep {
+    fn forecast_hour(&self) -> i32;
+}
+
 pub struct TempStep {
     pub forecast_hour: i32,
     pub width: usize,
     pub height: usize,
     pub values: Arc<Vec<u16>>,
+}
+
+impl ForecastStep for TempStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &TempStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
 }
 
 pub struct TempForecast {
@@ -121,6 +137,18 @@ pub struct WindStep {
     pub height: usize,
     pub u_values: Arc<Vec<u16>>,
     pub v_values: Arc<Vec<u16>>,
+}
+
+impl ForecastStep for WindStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &WindStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
 }
 
 pub struct WindForecast {
@@ -443,6 +471,18 @@ pub struct SolarStep {
     pub values: Arc<Vec<u16>>,
 }
 
+impl ForecastStep for SolarStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &SolarStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SolarForecast {
     pub reference_time: i64,
@@ -532,6 +572,18 @@ pub struct RainStep {
     pub width: usize,
     pub height: usize,
     pub values: Arc<Vec<u16>>,
+}
+
+impl ForecastStep for RainStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
+}
+
+impl ForecastStep for &RainStep {
+    fn forecast_hour(&self) -> i32 {
+        self.forecast_hour
+    }
 }
 
 #[derive(Clone, Debug)]
