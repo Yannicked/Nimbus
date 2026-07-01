@@ -359,10 +359,26 @@ pub async fn get_value(
                 let mut count = 0;
                 let r_sq = (NEP_RADIUS * NEP_RADIUS) as i32;
 
-                for ens_idx in 0..meta_clone.ensembles.len() {
-                    let center_val: u16 = var
-                        .get_value((ens_idx, time_idx, iy as usize, ix as usize))
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                let num_ensembles = meta_clone.ensembles.len();
+                let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
+                let y_max = std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
+                let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
+                let x_max = std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
+                let height_box = y_max - y_min + 1;
+                let width_box = x_max - x_min + 1;
+
+                let raw_grid = var
+                    .get_values::<u16, _>((
+                        &[0, time_idx, y_min, x_min][..],
+                        &[num_ensembles, 1, height_box, width_box][..],
+                    ))
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+                for ens_idx in 0..num_ensembles {
+                    let center_dy = (iy as usize) - y_min;
+                    let center_dx = (ix as usize) - x_min;
+                    let center_val = raw_grid
+                        [ens_idx * height_box * width_box + center_dy * width_box + center_dx];
 
                     if center_val == NODATA {
                         continue;
@@ -370,23 +386,6 @@ pub async fn get_value(
                     count += 1;
 
                     let mut member_has_rain = false;
-                    let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
-                    let y_max =
-                        std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
-                    let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
-                    let x_max =
-                        std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
-
-                    let height_box = y_max - y_min + 1;
-                    let width_box = x_max - x_min + 1;
-
-                    let subgrid = var
-                        .get_values::<u16, _>((
-                            &[ens_idx, time_idx, y_min, x_min][..],
-                            &[1, 1, height_box, width_box][..],
-                        ))
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
                     for dy_idx in 0..height_box {
                         let ny = y_min + dy_idx;
                         let dy = ny as i32 - iy;
@@ -394,7 +393,8 @@ pub async fn get_value(
                             let nx = x_min + dx_idx;
                             let dx = nx as i32 - ix;
                             if dx * dx + dy * dy <= r_sq {
-                                let val = subgrid[dy_idx * width_box + dx_idx];
+                                let val = raw_grid
+                                    [ens_idx * height_box * width_box + dy_idx * width_box + dx_idx];
                                 if val != NODATA && val >= RAIN_THRESHOLD {
                                     member_has_rain = true;
                                     break;
@@ -420,13 +420,12 @@ pub async fn get_value(
                 return Ok(("probability".to_string(), nep));
             }
 
-            let mut vals = Vec::with_capacity(meta_clone.ensembles.len());
-            for (ens_idx, _) in meta_clone.ensembles.iter().enumerate() {
-                let val_raw: u16 = var
-                    .get_value((ens_idx, time_idx, iy as usize, ix as usize))
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                vals.push(val_raw);
-            }
+            let mut vals = var
+                .get_values::<u16, _>((
+                    &[0, time_idx, iy as usize, ix as usize][..],
+                    &[meta_clone.ensembles.len(), 1, 1, 1][..],
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             let reduced = reduce_ensemble(&stat, &mut vals);
 
