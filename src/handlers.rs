@@ -393,8 +393,9 @@ pub async fn get_value(
                             let nx = x_min + dx_idx;
                             let dx = nx as i32 - ix;
                             if dx * dx + dy * dy <= r_sq {
-                                let val = raw_grid
-                                    [ens_idx * height_box * width_box + dy_idx * width_box + dx_idx];
+                                let val = raw_grid[ens_idx * height_box * width_box
+                                    + dy_idx * width_box
+                                    + dx_idx];
                                 if val != NODATA && val >= RAIN_THRESHOLD {
                                     member_has_rain = true;
                                     break;
