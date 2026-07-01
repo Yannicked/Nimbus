@@ -2,7 +2,7 @@
 //! (EPSG:3857), WGS84 geographic coordinates, and the KNMI Polar
 //! Stereographic grid used by the precipitation dataset.
 
-use crate::constants::{GRIB_DX, GRIB_DY, GRIB_X0, GRIB_Y0};
+use crate::constants::{GRIB_DLAT, GRIB_DLON, GRIB_LAT_0, GRIB_LON_0};
 use std::f64::consts::PI;
 
 const WGS84_A: f64 = 6378137.0; // semi-major axis
@@ -57,7 +57,42 @@ pub fn lonlat_to_polar_stereographic(lon: f64, lat: f64) -> (f64, f64) {
 
 /// Convert WGS84 Lon/Lat (degrees) to GRIB1 grid fractional indices
 pub fn lonlat_to_grib_indices(lon: f64, lat: f64) -> (f64, f64) {
-    let fx = (lon - GRIB_X0) / GRIB_DX;
-    let fy = (lat - GRIB_Y0) / GRIB_DY;
+    let fx = (lon - GRIB_LON_0) / GRIB_DLON;
+    let fy = (lat - GRIB_LAT_0) / GRIB_DLAT;
     (fx, fy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mercator_to_lonlat_origin() {
+        let (lon, lat) = mercator_to_lonlat(0.0, 0.0);
+        assert!((lon - 0.0).abs() < 1e-9);
+        assert!((lat - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_mercator_to_lonlat_debilt() {
+        // De Bilt, Netherlands: approx (5.1768, 52.1112)
+        // Mercator: (576281.8, 6820252.2)
+        let (lon, lat) = mercator_to_lonlat(576281.8, 6820252.2);
+        assert!((lon - 5.1768).abs() < 1e-4);
+        assert!((lat - 52.1112).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_mercator_to_lonlat_bounds() {
+        // North-East corner of the valid web mercator map
+        // (20037508.34, 20037508.34) -> (180.0, 85.0511)
+        let (lon, lat) = mercator_to_lonlat(20037508.342789244, 20037508.342789244);
+        assert!((lon - 180.0).abs() < 1e-7);
+        assert!((lat - 85.05112878).abs() < 1e-7);
+
+        // South-West corner
+        let (lon, lat) = mercator_to_lonlat(-20037508.342789244, -20037508.342789244);
+        assert!((lon + 180.0).abs() < 1e-7);
+        assert!((lat + 85.05112878).abs() < 1e-7);
+    }
 }

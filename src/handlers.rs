@@ -6,17 +6,18 @@ use axum::{
 use std::sync::Arc;
 
 use crate::constants::{
-    GRIB_H, GRIB_W, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0,
-    MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR,
-    RAIN_THRESHOLD,
+    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0,
+    KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA,
+    PRECIP_VAR, RAIN_THRESHOLD,
 };
 use crate::harmonie::parse_reference_time;
 use crate::interpolation::interpolate_bilinear;
 use crate::models::{
-    reduce_ensemble, EnsembleStat, SolarMetadata, SolarTimeseriesQuery, SolarTimeseriesResponse,
-    SolarValueQuery, TempMetadata, TempTimeseriesQuery, TempTimeseriesResponse, TempValueQuery,
-    TimeseriesQuery, TimeseriesResponse, ValueQuery, ValueResponse, WindMetadata,
-    WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery, WindValueResponse,
+    reduce_ensemble, EnsembleStat, ForecastStep, SolarMetadata, SolarTimeseriesQuery,
+    SolarTimeseriesResponse, SolarValueQuery, TempMetadata, TempTimeseriesQuery,
+    TempTimeseriesResponse, TempValueQuery, TimeseriesQuery, TimeseriesResponse, ValueQuery,
+    ValueResponse, WindMetadata, WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery,
+    WindValueResponse,
 };
 use crate::projection::{self, lonlat_to_grib_indices};
 use crate::radar::{compute_raw_slice, raw_to_value};
@@ -68,6 +69,56 @@ fn with_grib_step<S, F, R>(
 /// Serves an empty favicon response to prevent 404 console errors.
 pub async fn favicon() -> impl IntoResponse {
     StatusCode::NO_CONTENT
+}
+
+fn interpolate_temp(fx: f64, fy: f64, values: &[u16]) -> Option<f64> {
+    let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, values);
+    if val_raw != NODATA {
+        Some(val_raw as f64 / 10.0 - 273.15)
+    } else {
+        None
+    }
+}
+
+fn extract_timeseries<S, T, F>(steps: &[S], mut map_fn: F) -> (Vec<i64>, Vec<T>)
+where
+    S: ForecastStep,
+    F: FnMut(&S) -> Option<T>,
+{
+    let mut times = Vec::with_capacity(steps.len());
+    let mut values = Vec::with_capacity(steps.len());
+
+    for step in steps {
+        if let Some(val) = map_fn(step) {
+            let step_offset = (step.forecast_hour() as i64) * 3600;
+            times.push(step_offset);
+            values.push(val);
+        }
+    }
+
+    (times, values)
+}
+
+fn interpolate_solar(fx: f64, fy: f64, values: &[u16]) -> Option<f64> {
+    let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, values);
+    if val_raw != NODATA {
+        Some(val_raw as f64)
+    } else {
+        None
+    }
+}
+
+fn interpolate_wind(fx: f64, fy: f64, u_values: &[u16], v_values: &[u16]) -> Option<(f64, f64)> {
+    let u_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, u_values);
+    let v_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, v_values);
+
+    if u_raw != NODATA && v_raw != NODATA {
+        let u = u_raw as f64 / 100.0 - 100.0;
+        let v = v_raw as f64 / 100.0 - 100.0;
+        Some((u, v))
+    } else {
+        None
+    }
 }
 
 /// Returns the current dataset metadata as JSON.
@@ -293,7 +344,7 @@ pub async fn get_value(
             |f| &f.steps,
             |s| s.forecast_hour,
             |s, fx, fy| {
-                let val_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &s.values);
+                let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, &s.values);
                 if val_raw == NODATA {
                     None
                 } else {
@@ -395,10 +446,26 @@ pub async fn get_value(
                 let mut count = 0;
                 let r_sq = (NEP_RADIUS * NEP_RADIUS) as i32;
 
-                for ens_idx in 0..meta_clone.ensembles.len() {
-                    let center_val: u16 = var
-                        .get_value((ens_idx, time_idx, iy as usize, ix as usize))
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                let num_ensembles = meta_clone.ensembles.len();
+                let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
+                let y_max = std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
+                let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
+                let x_max = std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
+                let height_box = y_max - y_min + 1;
+                let width_box = x_max - x_min + 1;
+
+                let raw_grid = var
+                    .get_values::<u16, _>((
+                        &[0, time_idx, y_min, x_min][..],
+                        &[num_ensembles, 1, height_box, width_box][..],
+                    ))
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+                for ens_idx in 0..num_ensembles {
+                    let center_dy = (iy as usize) - y_min;
+                    let center_dx = (ix as usize) - x_min;
+                    let center_val = raw_grid
+                        [ens_idx * height_box * width_box + center_dy * width_box + center_dx];
 
                     if center_val == NODATA {
                         continue;
@@ -406,23 +473,6 @@ pub async fn get_value(
                     count += 1;
 
                     let mut member_has_rain = false;
-                    let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
-                    let y_max =
-                        std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
-                    let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
-                    let x_max =
-                        std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
-
-                    let height_box = y_max - y_min + 1;
-                    let width_box = x_max - x_min + 1;
-
-                    let subgrid = var
-                        .get_values::<u16, _>((
-                            &[ens_idx, time_idx, y_min, x_min][..],
-                            &[1, 1, height_box, width_box][..],
-                        ))
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
                     for dy_idx in 0..height_box {
                         let ny = y_min + dy_idx;
                         let dy = ny as i32 - iy;
@@ -430,7 +480,9 @@ pub async fn get_value(
                             let nx = x_min + dx_idx;
                             let dx = nx as i32 - ix;
                             if dx * dx + dy * dy <= r_sq {
-                                let val = subgrid[dy_idx * width_box + dx_idx];
+                                let val = raw_grid[ens_idx * height_box * width_box
+                                    + dy_idx * width_box
+                                    + dx_idx];
                                 if val != NODATA && val >= RAIN_THRESHOLD {
                                     member_has_rain = true;
                                     break;
@@ -456,13 +508,12 @@ pub async fn get_value(
                 return Ok(("probability".to_string(), nep));
             }
 
-            let mut vals = Vec::with_capacity(meta_clone.ensembles.len());
-            for (ens_idx, _) in meta_clone.ensembles.iter().enumerate() {
-                let val_raw: u16 = var
-                    .get_value((ens_idx, time_idx, iy as usize, ix as usize))
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                vals.push(val_raw);
-            }
+            let mut vals = var
+                .get_values::<u16, _>((
+                    &[0, time_idx, iy as usize, ix as usize][..],
+                    &[meta_clone.ensembles.len(), 1, 1, 1][..],
+                ))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             let reduced = reduce_ensemble(&stat, &mut vals);
 
@@ -580,28 +631,42 @@ pub async fn get_timeseries(
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        for &time_val in &meta.times {
-            if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
-                let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
-                if q.ens == "prob" {
-                    values.push(val_raw as f64);
-                } else {
-                    values.push(raw_to_value(val_raw));
+        if let Some(cached_ts) = state.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
+            values.extend_from_slice(&cached_ts);
+        } else {
+            let mut ts_values = Vec::with_capacity(meta.times.len());
+            for &time_val in &meta.times {
+                if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+                    let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
+                    if q.ens == "prob" {
+                        ts_values.push(val_raw as f64);
+                    } else {
+                        ts_values.push(raw_to_value(val_raw));
+                    }
                 }
             }
+            state
+                .timeseries_cache
+                .insert((q.ens.clone(), ix, iy), Arc::new(ts_values.clone()));
+            values.extend(ts_values);
         }
     } else if q.ens == "pmm" {
-        let mut handles = Vec::with_capacity(meta.times.len());
+        #[allow(clippy::type_complexity)]
+        enum TaskResult {
+            Cached(Arc<Vec<u16>>),
+            Spawned(tokio::task::JoinHandle<Result<Arc<Vec<u16>>, (StatusCode, String)>>),
+        }
+
+        let mut tasks = Vec::with_capacity(meta.times.len());
         for &time_val in &meta.times {
             if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
-                let val = slice.value().clone();
-                handles.push(tokio::spawn(async move { Ok(val) }));
+                tasks.push(TaskResult::Cached(slice.value().clone()));
             } else {
                 let file_path_clone = file_path.clone();
                 let meta_clone = meta.clone();
                 let ens_clone = q.ens.clone();
                 let state_clone = state.clone();
-                handles.push(tokio::spawn(async move {
+                tasks.push(TaskResult::Spawned(tokio::spawn(async move {
                     let ens_for_block = ens_clone.clone();
                     let computed = tokio::task::spawn_blocking(move || {
                         compute_raw_slice(&file_path_clone, &meta_clone, &ens_for_block, time_val)
@@ -618,16 +683,19 @@ pub async fn get_timeseries(
                         .grid_cache
                         .insert((ens_clone, time_val), arc.clone());
                     Ok(arc)
-                }));
+                })));
             }
         }
-        for handle in handles {
-            let raw_slice = handle.await.map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Task join error: {}", e),
-                )
-            })??;
+        for task in tasks {
+            let raw_slice = match task {
+                TaskResult::Cached(val) => val,
+                TaskResult::Spawned(handle) => handle.await.map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Task join error: {}", e),
+                    )
+                })??,
+            };
             let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
             values.push(raw_to_value(val_raw));
         }
@@ -798,7 +866,8 @@ pub async fn get_timeseries(
                         (step_offset - harmonie_time).abs()
                     });
                     if let Some(s) = step {
-                        let val_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &s.values);
+                        let val_raw =
+                            interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, &s.values);
                         if val_raw != NODATA {
                             values.push(raw_to_value(val_raw));
                         } else {
@@ -959,20 +1028,7 @@ pub async fn get_wind_value(
         })
         .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
 
-    let u_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &step.u_values);
-    let v_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &step.v_values);
-
-    if u_raw == NODATA || v_raw == NODATA {
-        Ok(axum::Json(WindValueResponse {
-            status: "out_of_bounds".to_string(),
-            u: None,
-            v: None,
-            speed: None,
-            direction: None,
-        }))
-    } else {
-        let u = u_raw as f64 / 100.0 - 100.0;
-        let v = v_raw as f64 / 100.0 - 100.0;
+    if let Some((u, v)) = interpolate_wind(fx, fy, &step.u_values, &step.v_values) {
         let speed = (u * u + v * v).sqrt();
         let mut dir_rad = u.atan2(v) + std::f64::consts::PI;
         if dir_rad < 0.0 {
@@ -986,6 +1042,14 @@ pub async fn get_wind_value(
             v: Some(v),
             speed: Some(speed),
             direction: Some(direction),
+        }))
+    } else {
+        Ok(axum::Json(WindValueResponse {
+            status: "out_of_bounds".to_string(),
+            u: None,
+            v: None,
+            speed: None,
+            direction: None,
         }))
     }
 }
@@ -1002,34 +1066,30 @@ pub async fn get_wind_timeseries(
 
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
-    let mut times = Vec::new();
-    let mut speeds = Vec::new();
-    let mut directions = Vec::new();
-
     let req_height = q.height.unwrap_or(10);
 
-    for step in &forecast.steps {
-        if step.height_level != req_height {
-            continue;
-        }
-        let u_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &step.u_values);
-        let v_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &step.v_values);
+    let steps: Vec<_> = forecast
+        .steps
+        .iter()
+        .filter(|s| s.height_level == req_height)
+        .collect();
 
-        if u_raw != NODATA && v_raw != NODATA {
-            let u = u_raw as f64 / 100.0 - 100.0;
-            let v = v_raw as f64 / 100.0 - 100.0;
-            let speed = (u * u + v * v).sqrt();
-            let mut dir_rad = u.atan2(v) + std::f64::consts::PI;
-            if dir_rad < 0.0 {
-                dir_rad += 2.0 * std::f64::consts::PI;
-            }
-            let direction = dir_rad.to_degrees();
+    let (times, values) = extract_timeseries(steps.as_slice(), |step| {
+        interpolate_wind(fx, fy, &step.u_values, &step.v_values)
+    });
 
-            let step_offset = (step.forecast_hour as i64) * 3600;
-            times.push(step_offset);
-            speeds.push(speed);
-            directions.push(direction);
+    let mut speeds = Vec::with_capacity(values.len());
+    let mut directions = Vec::with_capacity(values.len());
+
+    for (u, v) in values {
+        let speed = (u * u + v * v).sqrt();
+        let mut dir_rad = u.atan2(v) + std::f64::consts::PI;
+        if dir_rad < 0.0 {
+            dir_rad += 2.0 * std::f64::consts::PI;
         }
+        let direction = dir_rad.to_degrees();
+        speeds.push(speed);
+        directions.push(direction);
     }
 
     Ok(axum::Json(WindTimeseriesResponse {
@@ -1150,20 +1210,10 @@ pub async fn get_temp_value(
         q.lat,
         |f| &f.steps,
         |s| s.forecast_hour,
-        |s, fx, fy| {
-            let val_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &s.values);
-            if val_raw == NODATA {
-                None
-            } else {
-                Some(val_raw)
-            }
-        },
-        |val_raw| {
-            let temp_c = val_raw as f64 / 10.0 - 273.15;
-            ValueResponse {
-                status: "ok".to_string(),
-                value: Some(temp_c),
-            }
+        |s, fx, fy| interpolate_temp(fx, fy, &s.values),
+        |temp_c| ValueResponse {
+            status: "ok".to_string(),
+            value: Some(temp_c),
         },
     )
 }
@@ -1180,18 +1230,9 @@ pub async fn get_temp_timeseries(
 
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
-    let mut times = Vec::new();
-    let mut values = Vec::new();
-
-    for step in &forecast.steps {
-        let val_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &step.values);
-        if val_raw != NODATA {
-            let temp_c = val_raw as f64 / 10.0 - 273.15;
-            let step_offset = (step.forecast_hour as i64) * 3600;
-            times.push(step_offset);
-            values.push(temp_c);
-        }
-    }
+    let (times, values) = extract_timeseries(&forecast.steps, |step| {
+        interpolate_temp(fx, fy, &step.values)
+    });
 
     Ok(axum::Json(TempTimeseriesResponse {
         status: "ok".to_string(),
@@ -1307,20 +1348,10 @@ pub async fn get_solar_value(
         q.lat,
         |f| &f.steps,
         |s| s.forecast_hour,
-        |s, fx, fy| {
-            let val_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &s.values);
-            if val_raw == NODATA {
-                None
-            } else {
-                Some(val_raw)
-            }
-        },
-        |val_raw| {
-            let solar_w = val_raw as f64;
-            ValueResponse {
-                status: "ok".to_string(),
-                value: Some(solar_w),
-            }
+        |s, fx, fy| interpolate_solar(fx, fy, &s.values),
+        |solar_w| ValueResponse {
+            status: "ok".to_string(),
+            value: Some(solar_w),
         },
     )
 }
@@ -1337,18 +1368,9 @@ pub async fn get_solar_timeseries(
 
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
-    let mut times = Vec::new();
-    let mut values = Vec::new();
-
-    for step in &forecast.steps {
-        let val_raw = interpolate_bilinear(fx, fy, GRIB_W, GRIB_H, &step.values);
-        if val_raw != NODATA {
-            let solar_w = val_raw as f64;
-            let step_offset = (step.forecast_hour as i64) * 3600;
-            times.push(step_offset);
-            values.push(solar_w);
-        }
-    }
+    let (times, values) = extract_timeseries(&forecast.steps, |step| {
+        interpolate_solar(fx, fy, &step.values)
+    });
 
     Ok(axum::Json(SolarTimeseriesResponse {
         status: "ok".to_string(),

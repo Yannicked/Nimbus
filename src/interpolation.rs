@@ -1,6 +1,6 @@
 use crate::constants::{
-    GRIB_H, GRIB_W, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0,
-    MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NODATA,
+    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0,
+    KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NODATA,
 };
 use crate::models::LutEntry;
 use crate::projection::{self, lonlat_to_grib_indices};
@@ -90,8 +90,8 @@ pub fn init_temp_projection_lut() -> Vec<LutEntry> {
 
             let coords = [(ix1, iy1), (ix2, iy1), (ix1, iy2), (ix2, iy2)];
 
-            let grid_w = GRIB_W as i32;
-            let grid_h = GRIB_H as i32;
+            let grid_w = GRIB_WIDTH as i32;
+            let grid_h = GRIB_HEIGHT as i32;
 
             for (idx, &(x, y)) in coords.iter().enumerate() {
                 if x >= 0 && x < grid_w && y >= 0 && y < grid_h {

@@ -1,4 +1,4 @@
-use crate::constants::{GRIB_H, GRIB_W, NODATA};
+use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, NODATA};
 use crate::models::{
     FileUrlResponse, RainForecast, RainStep, SolarForecast, SolarStep, TempForecast, TempStep,
     WindForecast, WindStep,
@@ -196,8 +196,8 @@ pub fn process_harmonie_tar_combined(
         if let Some(t_vals) = temp_vals {
             temp_steps.push(TempStep {
                 forecast_hour,
-                width: GRIB_W,
-                height: GRIB_H,
+                width: GRIB_WIDTH,
+                height: GRIB_HEIGHT,
                 values: Arc::new(t_vals),
             });
         }
@@ -218,8 +218,8 @@ pub fn process_harmonie_tar_combined(
                 wind_steps.push(WindStep {
                     forecast_hour,
                     height_level: lvl,
-                    width: GRIB_W,
-                    height: GRIB_H,
+                    width: GRIB_WIDTH,
+                    height: GRIB_HEIGHT,
                     u_values: Arc::new(u),
                     v_values: Arc::new(v),
                 });
@@ -266,8 +266,8 @@ pub fn process_harmonie_tar_combined(
 
         solar_steps.push(SolarStep {
             forecast_hour: current_step.forecast_hour,
-            width: GRIB_W,
-            height: GRIB_H,
+            width: GRIB_WIDTH,
+            height: GRIB_HEIGHT,
             values: Arc::new(values),
         });
     }
@@ -305,8 +305,8 @@ pub fn process_harmonie_tar_combined(
 
         rain_steps.push(RainStep {
             forecast_hour: current_step.forecast_hour,
-            width: GRIB_W,
-            height: GRIB_H,
+            width: GRIB_WIDTH,
+            height: GRIB_HEIGHT,
             values: Arc::new(values),
         });
     }
@@ -934,4 +934,35 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
         "Rain WebP precalculation tasks spawned for all {} steps.",
         num_steps
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_forecast_hour_from_name() {
+        // Happy paths (2 prefixes + date + hour)
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_00100_GB"),
+            Some(1)
+        );
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_04800_GB"),
+            Some(48)
+        );
+
+        // Edge cases
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_ABC00_GB"),
+            None
+        );
+        assert_eq!(parse_forecast_hour_from_name("HA43_N25_202411200600"), None);
+        assert_eq!(
+            parse_forecast_hour_from_name("HA43_N25_202411200600_01_GB"),
+            None
+        );
+        assert_eq!(parse_forecast_hour_from_name(""), None);
+        assert_eq!(parse_forecast_hour_from_name("short_name"), None);
+    }
 }

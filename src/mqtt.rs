@@ -270,6 +270,7 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                         state_clone.rain_forecast.write().await;
                                                     *rain_write = Some(rain_fc);
                                                     state_clone.data_cache.clear();
+                                                    state_clone.timeseries_cache.clear();
                                                 }
 
                                                 println!("Successfully updated temperature, wind, solar, and rain forecasts and cleared caches.");
