@@ -66,8 +66,8 @@ class TimeseriesResult {
   factory TimeseriesResult.fromJson(Map<String, dynamic> json) {
     return TimeseriesResult(
       times: List<int>.from(json['times'] ?? []),
-      values: List<double>.from(
-          (json['values'] ?? []).map((v) => parseDouble(v)!)),
+      values:
+          List<double>.from((json['values'] ?? []).map((v) => parseDouble(v)!)),
       status: json['status'] ?? '',
     );
   }
@@ -89,8 +89,8 @@ class WindTimeseriesResult {
   factory WindTimeseriesResult.fromJson(Map<String, dynamic> json) {
     return WindTimeseriesResult(
       times: List<int>.from(json['times'] ?? []),
-      speeds: List<double>.from(
-          (json['speeds'] ?? []).map((v) => parseDouble(v)!)),
+      speeds:
+          List<double>.from((json['speeds'] ?? []).map((v) => parseDouble(v)!)),
       directions: List<double>.from(
           (json['directions'] ?? []).map((v) => parseDouble(v)!)),
       status: json['status'] ?? '',
