@@ -178,7 +178,11 @@ async fn main() {
         .route("/api/value/solar", get(get_solar_value))
         .route("/api/timeseries/solar", get(get_solar_timeseries))
         .fallback_service(ServeDir::new("static"))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([axum::http::Method::GET]),
+        )
         .with_state(state);
 
     // 6. Start Server
