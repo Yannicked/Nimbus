@@ -53,3 +53,38 @@ pub fn lonlat_to_polar_stereographic(lon: f64, lat: f64) -> (f64, f64) {
 
     (x, y)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mercator_to_lonlat_origin() {
+        let (lon, lat) = mercator_to_lonlat(0.0, 0.0);
+        assert!((lon - 0.0).abs() < 1e-9);
+        assert!((lat - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_mercator_to_lonlat_debilt() {
+        // De Bilt, Netherlands: approx (5.1768, 52.1112)
+        // Mercator: (576281.8, 6820252.2)
+        let (lon, lat) = mercator_to_lonlat(576281.8, 6820252.2);
+        assert!((lon - 5.1768).abs() < 1e-4);
+        assert!((lat - 52.1112).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_mercator_to_lonlat_bounds() {
+        // North-East corner of the valid web mercator map
+        // (20037508.34, 20037508.34) -> (180.0, 85.0511)
+        let (lon, lat) = mercator_to_lonlat(20037508.342789244, 20037508.342789244);
+        assert!((lon - 180.0).abs() < 1e-7);
+        assert!((lat - 85.05112878).abs() < 1e-7);
+
+        // South-West corner
+        let (lon, lat) = mercator_to_lonlat(-20037508.342789244, -20037508.342789244);
+        assert!((lon + 180.0).abs() < 1e-7);
+        assert!((lat + 85.05112878).abs() < 1e-7);
+    }
+}
