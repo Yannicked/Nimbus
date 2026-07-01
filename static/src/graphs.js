@@ -201,15 +201,45 @@ function updateRainAlertBox() {
         
         statusTitle.textContent = `Rain Alert: In ${startRel}`;
         
-        let desc = `Rain is forecasted to start at <strong>${startAbs}</strong> and continue for about <strong>${durationMins} minutes</strong>. Peak intensity: <strong>${peak.toFixed(2)} mm/h</strong>.`;
+        statusDesc.replaceChildren();
+        statusDesc.appendChild(document.createTextNode("Rain is forecasted to start at "));
+        const startStrong = document.createElement('strong');
+        startStrong.textContent = startAbs;
+        statusDesc.appendChild(startStrong);
+        statusDesc.appendChild(document.createTextNode(" and continue for about "));
+        const durationStrong = document.createElement('strong');
+        durationStrong.textContent = `${durationMins} minutes`;
+        statusDesc.appendChild(durationStrong);
+        statusDesc.appendChild(document.createTextNode(". Peak intensity: "));
+        const peakStrong = document.createElement('strong');
+        peakStrong.textContent = `${peak.toFixed(2)} mm/h`;
+        statusDesc.appendChild(peakStrong);
+        statusDesc.appendChild(document.createTextNode("."));
+
         if (emailEnabled || pushEnabled) {
-            desc += `<br><span style="margin-top: 4px; display: inline-block; font-size: 0.7rem; opacity: 0.85;"><i class="fa-solid fa-bell"></i> Alerts active (email: ${emailEnabled ? 'yes' : 'no'}, push: ${pushEnabled ? 'yes' : 'no'}).</span>`;
+            statusDesc.appendChild(document.createElement('br'));
+            const alertSpan = document.createElement('span');
+            alertSpan.style.marginTop = '4px';
+            alertSpan.style.display = 'inline-block';
+            alertSpan.style.fontSize = '0.7rem';
+            alertSpan.style.opacity = '0.85';
+
+            const bellIcon = document.createElement('i');
+            bellIcon.className = 'fa-solid fa-bell';
+            alertSpan.appendChild(bellIcon);
+
+            alertSpan.appendChild(document.createTextNode(` Alerts active (email: ${emailEnabled ? 'yes' : 'no'}, push: ${pushEnabled ? 'yes' : 'no'}).`));
+            statusDesc.appendChild(alertSpan);
         }
-        statusDesc.innerHTML = desc;
     } else {
         statusBox.classList.add('success');
         statusTitle.textContent = "No Rain Expected";
-        statusDesc.innerHTML = `Forecast indicates precipitation will remain below your threshold of <strong>${threshold.toFixed(2)} mm/h</strong> for the next 6 hours.`;
+        statusDesc.replaceChildren();
+        statusDesc.appendChild(document.createTextNode("Forecast indicates precipitation will remain below your threshold of "));
+        const thresholdStrong = document.createElement('strong');
+        thresholdStrong.textContent = `${threshold.toFixed(2)} mm/h`;
+        statusDesc.appendChild(thresholdStrong);
+        statusDesc.appendChild(document.createTextNode(" for the next 6 hours."));
     }
 }
 
