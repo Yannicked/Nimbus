@@ -445,7 +445,6 @@ pub async fn get_value(
                 let mut over = 0;
                 let mut count = 0;
                 let r_sq = (NEP_RADIUS * NEP_RADIUS) as i32;
-
                 let num_ensembles = meta_clone.ensembles.len();
                 let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
                 let y_max = std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
