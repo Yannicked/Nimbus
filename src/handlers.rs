@@ -555,6 +555,7 @@ pub async fn get_timeseries(
             }
         }
     } else if q.ens == "pmm" {
+        #[allow(clippy::type_complexity)]
         enum TaskResult {
             Cached(Arc<Vec<u16>>),
             Spawned(tokio::task::JoinHandle<Result<Arc<Vec<u16>>, (StatusCode, String)>>),
