@@ -55,7 +55,7 @@ async function loadApp() {
         DOM.refTimeVal.textContent = formatAbsoluteTime(state.metadata.reference_time_str, 0);
 
         // Create Ensemble Selector Options Grouped by Category
-        DOM.ensembleSelect.innerHTML = '';
+        DOM.ensembleSelect.replaceChildren();
         
         // Add statistics first (separate / at the beginning)
         const statsGroup = document.createElement('optgroup');
