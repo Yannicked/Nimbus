@@ -1,7 +1,7 @@
 use axum::{
+    http::{header, Method, Request},
     routing::get,
     Router,
-    http::{Method, Request, header},
 };
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
@@ -31,7 +31,10 @@ async fn test_cors_policy() {
         .unwrap();
 
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let allow_methods = response.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS).unwrap();
+    let allow_methods = response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+        .unwrap();
     assert_eq!(allow_methods, "GET");
 
     // Test that POST is not allowed in preflight
@@ -56,5 +59,8 @@ async fn test_cors_policy() {
 
     // CORS middleware returns 200 OK for failed preflight but without the CORS headers or with mismatch
     // Actually tower-http CORS returns NO_CONTENT or OK depending on config, but if it doesn't match it doesn't return the allow headers
-    assert!(response_post.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS).is_none());
+    assert!(response_post
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+        .is_none());
 }
