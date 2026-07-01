@@ -100,6 +100,7 @@ async fn main() {
         solar_data_cache: dashmap::DashMap::new(),
 
         rain_forecast: tokio::sync::RwLock::new(Some(rain_fc)),
+        timeseries_cache: dashmap::DashMap::new(),
     });
 
     if let Some(ref meta) = metadata_val {

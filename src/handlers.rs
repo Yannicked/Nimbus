@@ -544,15 +544,24 @@ pub async fn get_timeseries(
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        for &time_val in &meta.times {
-            if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
-                let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
-                if q.ens == "prob" {
-                    values.push(val_raw as f64);
-                } else {
-                    values.push(raw_to_value(val_raw));
+        if let Some(cached_ts) = state.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
+            values.extend_from_slice(&cached_ts);
+        } else {
+            let mut ts_values = Vec::with_capacity(meta.times.len());
+            for &time_val in &meta.times {
+                if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+                    let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
+                    if q.ens == "prob" {
+                        ts_values.push(val_raw as f64);
+                    } else {
+                        ts_values.push(raw_to_value(val_raw));
+                    }
                 }
             }
+            state
+                .timeseries_cache
+                .insert((q.ens.clone(), ix, iy), Arc::new(ts_values.clone()));
+            values.extend(ts_values);
         }
     } else if q.ens == "pmm" {
         #[allow(clippy::type_complexity)]
