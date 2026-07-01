@@ -36,5 +36,13 @@ pub const KNMI_Y0: f64 = -3650495.413595936;
 pub const KNMI_GRID_W: usize = 700;
 pub const KNMI_GRID_H: usize = 765;
 
+// GRIB1 / Harmonie grid parameters
+pub const GRIB_W: usize = 390;
+pub const GRIB_H: usize = 390;
+pub const GRIB_DX: f64 = 0.029;
+pub const GRIB_DY: f64 = 0.018;
+pub const GRIB_X0: f64 = 0.0;
+pub const GRIB_Y0: f64 = 49.0;
+
 /// Directory where all cached/downloaded files are stored.
 pub const CACHE_DIR: &str = "./cache";
