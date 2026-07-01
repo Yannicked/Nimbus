@@ -6,9 +6,9 @@ use axum::{
 use std::sync::Arc;
 
 use crate::constants::{
-    GRIB_DLAT, GRIB_DLON, GRIB_HEIGHT, GRIB_LAT_0, GRIB_LON_0, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX,
-    KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0, KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT,
-    MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR, RAIN_THRESHOLD,
+    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0,
+    KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA,
+    PRECIP_VAR, RAIN_THRESHOLD,
 };
 use crate::harmonie::parse_reference_time;
 use crate::interpolation::interpolate_bilinear;
@@ -19,12 +19,52 @@ use crate::models::{
     ValueResponse, WindMetadata, WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery,
     WindValueResponse,
 };
-use crate::projection;
+use crate::projection::{self, lonlat_to_grib_indices};
 use crate::radar::{compute_raw_slice, raw_to_value};
 use crate::rendering::{
     render_data_webp_bytes, render_solar_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes,
 };
 use crate::state::AppState;
+
+/// Generic helper to extract a value from a GRIB-based forecast (Temp, Solar, etc.)
+/// by finding the closest step and interpolating.
+#[allow(clippy::too_many_arguments)]
+fn with_grib_step<S, F, R>(
+    forecast: &F,
+    time: i64,
+    lon: f64,
+    lat: f64,
+    get_steps: impl Fn(&F) -> &[S],
+    get_forecast_hour: impl Fn(&S) -> i32,
+    extract_value: impl Fn(&S, f64, f64) -> Option<R>,
+    to_response: impl Fn(R) -> ValueResponse,
+) -> Result<axum::Json<ValueResponse>, (StatusCode, String)> {
+    let steps = get_steps(forecast);
+    if steps.is_empty() {
+        return Ok(axum::Json(ValueResponse {
+            status: "no_data".to_string(),
+            value: None,
+        }));
+    }
+
+    let step = steps
+        .iter()
+        .min_by_key(|s| {
+            let step_offset = (get_forecast_hour(s) as i64) * 3600;
+            (step_offset - time).abs()
+        })
+        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
+
+    let (fx, fy) = lonlat_to_grib_indices(lon, lat);
+
+    match extract_value(step, fx, fy) {
+        Some(val) => Ok(axum::Json(to_response(val))),
+        None => Ok(axum::Json(ValueResponse {
+            status: "out_of_bounds".to_string(),
+            value: None,
+        })),
+    }
+}
 
 /// Serves an empty favicon response to prevent 404 console errors.
 pub async fn favicon() -> impl IntoResponse {
@@ -295,36 +335,31 @@ pub async fn get_value(
 
         let absolute_time = radar_ref_time + q.time;
 
-        let step = rain_fc
-            .steps
-            .iter()
-            .min_by_key(|s| {
-                let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
-                (step_abs - absolute_time).abs()
-            })
-            .ok_or((
-                StatusCode::NOT_FOUND,
-                "No matching Harmonie step".to_string(),
-            ))?;
-
-        let fx = (q.lon - 0.0) / 0.029;
-        let fy = (q.lat - 49.0) / 0.018;
-
-        let val_raw = interpolate_bilinear(fx, fy, 390, 390, &step.values);
-        if val_raw == NODATA {
-            return Ok(axum::Json(ValueResponse {
-                status: "out_of_bounds".to_string(),
-                value: None,
-            }));
-        }
-
-        let val_mmh = raw_to_value(val_raw);
-        let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
-
-        return Ok(axum::Json(ValueResponse {
-            status: status.to_string(),
-            value: Some(val_mmh),
-        }));
+        let harmonie_time = absolute_time - rain_fc.reference_time;
+        return with_grib_step(
+            rain_fc,
+            harmonie_time,
+            q.lon,
+            q.lat,
+            |f| &f.steps,
+            |s| s.forecast_hour,
+            |s, fx, fy| {
+                let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, &s.values);
+                if val_raw == NODATA {
+                    None
+                } else {
+                    Some(val_raw)
+                }
+            },
+            |val_raw| {
+                let val_mmh = raw_to_value(val_raw);
+                let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
+                ValueResponse {
+                    status: status.to_string(),
+                    value: Some(val_mmh),
+                }
+            },
+        );
     }
 
     // Get grid cell index
@@ -820,18 +855,19 @@ pub async fn get_timeseries(
     let last_radar_time = meta.times.last().copied().unwrap_or(0);
     if let Some(ref rain_fc) = *state.rain_forecast.read().await {
         if let Some(radar_ref_time) = parse_reference_time(&meta.reference_time_str) {
-            let fx = (q.lon - 0.0) / 0.029;
-            let fy = (q.lat - 49.0) / 0.018;
+            let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
             for &time_val in &extended_times {
                 if time_val > last_radar_time && q.ens == "pmm" {
                     let absolute_time = radar_ref_time + time_val;
+                    let harmonie_time = absolute_time - rain_fc.reference_time;
                     let step = rain_fc.steps.iter().min_by_key(|s| {
-                        let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
-                        (step_abs - absolute_time).abs()
+                        let step_offset = (s.forecast_hour as i64) * 3600;
+                        (step_offset - harmonie_time).abs()
                     });
                     if let Some(s) = step {
-                        let val_raw = interpolate_bilinear(fx, fy, 390, 390, &s.values);
+                        let val_raw =
+                            interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, &s.values);
                         if val_raw != NODATA {
                             values.push(raw_to_value(val_raw));
                         } else {
@@ -980,6 +1016,8 @@ pub async fn get_wind_value(
 
     let req_height = q.height.unwrap_or(10);
 
+    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
+
     let step = forecast
         .steps
         .iter()
@@ -989,9 +1027,6 @@ pub async fn get_wind_value(
             (step_offset - q.time).abs()
         })
         .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    let fx = (q.lon - GRIB_LON_0) / GRIB_DLON;
-    let fy = (q.lat - GRIB_LAT_0) / GRIB_DLAT;
 
     if let Some((u, v)) = interpolate_wind(fx, fy, &step.u_values, &step.v_values) {
         let speed = (u * u + v * v).sqrt();
@@ -1029,8 +1064,7 @@ pub async fn get_wind_timeseries(
         "Wind forecast not loaded".to_string(),
     ))?;
 
-    let fx = (q.lon - GRIB_LON_0) / GRIB_DLON;
-    let fy = (q.lat - GRIB_LAT_0) / GRIB_DLAT;
+    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
     let req_height = q.height.unwrap_or(10);
 
@@ -1169,36 +1203,19 @@ pub async fn get_temp_value(
         "Temperature forecast not loaded".to_string(),
     ))?;
 
-    if forecast.steps.is_empty() {
-        return Ok(axum::Json(ValueResponse {
-            status: "no_data".to_string(),
-            value: None,
-        }));
-    }
-
-    let step = forecast
-        .steps
-        .iter()
-        .min_by_key(|s| {
-            let step_offset = (s.forecast_hour as i64) * 3600;
-            (step_offset - q.time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    let fx = (q.lon - GRIB_LON_0) / GRIB_DLON;
-    let fy = (q.lat - GRIB_LAT_0) / GRIB_DLAT;
-
-    if let Some(temp_c) = interpolate_temp(fx, fy, &step.values) {
-        Ok(axum::Json(ValueResponse {
+    with_grib_step(
+        forecast,
+        q.time,
+        q.lon,
+        q.lat,
+        |f| &f.steps,
+        |s| s.forecast_hour,
+        |s, fx, fy| interpolate_temp(fx, fy, &s.values),
+        |temp_c| ValueResponse {
             status: "ok".to_string(),
             value: Some(temp_c),
-        }))
-    } else {
-        Ok(axum::Json(ValueResponse {
-            status: "out_of_bounds".to_string(),
-            value: None,
-        }))
-    }
+        },
+    )
 }
 
 pub async fn get_temp_timeseries(
@@ -1211,8 +1228,7 @@ pub async fn get_temp_timeseries(
         "Temperature forecast not loaded".to_string(),
     ))?;
 
-    let fx = (q.lon - GRIB_LON_0) / GRIB_DLON;
-    let fy = (q.lat - GRIB_LAT_0) / GRIB_DLAT;
+    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
     let (times, values) = extract_timeseries(&forecast.steps, |step| {
         interpolate_temp(fx, fy, &step.values)
@@ -1325,36 +1341,19 @@ pub async fn get_solar_value(
         "Solar forecast not loaded".to_string(),
     ))?;
 
-    if forecast.steps.is_empty() {
-        return Ok(axum::Json(ValueResponse {
-            status: "no_data".to_string(),
-            value: None,
-        }));
-    }
-
-    let step = forecast
-        .steps
-        .iter()
-        .min_by_key(|s| {
-            let step_offset = (s.forecast_hour as i64) * 3600;
-            (step_offset - q.time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    let fx = (q.lon - GRIB_LON_0) / GRIB_DLON;
-    let fy = (q.lat - GRIB_LAT_0) / GRIB_DLAT;
-
-    if let Some(solar_w) = interpolate_solar(fx, fy, &step.values) {
-        Ok(axum::Json(ValueResponse {
+    with_grib_step(
+        forecast,
+        q.time,
+        q.lon,
+        q.lat,
+        |f| &f.steps,
+        |s| s.forecast_hour,
+        |s, fx, fy| interpolate_solar(fx, fy, &s.values),
+        |solar_w| ValueResponse {
             status: "ok".to_string(),
             value: Some(solar_w),
-        }))
-    } else {
-        Ok(axum::Json(ValueResponse {
-            status: "out_of_bounds".to_string(),
-            value: None,
-        }))
-    }
+        },
+    )
 }
 
 pub async fn get_solar_timeseries(
@@ -1367,8 +1366,7 @@ pub async fn get_solar_timeseries(
         "Solar forecast not loaded".to_string(),
     ))?;
 
-    let fx = (q.lon - GRIB_LON_0) / GRIB_DLON;
-    let fy = (q.lat - GRIB_LAT_0) / GRIB_DLAT;
+    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
     let (times, values) = extract_timeseries(&forecast.steps, |step| {
         interpolate_solar(fx, fy, &step.values)

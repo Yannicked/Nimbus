@@ -1,4 +1,4 @@
-use crate::constants::NODATA;
+use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, NODATA};
 use crate::models::{
     FileUrlResponse, RainForecast, RainStep, SolarForecast, SolarStep, TempForecast, TempStep,
     WindForecast, WindStep,
@@ -196,8 +196,8 @@ pub fn process_harmonie_tar_combined(
         if let Some(t_vals) = temp_vals {
             temp_steps.push(TempStep {
                 forecast_hour,
-                width: 390,
-                height: 390,
+                width: GRIB_WIDTH,
+                height: GRIB_HEIGHT,
                 values: Arc::new(t_vals),
             });
         }
@@ -218,8 +218,8 @@ pub fn process_harmonie_tar_combined(
                 wind_steps.push(WindStep {
                     forecast_hour,
                     height_level: lvl,
-                    width: 390,
-                    height: 390,
+                    width: GRIB_WIDTH,
+                    height: GRIB_HEIGHT,
                     u_values: Arc::new(u),
                     v_values: Arc::new(v),
                 });
@@ -266,8 +266,8 @@ pub fn process_harmonie_tar_combined(
 
         solar_steps.push(SolarStep {
             forecast_hour: current_step.forecast_hour,
-            width: 390,
-            height: 390,
+            width: GRIB_WIDTH,
+            height: GRIB_HEIGHT,
             values: Arc::new(values),
         });
     }
@@ -305,8 +305,8 @@ pub fn process_harmonie_tar_combined(
 
         rain_steps.push(RainStep {
             forecast_hour: current_step.forecast_hour,
-            width: 390,
-            height: 390,
+            width: GRIB_WIDTH,
+            height: GRIB_HEIGHT,
             values: Arc::new(values),
         });
     }

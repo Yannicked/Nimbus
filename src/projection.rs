@@ -2,6 +2,7 @@
 //! (EPSG:3857), WGS84 geographic coordinates, and the KNMI Polar
 //! Stereographic grid used by the precipitation dataset.
 
+use crate::constants::{GRIB_DLAT, GRIB_DLON, GRIB_LAT_0, GRIB_LON_0};
 use std::f64::consts::PI;
 
 const WGS84_A: f64 = 6378137.0; // semi-major axis
@@ -52,6 +53,13 @@ pub fn lonlat_to_polar_stereographic(lon: f64, lat: f64) -> (f64, f64) {
     let y = -rho * lon_rad.cos();
 
     (x, y)
+}
+
+/// Convert WGS84 Lon/Lat (degrees) to GRIB1 grid fractional indices
+pub fn lonlat_to_grib_indices(lon: f64, lat: f64) -> (f64, f64) {
+    let fx = (lon - GRIB_LON_0) / GRIB_DLON;
+    let fy = (lat - GRIB_LAT_0) / GRIB_DLAT;
+    (fx, fy)
 }
 
 #[cfg(test)]

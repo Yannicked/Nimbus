@@ -1,4 +1,4 @@
-use crate::constants::{NODATA, RAIN_THRESHOLD};
+use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, NODATA, RAIN_THRESHOLD};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;
@@ -103,7 +103,7 @@ impl TempForecast {
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
 
-            if width != 390 || height != 390 {
+            if width != GRIB_WIDTH || height != GRIB_HEIGHT {
                 return Err("Invalid grid dimensions in temperature forecast binary file".into());
             }
 
@@ -214,7 +214,7 @@ impl WindForecast {
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
 
-            if width != 390 || height != 390 {
+            if width != GRIB_WIDTH || height != GRIB_HEIGHT {
                 return Err("Invalid grid dimensions in wind forecast binary file".into());
             }
 
@@ -539,7 +539,7 @@ impl SolarForecast {
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
 
-            if width != 390 || height != 390 {
+            if width != GRIB_WIDTH || height != GRIB_HEIGHT {
                 return Err("Invalid grid dimensions in solar forecast binary file".into());
             }
 
@@ -642,7 +642,7 @@ impl RainForecast {
             f.read_exact(&mut h_bytes)?;
             let height = u32::from_le_bytes(h_bytes) as usize;
 
-            if width != 390 || height != 390 {
+            if width != GRIB_WIDTH || height != GRIB_HEIGHT {
                 return Err("Invalid grid dimensions in rain forecast binary file".into());
             }
 
