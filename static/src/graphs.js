@@ -99,6 +99,65 @@ function getLabels(times, refTimeStr, isShort = false) {
     });
 }
 
+/**
+ * Common configuration builder for Chart.js line charts used in the dashboard.
+ * @param {Array} labels - X-axis labels.
+ * @param {Array} datasets - Array of dataset objects.
+ * @param {string} yAxisTitle - Label for the Y-axis.
+ * @param {Object} options - Optional overrides (showLegend, yMin, tooltipCallbacks).
+ * @returns {Object} Chart.js configuration object.
+ */
+function createChartConfig(labels, datasets, yAxisTitle, options = {}) {
+    return {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: options.showLegend || false,
+                    labels: {
+                        color: '#94a3b8',
+                        font: { size: 9 },
+                        boxWidth: 12
+                    }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    backgroundColor: '#1e1e24',
+                    titleColor: '#f8fafc',
+                    bodyColor: '#f8fafc',
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1,
+                    callbacks: options.tooltipCallbacks || {}
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    ticks: { color: '#94a3b8', font: { size: 9 }, maxTicksLimit: 6 }
+                },
+                y: {
+                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    ticks: { color: '#94a3b8', font: { size: 9 } },
+                    title: {
+                        display: true,
+                        text: yAxisTitle,
+                        color: '#94a3b8',
+                        font: { size: 9, weight: 'bold' }
+                    },
+                    min: options.yMin !== undefined ? options.yMin : undefined
+                }
+            }
+        }
+    };
+}
+
 // Show temporary toast notification
 function showToast(message) {
     const toast = document.getElementById('toast');
@@ -264,84 +323,48 @@ function renderRainChart(tsPmm, tsMed, tsMax, metadata) {
     
     const labels = getLabels(tsPmm.times, metadata.reference_time_str, true);
     
-    const ctx = document.getElementById('chart-rain').getContext('2d');
-    chartInstances.rain = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [
-                {
-                    label: 'PMM (Mean)',
-                    data: tsPmm.values,
-                    borderColor: '#38bdf8',
-                    backgroundColor: 'rgba(56, 189, 248, 0.05)',
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 0,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: 'Median',
-                    data: tsMed.values,
-                    borderColor: '#a855f7',
-                    backgroundColor: 'transparent',
-                    borderWidth: 1.5,
-                    borderDash: [4, 4],
-                    fill: false,
-                    tension: 0.3,
-                    pointRadius: 0,
-                    pointHoverRadius: 3
-                },
-                {
-                    label: 'Maximum',
-                    data: tsMax.values,
-                    borderColor: '#f59e0b',
-                    backgroundColor: 'transparent',
-                    borderWidth: 1.5,
-                    fill: false,
-                    tension: 0.3,
-                    pointRadius: 0,
-                    pointHoverRadius: 3
-                }
-            ]
+    const datasets = [
+        {
+            label: 'PMM (Mean)',
+            data: tsPmm.values,
+            borderColor: '#38bdf8',
+            backgroundColor: 'rgba(56, 189, 248, 0.05)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 4
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: true,
-                    labels: {
-                        color: '#94a3b8',
-                        font: { size: 9 },
-                        boxWidth: 12
-                    }
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false,
-                    backgroundColor: '#1e1e24',
-                    titleColor: '#f8fafc',
-                    bodyColor: '#f8fafc',
-                    borderColor: 'rgba(255,255,255,0.1)',
-                    borderWidth: 1
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 }, maxTicksLimit: 6 }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 } },
-                    title: { display: true, text: 'Rainfall Rate (mm/h)', color: '#94a3b8', font: { size: 9, weight: 'bold' } },
-                    min: 0
-                }
-            }
+        {
+            label: 'Median',
+            data: tsMed.values,
+            borderColor: '#a855f7',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            borderDash: [4, 4],
+            fill: false,
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 3
+        },
+        {
+            label: 'Maximum',
+            data: tsMax.values,
+            borderColor: '#f59e0b',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            fill: false,
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 3
         }
-    });
+    ];
+
+    const ctx = document.getElementById('chart-rain').getContext('2d');
+    chartInstances.rain = new Chart(ctx, createChartConfig(labels, datasets, 'Rainfall Rate (mm/h)', {
+        showLegend: true,
+        yMin: 0
+    }));
 }
 
 // Render Temperature Chart
@@ -364,56 +387,26 @@ function renderTempChart(tsTemp, metadata) {
     
     const labels = getLabels(tsTemp.times, metadata.reference_time_str, false);
     
+    const datasets = [{
+        label: '2m Temperature',
+        data: tsTemp.values,
+        borderColor: '#ef4444', // Reddish warm line
+        backgroundColor: 'rgba(239, 68, 68, 0.05)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4
+    }];
+
     const ctx = document.getElementById('chart-temp').getContext('2d');
-    chartInstances.temp = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: '2m Temperature',
-                data: tsTemp.values,
-                borderColor: '#ef4444', // Reddish warm line
-                backgroundColor: 'rgba(239, 68, 68, 0.05)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false,
-                    backgroundColor: '#1e1e24',
-                    titleColor: '#f8fafc',
-                    bodyColor: '#f8fafc',
-                    borderColor: 'rgba(255,255,255,0.1)',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: function(context) {
-                            return ` Temp: ${context.parsed.y.toFixed(1)} °C`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 }, maxTicksLimit: 6 }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 } },
-                    title: { display: true, text: 'Temperature (°C)', color: '#94a3b8', font: { size: 9, weight: 'bold' } }
-                }
+    chartInstances.temp = new Chart(ctx, createChartConfig(labels, datasets, 'Temperature (°C)', {
+        tooltipCallbacks: {
+            label: function(context) {
+                return ` Temp: ${context.parsed.y.toFixed(1)} °C`;
             }
         }
-    });
+    }));
 }
 
 // Render Wind Chart
@@ -436,61 +429,31 @@ function renderWindChart(tsWind, metadata) {
     
     const labels = getLabels(tsWind.times, metadata.reference_time_str, false);
     
+    const datasets = [{
+        label: 'Wind Speed',
+        data: tsWind.speeds,
+        borderColor: '#10b981', // green line
+        backgroundColor: 'rgba(16, 185, 129, 0.05)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4
+    }];
+
     const ctx = document.getElementById('chart-wind').getContext('2d');
-    chartInstances.wind = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Wind Speed',
-                data: tsWind.speeds,
-                borderColor: '#10b981', // green line
-                backgroundColor: 'rgba(16, 185, 129, 0.05)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false,
-                    backgroundColor: '#1e1e24',
-                    titleColor: '#f8fafc',
-                    bodyColor: '#f8fafc',
-                    borderColor: 'rgba(255,255,255,0.1)',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: function(context) {
-                            const index = context.dataIndex;
-                            const speed = context.parsed.y;
-                            const dir = tsWind.directions[index];
-                            const cardinal = degreesToCardinal(dir);
-                            return ` Wind: ${speed.toFixed(1)} m/s (${mpsToBeaufort(speed)} Bft) | Dir: ${dir.toFixed(0)}° (${cardinal})`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 }, maxTicksLimit: 6 }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 } },
-                    title: { display: true, text: 'Wind Speed (m/s)', color: '#94a3b8', font: { size: 9, weight: 'bold' } },
-                    min: 0
-                }
+    chartInstances.wind = new Chart(ctx, createChartConfig(labels, datasets, 'Wind Speed (m/s)', {
+        yMin: 0,
+        tooltipCallbacks: {
+            label: function(context) {
+                const index = context.dataIndex;
+                const speed = context.parsed.y;
+                const dir = tsWind.directions[index];
+                const cardinal = degreesToCardinal(dir);
+                return ` Wind: ${speed.toFixed(1)} m/s (${mpsToBeaufort(speed)} Bft) | Dir: ${dir.toFixed(0)}° (${cardinal})`;
             }
         }
-    });
+    }));
 }
 
 // Render Solar Radiation Chart
@@ -513,57 +476,27 @@ function renderSolarChart(tsSolar, metadata) {
     
     const labels = getLabels(tsSolar.times, metadata.reference_time_str, false);
     
+    const datasets = [{
+        label: 'Solar Radiation',
+        data: tsSolar.values,
+        borderColor: '#eab308', // Yellow
+        backgroundColor: 'rgba(234, 179, 8, 0.05)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4
+    }];
+
     const ctx = document.getElementById('chart-solar').getContext('2d');
-    chartInstances.solar = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: 'Solar Radiation',
-                data: tsSolar.values,
-                borderColor: '#eab308', // Yellow
-                backgroundColor: 'rgba(234, 179, 8, 0.05)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false,
-                    backgroundColor: '#1e1e24',
-                    titleColor: '#f8fafc',
-                    bodyColor: '#f8fafc',
-                    borderColor: 'rgba(255,255,255,0.1)',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: function(context) {
-                            return ` Solar: ${Math.round(context.parsed.y)} W/m²`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 }, maxTicksLimit: 6 }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { size: 9 } },
-                    title: { display: true, text: 'Solar Radiation (W/m²)', color: '#94a3b8', font: { size: 9, weight: 'bold' } },
-                    min: 0
-                }
+    chartInstances.solar = new Chart(ctx, createChartConfig(labels, datasets, 'Solar Radiation (W/m²)', {
+        yMin: 0,
+        tooltipCallbacks: {
+            label: function(context) {
+                return ` Solar: ${Math.round(context.parsed.y)} W/m²`;
             }
         }
-    });
+    }));
 }
 
 // Update "Interactive Map" link in header to zoom/center on current coordinates
