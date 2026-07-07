@@ -13,7 +13,7 @@ use crate::constants::{
 use crate::harmonie::parse_reference_time;
 use crate::interpolation::interpolate_bilinear;
 use crate::models::{
-    reduce_ensemble, EnsembleStat, ForecastStep, SolarMetadata, SolarTimeseriesQuery,
+    reduce_ensemble, EnsembleStat, ForecastStep, RainForecast, SolarMetadata, SolarTimeseriesQuery,
     SolarTimeseriesResponse, SolarValueQuery, TempMetadata, TempTimeseriesQuery,
     TempTimeseriesResponse, TempValueQuery, TimeseriesQuery, TimeseriesResponse, ValueQuery,
     ValueResponse, WindMetadata, WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery,
@@ -121,6 +121,30 @@ fn interpolate_wind(fx: f64, fy: f64, u_values: &[u16], v_values: &[u16]) -> Opt
     }
 }
 
+fn compute_extended_times(
+    base_times: &[i64],
+    rain_fc: &RainForecast,
+    reference_time_str: &str,
+) -> Vec<i64> {
+    let radar_ref_time = match parse_reference_time(reference_time_str) {
+        Some(t) => t,
+        None => return base_times.to_vec(),
+    };
+
+    let last_radar_time = base_times.last().copied().unwrap_or(0);
+    let mut extended_times = base_times.to_vec();
+    for step in &rain_fc.steps {
+        let absolute_time = rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
+        let relative_offset = absolute_time - radar_ref_time;
+        if relative_offset > last_radar_time {
+            extended_times.push(relative_offset);
+        }
+    }
+    extended_times.sort_unstable();
+    extended_times.dedup();
+    extended_times
+}
+
 /// Returns the current dataset metadata as JSON.
 pub async fn get_metadata(
     State(state): State<Arc<AppState>>,
@@ -129,21 +153,7 @@ pub async fn get_metadata(
     match meta {
         Some(mut m) => {
             if let Some(ref rain_fc) = *state.rain_forecast.read().await {
-                if let Some(radar_ref_time) = parse_reference_time(&m.reference_time_str) {
-                    let last_radar_time = m.times.last().copied().unwrap_or(0);
-                    let mut extended_times = m.times.clone();
-                    for step in &rain_fc.steps {
-                        let absolute_time =
-                            rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
-                        let relative_offset = absolute_time - radar_ref_time;
-                        if relative_offset > last_radar_time {
-                            extended_times.push(relative_offset);
-                        }
-                    }
-                    extended_times.sort_unstable();
-                    extended_times.dedup();
-                    m.times = extended_times;
-                }
+                m.times = compute_extended_times(&m.times, rain_fc, &m.reference_time_str);
             }
             Ok(axum::Json(m))
         }
@@ -602,21 +612,11 @@ pub async fn get_timeseries(
     }
 
     // Determine extended times array
-    let mut extended_times = meta.times.clone();
-    if let Some(ref rain_fc) = *state.rain_forecast.read().await {
-        if let Some(radar_ref_time) = parse_reference_time(&meta.reference_time_str) {
-            let last_radar_time = meta.times.last().copied().unwrap_or(0);
-            for step in &rain_fc.steps {
-                let absolute_time = rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
-                let relative_offset = absolute_time - radar_ref_time;
-                if relative_offset > last_radar_time {
-                    extended_times.push(relative_offset);
-                }
-            }
-            extended_times.sort_unstable();
-            extended_times.dedup();
-        }
-    }
+    let extended_times = if let Some(ref rain_fc) = *state.rain_forecast.read().await {
+        compute_extended_times(&meta.times, rain_fc, &meta.reference_time_str)
+    } else {
+        meta.times.clone()
+    };
 
     // Try reading all radar times from cache first
     let mut all_cached = true;
