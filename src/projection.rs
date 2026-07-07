@@ -109,7 +109,10 @@ mod tests {
         assert!((fy - 1.0).abs() < 1e-9);
 
         // Test larger offset
-        let (fx, fy) = lonlat_to_grib_indices(GRIB_LON_0 + 100.0 * GRIB_DLON, GRIB_LAT_0 + 100.0 * GRIB_DLAT);
+        let (fx, fy) = lonlat_to_grib_indices(
+            GRIB_LON_0 + 100.0 * GRIB_DLON,
+            GRIB_LAT_0 + 100.0 * GRIB_DLAT,
+        );
         assert!((fx - 100.0).abs() < 1e-9);
         assert!((fy - 100.0).abs() < 1e-9);
     }
