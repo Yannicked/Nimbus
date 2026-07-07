@@ -95,4 +95,22 @@ mod tests {
         assert!((lon + 180.0).abs() < 1e-7);
         assert!((lat + 85.05112878).abs() < 1e-7);
     }
+
+    #[test]
+    fn test_lonlat_to_grib_indices() {
+        // Test origin
+        let (fx, fy) = lonlat_to_grib_indices(GRIB_LON_0, GRIB_LAT_0);
+        assert!((fx - 0.0).abs() < 1e-9);
+        assert!((fy - 0.0).abs() < 1e-9);
+
+        // Test one grid cell offset
+        let (fx, fy) = lonlat_to_grib_indices(GRIB_LON_0 + GRIB_DLON, GRIB_LAT_0 + GRIB_DLAT);
+        assert!((fx - 1.0).abs() < 1e-9);
+        assert!((fy - 1.0).abs() < 1e-9);
+
+        // Test larger offset
+        let (fx, fy) = lonlat_to_grib_indices(GRIB_LON_0 + 100.0 * GRIB_DLON, GRIB_LAT_0 + 100.0 * GRIB_DLAT);
+        assert!((fx - 100.0).abs() < 1e-9);
+        assert!((fy - 100.0).abs() < 1e-9);
+    }
 }
