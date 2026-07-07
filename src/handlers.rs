@@ -99,6 +99,29 @@ where
     (times, values)
 }
 
+fn format_forecast_metadata<S>(steps: &[S], reference_time: i64) -> (Vec<i64>, String)
+where
+    S: ForecastStep,
+{
+    let mut times: Vec<i64> = steps
+        .iter()
+        .map(|s| (s.forecast_hour() as i64) * 3600)
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+
+    let reference_time_str = {
+        use chrono::TimeZone;
+        if let Some(utc_dt) = chrono::Utc.timestamp_opt(reference_time, 0).single() {
+            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
+        } else {
+            "seconds since 1970-01-01 00:00:00".to_string()
+        }
+    };
+
+    (times, reference_time_str)
+}
+
 fn interpolate_solar(fx: f64, fy: f64, values: &[u16]) -> Option<f64> {
     let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, values);
     if val_raw != NODATA {
@@ -900,25 +923,8 @@ pub async fn get_wind_metadata(
         "Wind forecast not loaded".to_string(),
     ))?;
 
-    let mut times: Vec<i64> = forecast
-        .steps
-        .iter()
-        .map(|s| (s.forecast_hour as i64) * 3600)
-        .collect();
-    times.sort_unstable();
-    times.dedup();
-
-    let reference_time_str = {
-        use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc
-            .timestamp_opt(forecast.reference_time, 0)
-            .single()
-        {
-            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
-        } else {
-            "seconds since 1970-01-01 00:00:00".to_string()
-        }
-    };
+    let (times, reference_time_str) =
+        format_forecast_metadata(&forecast.steps, forecast.reference_time);
 
     Ok(axum::Json(WindMetadata {
         left: MERCATOR_LEFT,
@@ -1110,23 +1116,8 @@ pub async fn get_temp_metadata(
         "Temperature forecast not loaded".to_string(),
     ))?;
 
-    let times: Vec<i64> = forecast
-        .steps
-        .iter()
-        .map(|s| (s.forecast_hour as i64) * 3600)
-        .collect();
-
-    let reference_time_str = {
-        use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc
-            .timestamp_opt(forecast.reference_time, 0)
-            .single()
-        {
-            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
-        } else {
-            "seconds since 1970-01-01 00:00:00".to_string()
-        }
-    };
+    let (times, reference_time_str) =
+        format_forecast_metadata(&forecast.steps, forecast.reference_time);
 
     Ok(axum::Json(TempMetadata {
         left: MERCATOR_LEFT,
@@ -1251,23 +1242,8 @@ pub async fn get_solar_metadata(
         "Solar forecast not loaded".to_string(),
     ))?;
 
-    let times: Vec<i64> = forecast
-        .steps
-        .iter()
-        .map(|s| (s.forecast_hour as i64) * 3600)
-        .collect();
-
-    let reference_time_str = {
-        use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc
-            .timestamp_opt(forecast.reference_time, 0)
-            .single()
-        {
-            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
-        } else {
-            "seconds since 1970-01-01 00:00:00".to_string()
-        }
-    };
+    let (times, reference_time_str) =
+        format_forecast_metadata(&forecast.steps, forecast.reference_time);
 
     Ok(axum::Json(SolarMetadata {
         left: MERCATOR_LEFT,
