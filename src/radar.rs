@@ -32,29 +32,36 @@ pub fn find_latest_nc_file(dir: &str) -> Option<String> {
 
 /// Loads dimension sizes and coordinate variables from a NetCDF file and
 /// returns a [`Metadata`] struct suitable for JSON serialisation.
-pub fn load_metadata(
+pub async fn load_metadata(
     file_path: &str,
 ) -> Result<Metadata, Box<dyn std::error::Error + Send + Sync>> {
-    let file = netcdf::open(file_path)?;
-    let ens_var = file
-        .variable("ens_number")
-        .ok_or("ens_number variable not found")?;
-    let time_var = file.variable("time").ok_or("time variable not found")?;
+    let path = file_path.to_string();
+    let (ensembles, times, time_units) = tokio::task::spawn_blocking(move || {
+        let file = netcdf::open(&path)?;
+        let ens_var = file
+            .variable("ens_number")
+            .ok_or("ens_number variable not found")?;
+        let time_var = file.variable("time").ok_or("time variable not found")?;
 
-    let ensembles = ens_var.get_values::<i32, _>(..)?;
-    let times = time_var.get_values::<i64, _>(..)?;
+        let ensembles: Vec<i32> = ens_var.get_values(..)?;
+        let times: Vec<i64> = time_var.get_values(..)?;
 
-    let time_units = match time_var
-        .attribute("units")
-        .ok_or("time units attribute not found")?
-        .value()?
-    {
-        netcdf::AttributeValue::Str(s) => s,
-        val => return Err(format!("Unexpected time units type: {:?}", val).into()),
-    };
+        let time_units = match time_var
+            .attribute("units")
+            .ok_or("time units attribute not found")?
+            .value()?
+        {
+            netcdf::AttributeValue::Str(s) => s,
+            val => return Err(format!("Unexpected time units type: {:?}", val).into()),
+        };
+        Ok::<(Vec<i32>, Vec<i64>, String), Box<dyn std::error::Error + Send + Sync>>((
+            ensembles, times, time_units,
+        ))
+    })
+    .await??;
 
     // Use file modified time as the version number for client-side cache invalidation
-    let metadata_fs = std::fs::metadata(file_path)?;
+    let metadata_fs = tokio::fs::metadata(file_path).await?;
     let modified = metadata_fs.modified()?;
     let version = modified
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -742,7 +749,7 @@ pub async fn download_and_update_nc_file(
     println!("Successfully downloaded and saved: {}", final_path);
 
     // Perform atomic in-memory state reloading
-    match load_metadata(&final_path) {
+    match load_metadata(&final_path).await {
         Ok(meta) => {
             let mut file_write = state.file_path.write().await;
             *file_write = final_path.clone();

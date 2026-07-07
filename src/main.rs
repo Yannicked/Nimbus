@@ -72,7 +72,7 @@ async fn main() {
     println!("Found initial NetCDF file: {}", initial_file);
 
     // 2. Load initial metadata
-    let metadata_val = match load_metadata(&initial_file) {
+    let metadata_val = match load_metadata(&initial_file).await {
         Ok(m) => Some(m),
         Err(e) => {
             eprintln!("Error loading metadata from {}: {}", initial_file, e);
