@@ -95,4 +95,46 @@ mod tests {
         assert!((lon + 180.0).abs() < 1e-7);
         assert!((lat + 85.05112878).abs() < 1e-7);
     }
+
+    #[test]
+    fn test_lonlat_to_polar_stereographic_pole() {
+        let (x, y) = lonlat_to_polar_stereographic(0.0, 90.0);
+        assert!(x.abs() < 1e-7);
+        assert!(y.abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_lonlat_to_polar_stereographic_standard_parallel() {
+        // At 60N, 0E
+        let (x, y) = lonlat_to_polar_stereographic(0.0, 60.0);
+        assert!(x.abs() < 1e-7);
+        assert!((y + 3197104.5869).abs() < 1e-3);
+
+        // At 60N, 90E
+        let (x, y) = lonlat_to_polar_stereographic(90.0, 60.0);
+        assert!((x - 3197104.5869).abs() < 1e-3);
+        assert!(y.abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_lonlat_to_polar_stereographic_debilt() {
+        // De Bilt, Netherlands: approx (5.1768, 52.1112)
+        let (x, y) = lonlat_to_polar_stereographic(5.1768, 52.1112);
+        assert!((x - 369342.085).abs() < 1.0); // Allow 1m tolerance
+        assert!((y + 4076674.110).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_lonlat_to_grib_indices_origin() {
+        let (fx, fy) = lonlat_to_grib_indices(GRIB_LON_0, GRIB_LAT_0);
+        assert!((fx - 0.0).abs() < 1e-9);
+        assert!((fy - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_lonlat_to_grib_indices_step() {
+        let (fx, fy) = lonlat_to_grib_indices(GRIB_LON_0 + GRIB_DLON, GRIB_LAT_0 + GRIB_DLAT);
+        assert!((fx - 1.0).abs() < 1e-9);
+        assert!((fy - 1.0).abs() < 1e-9);
+    }
 }
