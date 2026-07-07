@@ -117,7 +117,17 @@ pub fn read_netcdf_all_ensembles(
 /// The mask represents whether there is any precipitation exceeding RAIN_THRESHOLD within
 /// the specified circular radius (in grid cells) of each pixel.
 pub fn compute_dilated_mask(member_data: &[u16], radius: usize) -> Vec<bool> {
-    let mut has_rain = vec![false; KNMI_GRID_H * KNMI_GRID_W];
+    compute_dilated_mask_with_dims(member_data, radius, KNMI_GRID_W, KNMI_GRID_H)
+}
+
+/// Core logic for mask dilation with custom dimensions.
+pub fn compute_dilated_mask_with_dims(
+    member_data: &[u16],
+    radius: usize,
+    width: usize,
+    height: usize,
+) -> Vec<bool> {
+    let mut has_rain = vec![false; height * width];
     let mut has_any_rain = false;
     for i in 0..has_rain.len() {
         let v = member_data[i];
@@ -128,10 +138,10 @@ pub fn compute_dilated_mask(member_data: &[u16], radius: usize) -> Vec<bool> {
     }
 
     if !has_any_rain {
-        return vec![false; KNMI_GRID_H * KNMI_GRID_W];
+        return vec![false; height * width];
     }
 
-    let mut dilated = vec![false; KNMI_GRID_H * KNMI_GRID_W];
+    let mut dilated = vec![false; height * width];
     let r_sq = (radius * radius) as i32;
 
     // Precompute offsets for circular neighborhood of radius
@@ -145,14 +155,14 @@ pub fn compute_dilated_mask(member_data: &[u16], radius: usize) -> Vec<bool> {
     }
 
     // Dilate
-    for y in 0..KNMI_GRID_H {
-        for x in 0..KNMI_GRID_W {
-            if has_rain[y * KNMI_GRID_W + x] {
+    for y in 0..height {
+        for x in 0..width {
+            if has_rain[y * width + x] {
                 for &(dx, dy) in &offsets {
                     let nx = x as i32 + dx;
                     let ny = y as i32 + dy;
-                    if nx >= 0 && nx < KNMI_GRID_W as i32 && ny >= 0 && ny < KNMI_GRID_H as i32 {
-                        dilated[ny as usize * KNMI_GRID_W + nx as usize] = true;
+                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                        dilated[ny as usize * width + nx as usize] = true;
                     }
                 }
             }
@@ -935,5 +945,130 @@ mod tests {
         assert!((raw_to_value(1) - 0.01).abs() < f64::EPSILON);
         assert!((raw_to_value(100) - 1.0).abs() < f64::EPSILON);
         assert!((raw_to_value(1234) - 12.34).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_dilated_mask_empty() {
+        let width = 5;
+        let height = 5;
+        let data = vec![0u16; width * height];
+        let mask = compute_dilated_mask_with_dims(&data, 1, width, height);
+        assert_eq!(mask, vec![false; width * height]);
+    }
+
+    #[test]
+    fn test_dilated_mask_below_threshold() {
+        let width = 5;
+        let height = 5;
+        let mut data = vec![0u16; width * height];
+        data[12] = RAIN_THRESHOLD - 1; // Just below threshold
+        let mask = compute_dilated_mask_with_dims(&data, 1, width, height);
+        assert_eq!(mask, vec![false; width * height]);
+    }
+
+    #[test]
+    fn test_dilated_mask_nodata() {
+        let width = 5;
+        let height = 5;
+        let mut data = vec![0u16; width * height];
+        data[12] = NODATA; // NODATA should be ignored even if it's "numerically" > RAIN_THRESHOLD
+        let mask = compute_dilated_mask_with_dims(&data, 1, width, height);
+        assert_eq!(mask, vec![false; width * height]);
+    }
+
+    #[test]
+    fn test_dilated_mask_single_point() {
+        let width = 5;
+        let height = 5;
+        let mut data = vec![0u16; width * height];
+        data[12] = RAIN_THRESHOLD; // Center point (2, 2)
+        let mask = compute_dilated_mask_with_dims(&data, 1, width, height);
+
+        // With radius 1, center (2,2) and its 4 direct neighbors should be true
+        // and also diagonals if radius^2 allows (dx^2 + dy^2 <= 1^2)
+        // dx=1, dy=1 => 1^2 + 1^2 = 2 > 1^2, so diagonals NOT included for radius 1.
+        // Expected true at (2,2), (1,2), (3,2), (2,1), (2,3)
+        let mut expected = vec![false; width * height];
+        expected[12] = true; // (2,2)
+        expected[7] = true; // (2,1)
+        expected[17] = true; // (2,3)
+        expected[11] = true; // (1,2)
+        expected[13] = true; // (3,2)
+
+        assert_eq!(mask, expected);
+    }
+
+    #[test]
+    fn test_dilated_mask_single_point_radius_2() {
+        let width = 5;
+        let height = 5;
+        let mut data = vec![0u16; width * height];
+        data[12] = RAIN_THRESHOLD; // Center point (2, 2)
+        let mask = compute_dilated_mask_with_dims(&data, 2, width, height);
+
+        // With radius 2, points within dist sqrt(4)=2.
+        // dx^2 + dy^2 <= 4
+        // (0,0), (1,0), (2,0), (1,1), (0,1), (0,2) etc relative to center.
+        // Diagonal (1,1) => 1^2 + 1^2 = 2 <= 4. (Included)
+        // Diagonal (2,1) => 2^2 + 1^2 = 5 > 4. (Excluded)
+        // Diagonal (2,2) => 2^2 + 2^2 = 8 > 4. (Excluded)
+
+        let mut expected = vec![false; width * height];
+        for dy in -2..=2i32 {
+            for dx in -2..=2i32 {
+                if dx * dx + dy * dy <= 4 {
+                    let nx = 2 + dx;
+                    let ny = 2 + dy;
+                    if nx >= 0 && nx < 5 && ny >= 0 && ny < 5 {
+                        expected[ny as usize * 5 + nx as usize] = true;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(mask, expected);
+    }
+
+    #[test]
+    fn test_dilated_mask_boundaries() {
+        let width = 5;
+        let height = 5;
+        let mut data = vec![0u16; width * height];
+        data[0] = RAIN_THRESHOLD; // Top-left corner (0, 0)
+        let mask = compute_dilated_mask_with_dims(&data, 1, width, height);
+
+        let mut expected = vec![false; width * height];
+        expected[0] = true; // (0,0)
+        expected[1] = true; // (1,0)
+        expected[5] = true; // (0,1)
+
+        assert_eq!(mask, expected);
+    }
+
+    #[test]
+    fn test_dilated_mask_overlap() {
+        let width = 5;
+        let height = 5;
+        let mut data = vec![0u16; width * height];
+        data[6] = RAIN_THRESHOLD; // (1, 1)
+        data[8] = RAIN_THRESHOLD; // (3, 1)
+        let mask = compute_dilated_mask_with_dims(&data, 1, width, height);
+
+        let mut expected = vec![false; width * height];
+        // Dilation for (1, 1) radius 1: (1,1), (0,1), (2,1), (1,0), (1,2)
+        for &(dx, dy) in &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nx = 1 + dx;
+            let ny = 1 + dy;
+            expected[ny as usize * width + nx as usize] = true;
+        }
+        // Dilation for (3, 1) radius 1: (3,1), (2,1), (4,1), (3,0), (3,2)
+        for &(dx, dy) in &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nx = 3 + dx;
+            let ny = 1 + dy;
+            expected[ny as usize * width + nx as usize] = true;
+        }
+
+        assert_eq!(mask, expected);
+        assert!(expected[7]); // Overlap point (2, 1) is true
     }
 }
