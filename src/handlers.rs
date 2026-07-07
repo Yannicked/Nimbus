@@ -460,11 +460,23 @@ pub async fn get_value(
                     ))
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+                // Precompute neighbor offsets within radius
+                let mut offsets = Vec::with_capacity(height_box * width_box);
+                for dy_idx in 0..height_box {
+                    let dy = (y_min + dy_idx) as i32 - iy;
+                    for dx_idx in 0..width_box {
+                        let dx = (x_min + dx_idx) as i32 - ix;
+                        if dx * dx + dy * dy <= r_sq {
+                            offsets.push(dy_idx * width_box + dx_idx);
+                        }
+                    }
+                }
+
                 for ens_idx in 0..num_ensembles {
+                    let ens_offset = ens_idx * height_box * width_box;
                     let center_dy = (iy as usize) - y_min;
                     let center_dx = (ix as usize) - x_min;
-                    let center_val = raw_grid
-                        [ens_idx * height_box * width_box + center_dy * width_box + center_dx];
+                    let center_val = raw_grid[ens_offset + center_dy * width_box + center_dx];
 
                     if center_val == NODATA {
                         continue;
@@ -472,23 +484,10 @@ pub async fn get_value(
                     count += 1;
 
                     let mut member_has_rain = false;
-                    for dy_idx in 0..height_box {
-                        let ny = y_min + dy_idx;
-                        let dy = ny as i32 - iy;
-                        for dx_idx in 0..width_box {
-                            let nx = x_min + dx_idx;
-                            let dx = nx as i32 - ix;
-                            if dx * dx + dy * dy <= r_sq {
-                                let val = raw_grid[ens_idx * height_box * width_box
-                                    + dy_idx * width_box
-                                    + dx_idx];
-                                if val != NODATA && val >= RAIN_THRESHOLD {
-                                    member_has_rain = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if member_has_rain {
+                    for &offset in &offsets {
+                        let val = raw_grid[ens_offset + offset];
+                        if val != NODATA && val >= RAIN_THRESHOLD {
+                            member_has_rain = true;
                             break;
                         }
                     }
@@ -735,19 +734,33 @@ pub async fn get_timeseries(
                         ))
                         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+                    // Precompute neighbor offsets within radius
+                    let mut offsets = Vec::with_capacity(height_box * width_box);
+                    for dy_idx in 0..height_box {
+                        let dy = (y_min + dy_idx) as i32 - iy;
+                        for dx_idx in 0..width_box {
+                            let dx = (x_min + dx_idx) as i32 - ix;
+                            if dx * dx + dy * dy <= r_sq {
+                                offsets.push(dy_idx * width_box + dx_idx);
+                            }
+                        }
+                    }
+
+                    let time_stride = height_box * width_box;
+                    let ens_stride = num_times * time_stride;
+                    let center_dy = iy as usize - y_min;
+                    let center_dx = ix as usize - x_min;
+                    let center_offset_in_time = center_dy * width_box + center_dx;
+
                     // For each time step, compute NEP
                     for t in 0..num_times {
                         let mut over = 0;
                         let mut count = 0;
 
                         for ens_idx in 0..num_ensembles {
+                            let time_offset = ens_idx * ens_stride + t * time_stride;
                             // Check if center cell is NODATA
-                            let center_dy = iy as usize - y_min;
-                            let center_dx = ix as usize - x_min;
-                            let center_idx = ens_idx * (num_times * height_box * width_box)
-                                + t * (height_box * width_box)
-                                + center_dy * width_box
-                                + center_dx;
+                            let center_idx = time_offset + center_offset_in_time;
                             let center_val = raw_grid[center_idx];
                             if center_val == NODATA {
                                 continue;
@@ -755,25 +768,10 @@ pub async fn get_timeseries(
                             count += 1;
 
                             let mut member_has_rain = false;
-                            for dy_idx in 0..height_box {
-                                let ny = y_min + dy_idx;
-                                let dy = ny as i32 - iy;
-                                for dx_idx in 0..width_box {
-                                    let nx = x_min + dx_idx;
-                                    let dx = nx as i32 - ix;
-                                    if dx * dx + dy * dy <= r_sq {
-                                        let idx = ens_idx * (num_times * height_box * width_box)
-                                            + t * (height_box * width_box)
-                                            + dy_idx * width_box
-                                            + dx_idx;
-                                        let val = raw_grid[idx];
-                                        if val != NODATA && val >= RAIN_THRESHOLD {
-                                            member_has_rain = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if member_has_rain {
+                            for &offset in &offsets {
+                                let val = raw_grid[time_offset + offset];
+                                if val != NODATA && val >= RAIN_THRESHOLD {
+                                    member_has_rain = true;
                                     break;
                                 }
                             }
