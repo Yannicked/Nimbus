@@ -917,7 +917,7 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
             .unwrap();
             state_clone
                 .data_cache
-                .insert(("med".to_string(), time_key), webp_bytes);
+                .insert((std::borrow::Cow::Borrowed("med"), time_key), webp_bytes);
         });
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {

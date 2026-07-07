@@ -8,6 +8,7 @@ use crate::state::AppState;
 use axum::http::StatusCode;
 use rayon::prelude::*;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Scans a directory for the most-recently-modified `.nc` file and returns its path.
@@ -589,19 +590,19 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         // Insert stats into grid_cache
         state
             .grid_cache
-            .insert(("med".to_string(), time_val), arc_med.clone());
+            .insert((Cow::Borrowed("med"), time_val), arc_med.clone());
         state
             .grid_cache
-            .insert(("max".to_string(), time_val), arc_max.clone());
+            .insert((Cow::Borrowed("max"), time_val), arc_max.clone());
         state
             .grid_cache
-            .insert(("prob".to_string(), time_val), arc_prob.clone());
+            .insert((Cow::Borrowed("prob"), time_val), arc_prob.clone());
         state
             .grid_cache
-            .insert(("spread".to_string(), time_val), arc_spread.clone());
+            .insert((Cow::Borrowed("spread"), time_val), arc_spread.clone());
         state
             .grid_cache
-            .insert(("pmm".to_string(), time_val), arc_pmm.clone());
+            .insert((Cow::Borrowed("pmm"), time_val), arc_pmm.clone());
 
         // Insert individual member slices utilizing zero-math chunking
         for (ens_num, chunk) in meta
@@ -611,16 +612,16 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         {
             state
                 .grid_cache
-                .insert((ens_num.to_string(), time_val), Arc::new(chunk.to_vec()));
+                .insert((Cow::Owned(ens_num.to_string()), time_val), Arc::new(chunk.to_vec()));
         }
 
         // Render WebPs for stats (med, max, prob, spread, pmm)
         let render_items = vec![
-            ("med".to_string(), arc_med),
-            ("max".to_string(), arc_max),
-            ("prob".to_string(), arc_prob),
-            ("spread".to_string(), arc_spread),
-            ("pmm".to_string(), arc_pmm),
+            (Cow::Borrowed("med"), arc_med),
+            (Cow::Borrowed("max"), arc_max),
+            (Cow::Borrowed("prob"), arc_prob),
+            (Cow::Borrowed("spread"), arc_spread),
+            (Cow::Borrowed("pmm"), arc_pmm),
         ];
 
         for (ens_str, slice) in render_items {

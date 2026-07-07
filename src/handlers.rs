@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::constants::{
@@ -156,17 +157,19 @@ pub async fn get_metadata(
 
 /// Serves the lossless R/G packed raw radar data PNG for a timeframe.
 pub async fn get_data_image(
-    Path((ens_str, time)): Path<(String, i64)>,
+    Path((mut ens_str, time)): Path<(String, i64)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Check cache
-    if let Some(cached_data) = state.data_cache.get(&(ens_str.clone(), time)) {
+    // Check cache using "move and move back" trick to avoid cloning
+    let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time);
+    if let Some(cached_data) = state.data_cache.get(&key) {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
+            .header("Cache-Control", "public, max-age=31536000, immutable")
             .body(axum::body::Body::from(cached_data.value().clone()))
             .unwrap());
     }
+    ens_str = key.0.into_owned();
 
     // Get current file path and metadata
     let file_path = state.file_path.read().await.clone();
@@ -198,11 +201,11 @@ pub async fn get_data_image(
             // Cache it
             state
                 .data_cache
-                .insert((ens_str.clone(), time), webp_bytes.clone());
+                .insert((Cow::Owned(ens_str), time), webp_bytes.clone());
 
             return Ok(Response::builder()
                 .header("Content-Type", "image/webp")
-                .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                .header("Cache-Control", "public, max-age=31536000, immutable")
                 .body(axum::body::Body::from(webp_bytes))
                 .unwrap());
         }
@@ -246,19 +249,22 @@ pub async fn get_data_image(
         })?;
 
         // Cache results
-        state.data_cache.insert((ens_str, time), webp_bytes.clone());
+        state.data_cache.insert((Cow::Owned(ens_str), time), webp_bytes.clone());
 
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
+            .header("Cache-Control", "public, max-age=31536000, immutable")
             .body(axum::body::Body::from(webp_bytes))
             .unwrap());
     }
 
-    // Retrieve or compute raw slice
-    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
+    // Retrieve or compute raw slice using "move and move back" trick to avoid cloning
+    let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time);
+    let raw_slice = if let Some(cached) = state.grid_cache.get(&key) {
+        ens_str = key.0.into_owned();
         cached.value().clone()
     } else {
+        ens_str = key.0.into_owned();
         let file_path_clone = file_path.clone();
         let meta_clone = meta.clone();
         let ens_str_clone = ens_str.clone();
@@ -275,7 +281,7 @@ pub async fn get_data_image(
         let arc = Arc::new(computed);
         state
             .grid_cache
-            .insert((ens_str.clone(), time), arc.clone());
+            .insert((Cow::Owned(ens_str.clone()), time), arc.clone());
         arc
     };
 
@@ -289,11 +295,11 @@ pub async fn get_data_image(
     .unwrap();
 
     // Cache results
-    state.data_cache.insert((ens_str, time), webp_bytes.clone());
+    state.data_cache.insert((Cow::Owned(ens_str), time), webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
+        .header("Cache-Control", "public, max-age=31536000, immutable")
         .body(axum::body::Body::from(webp_bytes))
         .unwrap())
 }
@@ -301,7 +307,7 @@ pub async fn get_data_image(
 /// Returns the precipitation value (or ensemble statistic) at a single
 /// geographic point as JSON.
 pub async fn get_value(
-    Query(q): Query<ValueQuery>,
+    Query(mut q): Query<ValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let file_path = state.file_path.read().await.clone();
@@ -374,9 +380,12 @@ pub async fn get_value(
     }
 
     if q.ens == "pmm" {
-        let raw_slice = if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+        let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), q.time);
+        let raw_slice = if let Some(slice) = state.grid_cache.get(&key) {
+            q.ens = key.0.into_owned();
             slice.value().clone()
         } else {
+            q.ens = key.0.into_owned();
             let file_path_clone = file_path.clone();
             let meta_clone = meta.clone();
             let ens_clone = q.ens.clone();
@@ -393,7 +402,7 @@ pub async fn get_value(
             let arc = Arc::new(computed);
             state
                 .grid_cache
-                .insert((q.ens.clone(), q.time), arc.clone());
+                .insert((Cow::Owned(q.ens.clone()), q.time), arc.clone());
             arc
         };
         let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
@@ -406,7 +415,9 @@ pub async fn get_value(
     }
 
     // Try reading from cache first
-    if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+    let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), q.time);
+    if let Some(slice) = state.grid_cache.get(&key) {
+        q.ens = key.0.into_owned();
         let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
         let (status_out, value_out) = if q.ens == "prob" {
             ("probability".to_string(), val_raw as f64)
@@ -621,7 +632,7 @@ pub async fn get_timeseries(
     // Try reading all radar times from cache first
     let mut all_cached = true;
     for &time_val in &meta.times {
-        if !state.grid_cache.contains_key(&(q.ens.clone(), time_val)) {
+        if !state.grid_cache.contains_key(&(Cow::Borrowed(q.ens.as_str()), time_val)) {
             all_cached = false;
             break;
         }
@@ -630,12 +641,17 @@ pub async fn get_timeseries(
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        if let Some(cached_ts) = state.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
+        let key: (Cow<'static, str>, i32, i32) = (Cow::Owned(q.ens), ix, iy);
+        if let Some(cached_ts) = state.timeseries_cache.get(&key) {
+            q.ens = key.0.into_owned();
             values.extend_from_slice(&cached_ts);
         } else {
+            q.ens = key.0.into_owned();
             let mut ts_values = Vec::with_capacity(meta.times.len());
             for &time_val in &meta.times {
-                if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+                let key = (Cow::Owned(q.ens), time_val);
+                if let Some(slice) = state.grid_cache.get(&key) {
+                    q.ens = key.0.into_owned();
                     let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
                     if q.ens == "prob" {
                         ts_values.push(val_raw as f64);
@@ -646,7 +662,7 @@ pub async fn get_timeseries(
             }
             state
                 .timeseries_cache
-                .insert((q.ens.clone(), ix, iy), Arc::new(ts_values.clone()));
+                .insert((Cow::Owned(q.ens.clone()), ix, iy), Arc::new(ts_values.clone()));
             values.extend(ts_values);
         }
     } else if q.ens == "pmm" {
@@ -658,9 +674,12 @@ pub async fn get_timeseries(
 
         let mut tasks = Vec::with_capacity(meta.times.len());
         for &time_val in &meta.times {
-            if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+            let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), time_val);
+            if let Some(slice) = state.grid_cache.get(&key) {
+                q.ens = key.0.into_owned();
                 tasks.push(TaskResult::Cached(slice.value().clone()));
             } else {
+                q.ens = key.0.into_owned();
                 let file_path_clone = file_path.clone();
                 let meta_clone = meta.clone();
                 let ens_clone = q.ens.clone();
@@ -680,7 +699,7 @@ pub async fn get_timeseries(
                     let arc = Arc::new(computed);
                     state_clone
                         .grid_cache
-                        .insert((ens_clone, time_val), arc.clone());
+                        .insert((Cow::Owned(ens_clone), time_val), arc.clone());
                     Ok(arc)
                 })));
             }
