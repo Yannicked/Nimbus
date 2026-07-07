@@ -195,3 +195,104 @@ pub fn interpolate_bilinear(
         NODATA
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::NODATA;
+    use crate::models::LutEntry;
+
+    #[test]
+    fn test_interpolate_bilinear_exact() {
+        let grid = [10, 20, 30, 40];
+        let w = 2;
+        let h = 2;
+
+        assert_eq!(interpolate_bilinear(0.0, 0.0, w, h, &grid), 10);
+        assert_eq!(interpolate_bilinear(1.0, 0.0, w, h, &grid), 20);
+        assert_eq!(interpolate_bilinear(0.0, 1.0, w, h, &grid), 30);
+        assert_eq!(interpolate_bilinear(1.0, 1.0, w, h, &grid), 40);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_midpoints() {
+        let grid = [10, 20, 30, 40];
+        let w = 2;
+        let h = 2;
+
+        // Horizontal midpoint
+        assert_eq!(interpolate_bilinear(0.5, 0.0, w, h, &grid), 15);
+        // Vertical midpoint
+        assert_eq!(interpolate_bilinear(0.0, 0.5, w, h, &grid), 20);
+        // Center midpoint
+        assert_eq!(interpolate_bilinear(0.5, 0.5, w, h, &grid), 25);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_out_of_bounds() {
+        let grid = [10, 20, 30, 40];
+        let w = 2;
+        let h = 2;
+
+        assert_eq!(interpolate_bilinear(-1.1, 0.0, w, h, &grid), NODATA);
+        assert_eq!(interpolate_bilinear(2.0, 0.0, w, h, &grid), NODATA);
+        assert_eq!(interpolate_bilinear(0.0, -1.1, w, h, &grid), NODATA);
+        assert_eq!(interpolate_bilinear(0.0, 2.0, w, h, &grid), NODATA);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_partial_out_of_bounds() {
+        let grid = [10, 20, 30, 40];
+        let w = 2;
+        let h = 2;
+
+        // At fx = -0.5, ix1 = -1, ix2 = 0. wx = 0.5.
+        // Neighbors are (ix1, 0) which is None, and (ix2, 0) which is 10.
+        // Weights: w00 = 0.5, w10 = 0.5.
+        // Only w10 is used. sum_val = 10 * 0.5, sum_weight = 0.5. Result = 10.
+        assert_eq!(interpolate_bilinear(-0.5, 0.0, w, h, &grid), 10);
+        assert_eq!(interpolate_bilinear(1.5, 0.0, w, h, &grid), 20);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_lut_basic() {
+        let grid = [10, 20, 30, 40];
+        // Center midpoint (0.5, 0.5)
+        let entry = LutEntry {
+            indices: [0, 1, 2, 3],
+            weights: [0.25, 0.25, 0.25, 0.25],
+        };
+        assert_eq!(interpolate_bilinear_lut(&entry, &grid), 25);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_lut_nodata() {
+        let grid = [10, NODATA, 30, 40];
+        // Center midpoint (0.5, 0.5)
+        // Neighbors: 10 (0.25), NODATA (0.25), 30 (0.25), 40 (0.25)
+        // sum_val = 10*0.25 + 30*0.25 + 40*0.25 = 2.5 + 7.5 + 10 = 20
+        // sum_weight = 0.25 + 0.25 + 0.25 = 0.75
+        // Result = 20 / 0.75 = 26.666 -> 27
+        let entry = LutEntry {
+            indices: [0, 1, 2, 3],
+            weights: [0.25, 0.25, 0.25, 0.25],
+        };
+        assert_eq!(interpolate_bilinear_lut(&entry, &grid), 27);
+
+        let grid_all_nodata = [NODATA, NODATA, NODATA, NODATA];
+        assert_eq!(interpolate_bilinear_lut(&entry, &grid_all_nodata), NODATA);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_lut_partial_indices() {
+        let grid = [10, 20, 30, 40];
+        let entry = LutEntry {
+            indices: [0, u32::MAX, 2, u32::MAX],
+            weights: [0.5, 0.5, 0.0, 0.0],
+        };
+        // sum_val = 10 * 0.5 = 5.0
+        // sum_weight = 0.5
+        // Result = 5.0 / 0.5 = 10
+        assert_eq!(interpolate_bilinear_lut(&entry, &grid), 10);
+    }
+}
