@@ -650,12 +650,15 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("Failed to acquire semaphore for temperature precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
                 render_temp_webp_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
             })
             .await
-            .unwrap();
+            .expect("Failed to join temperature rendering task");
             state_clone.temp_data_cache.insert(time_key, webp_bytes);
         });
 
@@ -722,7 +725,10 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("Failed to acquire semaphore for wind precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
                 render_wind_webp_bytes(
                     &u_vals,
@@ -731,7 +737,7 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
                 )
             })
             .await
-            .unwrap();
+            .expect("Failed to join wind rendering task");
             state_clone
                 .wind_data_cache
                 .insert((height_level, time_key), webp_bytes);
@@ -797,12 +803,15 @@ pub async fn precalculate_solar_data(state: Arc<AppState>) {
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("Failed to acquire semaphore for solar precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
                 render_solar_webp_bytes(&values, &state_clone_for_blocking.solar_projection_lut)
             })
             .await
-            .unwrap();
+            .expect("Failed to join solar rendering task");
             state_clone.solar_data_cache.insert(time_key, webp_bytes);
         });
 
@@ -909,12 +918,15 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem
+                .acquire()
+                .await
+                .expect("Failed to acquire semaphore for rain precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
                 render_data_webp_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
             })
             .await
-            .unwrap();
+            .expect("Failed to join rain rendering task");
             state_clone
                 .data_cache
                 .insert(("med".to_string(), time_key), webp_bytes);
