@@ -13,11 +13,11 @@ use crate::constants::{
 use crate::harmonie::parse_reference_time;
 use crate::interpolation::interpolate_bilinear;
 use crate::models::{
-    reduce_ensemble, EnsembleStat, ForecastStep, SolarMetadata, SolarTimeseriesQuery,
-    SolarTimeseriesResponse, SolarValueQuery, TempMetadata, TempTimeseriesQuery,
-    TempTimeseriesResponse, TempValueQuery, TimeseriesQuery, TimeseriesResponse, ValueQuery,
-    ValueResponse, WindMetadata, WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery,
-    WindValueResponse,
+    reduce_ensemble, EnsembleSelector, EnsembleStat, ForecastStep, SolarMetadata,
+    SolarTimeseriesQuery, SolarTimeseriesResponse, SolarValueQuery, TempMetadata,
+    TempTimeseriesQuery, TempTimeseriesResponse, TempValueQuery, TimeseriesQuery,
+    TimeseriesResponse, ValueQuery, ValueResponse, WindMetadata, WindTimeseriesQuery,
+    WindTimeseriesResponse, WindValueQuery, WindValueResponse,
 };
 use crate::projection::{self, lonlat_to_grib_indices};
 use crate::radar::{compute_raw_slice, raw_to_value};
@@ -159,8 +159,13 @@ pub async fn get_data_image(
     Path((ens_str, time)): Path<(String, i64)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ens = EnsembleSelector::from_str(&ens_str).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("Invalid ensemble parameter: {}", ens_str),
+    ))?;
+
     // Check cache
-    if let Some(cached_data) = state.data_cache.get(&(ens_str.clone(), time)) {
+    if let Some(cached_data) = state.data_cache.get(&(ens, time)) {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -177,7 +182,7 @@ pub async fn get_data_image(
 
     // Check if this time step is for Harmonie (i.e. past the radar forecast)
     if !meta.times.contains(&time) {
-        if ens_str != "pmm" {
+        if ens != EnsembleSelector::Stat(EnsembleStat::Pmm) {
             // Return transparent empty image
             let empty_pixels = vec![0u8; (GRID_W * GRID_H * 4) as usize];
             let mut webp_bytes = Vec::new();
@@ -196,9 +201,7 @@ pub async fn get_data_image(
                     .unwrap();
             }
             // Cache it
-            state
-                .data_cache
-                .insert((ens_str.clone(), time), webp_bytes.clone());
+            state.data_cache.insert((ens, time), webp_bytes.clone());
 
             return Ok(Response::builder()
                 .header("Content-Type", "image/webp")
@@ -246,7 +249,7 @@ pub async fn get_data_image(
         })?;
 
         // Cache results
-        state.data_cache.insert((ens_str, time), webp_bytes.clone());
+        state.data_cache.insert((ens, time), webp_bytes.clone());
 
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
@@ -256,7 +259,7 @@ pub async fn get_data_image(
     }
 
     // Retrieve or compute raw slice
-    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
+    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens, time)) {
         cached.value().clone()
     } else {
         let file_path_clone = file_path.clone();
@@ -273,9 +276,7 @@ pub async fn get_data_image(
             )
         })??;
         let arc = Arc::new(computed);
-        state
-            .grid_cache
-            .insert((ens_str.clone(), time), arc.clone());
+        state.grid_cache.insert((ens, time), arc.clone());
         arc
     };
 
@@ -289,7 +290,7 @@ pub async fn get_data_image(
     .unwrap();
 
     // Cache results
-    state.data_cache.insert((ens_str, time), webp_bytes.clone());
+    state.data_cache.insert((ens, time), webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -304,6 +305,11 @@ pub async fn get_value(
     Query(q): Query<ValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ens = EnsembleSelector::from_str(&q.ens).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("Invalid ensemble parameter: {}", q.ens),
+    ))?;
+
     let file_path = state.file_path.read().await.clone();
     let meta = state.metadata.read().await.clone().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -315,7 +321,7 @@ pub async fn get_value(
 
     // Check if this time step is for Harmonie (i.e. past the radar forecast)
     if !meta.times.contains(&q.time) {
-        if q.ens != "pmm" {
+        if ens != EnsembleSelector::Stat(EnsembleStat::Pmm) {
             return Ok(axum::Json(ValueResponse {
                 status: "no_data".to_string(),
                 value: None,
@@ -373,15 +379,15 @@ pub async fn get_value(
         }));
     }
 
-    if q.ens == "pmm" {
-        let raw_slice = if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+    if ens == EnsembleSelector::Stat(EnsembleStat::Pmm) {
+        let raw_slice = if let Some(slice) = state.grid_cache.get(&(ens, q.time)) {
             slice.value().clone()
         } else {
             let file_path_clone = file_path.clone();
             let meta_clone = meta.clone();
-            let ens_clone = q.ens.clone();
+            let ens_str_clone = q.ens.clone();
             let computed = tokio::task::spawn_blocking(move || {
-                compute_raw_slice(&file_path_clone, &meta_clone, &ens_clone, q.time)
+                compute_raw_slice(&file_path_clone, &meta_clone, &ens_str_clone, q.time)
             })
             .await
             .map_err(|e| {
@@ -391,9 +397,7 @@ pub async fn get_value(
                 )
             })??;
             let arc = Arc::new(computed);
-            state
-                .grid_cache
-                .insert((q.ens.clone(), q.time), arc.clone());
+            state.grid_cache.insert((ens, q.time), arc.clone());
             arc
         };
         let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
@@ -406,9 +410,9 @@ pub async fn get_value(
     }
 
     // Try reading from cache first
-    if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+    if let Some(slice) = state.grid_cache.get(&(ens, q.time)) {
         let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
-        let (status_out, value_out) = if q.ens == "prob" {
+        let (status_out, value_out) = if ens == EnsembleSelector::Stat(EnsembleStat::Probability) {
             ("probability".to_string(), val_raw as f64)
         } else {
             let val_mmh = raw_to_value(val_raw);
@@ -577,6 +581,11 @@ pub async fn get_timeseries(
     Query(q): Query<TimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let ens = EnsembleSelector::from_str(&q.ens).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("Invalid ensemble parameter: {}", q.ens),
+    ))?;
+
     let file_path = state.file_path.read().await.clone();
     let meta = state.metadata.read().await.clone().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -621,7 +630,7 @@ pub async fn get_timeseries(
     // Try reading all radar times from cache first
     let mut all_cached = true;
     for &time_val in &meta.times {
-        if !state.grid_cache.contains_key(&(q.ens.clone(), time_val)) {
+        if !state.grid_cache.contains_key(&(ens, time_val)) {
             all_cached = false;
             break;
         }
@@ -630,14 +639,14 @@ pub async fn get_timeseries(
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        if let Some(cached_ts) = state.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
+        if let Some(cached_ts) = state.timeseries_cache.get(&(ens, ix, iy)) {
             values.extend_from_slice(&cached_ts);
         } else {
             let mut ts_values = Vec::with_capacity(meta.times.len());
             for &time_val in &meta.times {
-                if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+                if let Some(slice) = state.grid_cache.get(&(ens, time_val)) {
                     let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
-                    if q.ens == "prob" {
+                    if ens == EnsembleSelector::Stat(EnsembleStat::Probability) {
                         ts_values.push(val_raw as f64);
                     } else {
                         ts_values.push(raw_to_value(val_raw));
@@ -646,10 +655,10 @@ pub async fn get_timeseries(
             }
             state
                 .timeseries_cache
-                .insert((q.ens.clone(), ix, iy), Arc::new(ts_values.clone()));
+                .insert((ens, ix, iy), Arc::new(ts_values.clone()));
             values.extend(ts_values);
         }
-    } else if q.ens == "pmm" {
+    } else if ens == EnsembleSelector::Stat(EnsembleStat::Pmm) {
         #[allow(clippy::type_complexity)]
         enum TaskResult {
             Cached(Arc<Vec<u16>>),
@@ -658,15 +667,15 @@ pub async fn get_timeseries(
 
         let mut tasks = Vec::with_capacity(meta.times.len());
         for &time_val in &meta.times {
-            if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+            if let Some(slice) = state.grid_cache.get(&(ens, time_val)) {
                 tasks.push(TaskResult::Cached(slice.value().clone()));
             } else {
                 let file_path_clone = file_path.clone();
                 let meta_clone = meta.clone();
-                let ens_clone = q.ens.clone();
+                let ens_str_clone = q.ens.clone();
                 let state_clone = state.clone();
                 tasks.push(TaskResult::Spawned(tokio::spawn(async move {
-                    let ens_for_block = ens_clone.clone();
+                    let ens_for_block = ens_str_clone.clone();
                     let computed = tokio::task::spawn_blocking(move || {
                         compute_raw_slice(&file_path_clone, &meta_clone, &ens_for_block, time_val)
                     })
@@ -678,9 +687,7 @@ pub async fn get_timeseries(
                         )
                     })??;
                     let arc = Arc::new(computed);
-                    state_clone
-                        .grid_cache
-                        .insert((ens_clone, time_val), arc.clone());
+                    state_clone.grid_cache.insert((ens, time_val), arc.clone());
                     Ok(arc)
                 })));
             }
@@ -857,7 +864,7 @@ pub async fn get_timeseries(
             let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
             for &time_val in &extended_times {
-                if time_val > last_radar_time && q.ens == "pmm" {
+                if time_val > last_radar_time && ens == EnsembleSelector::Stat(EnsembleStat::Pmm) {
                     let absolute_time = radar_ref_time + time_val;
                     let harmonie_time = absolute_time - rain_fc.reference_time;
                     let step = rain_fc.steps.iter().min_by_key(|s| {
@@ -880,7 +887,7 @@ pub async fn get_timeseries(
         }
     }
 
-    let is_pmm = q.ens == "pmm";
+    let is_pmm = ens == EnsembleSelector::Stat(EnsembleStat::Pmm);
     Ok(axum::Json(TimeseriesResponse {
         status: "ok".to_string(),
         lat: q.lat,

@@ -1,4 +1,6 @@
-use crate::models::{LutEntry, Metadata, RainForecast, SolarForecast, TempForecast, WindForecast};
+use crate::models::{
+    EnsembleSelector, LutEntry, Metadata, RainForecast, SolarForecast, TempForecast, WindForecast,
+};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -7,9 +9,9 @@ use tokio::sync::RwLock;
 pub struct AppState {
     pub file_path: RwLock<String>,
     /// Key: (ens, time), value: raw grid slice
-    pub grid_cache: DashMap<(String, i64), Arc<Vec<u16>>>,
+    pub grid_cache: DashMap<(EnsembleSelector, i64), Arc<Vec<u16>>>,
     /// Key: (ens, time), value: PNG data image bytes
-    pub data_cache: DashMap<(String, i64), Vec<u8>>,
+    pub data_cache: DashMap<(EnsembleSelector, i64), Vec<u8>>,
     pub metadata: RwLock<Option<Metadata>>,
     pub projection_lut: Vec<LutEntry>,
 
@@ -33,5 +35,5 @@ pub struct AppState {
 
     /// Cache for construction of timeseries.
     /// Key: (ens, ix, iy), value: raw timeseries values for the radar steps
-    pub timeseries_cache: DashMap<(String, i32, i32), Arc<Vec<f64>>>,
+    pub timeseries_cache: DashMap<(EnsembleSelector, i32, i32), Arc<Vec<f64>>>,
 }

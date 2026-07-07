@@ -1,7 +1,7 @@
 use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, NODATA};
 use crate::models::{
-    FileUrlResponse, RainForecast, RainStep, SolarForecast, SolarStep, TempForecast, TempStep,
-    WindForecast, WindStep,
+    EnsembleSelector, EnsembleStat, FileUrlResponse, RainForecast, RainStep, SolarForecast,
+    SolarStep, TempForecast, TempStep, WindForecast, WindStep,
 };
 use crate::rendering::{
     render_data_webp_bytes, render_solar_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes,
@@ -915,9 +915,10 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
             })
             .await
             .unwrap();
-            state_clone
-                .data_cache
-                .insert(("med".to_string(), time_key), webp_bytes);
+            state_clone.data_cache.insert(
+                (EnsembleSelector::Stat(EnsembleStat::Median), time_key),
+                webp_bytes,
+            );
         });
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {

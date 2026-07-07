@@ -2,7 +2,7 @@ use crate::constants::{
     GRID_H, GRID_W, KNMI_DATASET, KNMI_GRID_H, KNMI_GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT,
     MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR, RAIN_THRESHOLD, SCALE_FACTOR,
 };
-use crate::models::{reduce_ensemble, EnsembleStat, FileUrlResponse, Metadata};
+use crate::models::{reduce_ensemble, EnsembleSelector, EnsembleStat, FileUrlResponse, Metadata};
 use crate::rendering::render_data_webp_bytes;
 use crate::state::AppState;
 use axum::http::StatusCode;
@@ -587,21 +587,26 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             .unwrap();
 
         // Insert stats into grid_cache
-        state
-            .grid_cache
-            .insert(("med".to_string(), time_val), arc_med.clone());
-        state
-            .grid_cache
-            .insert(("max".to_string(), time_val), arc_max.clone());
-        state
-            .grid_cache
-            .insert(("prob".to_string(), time_val), arc_prob.clone());
-        state
-            .grid_cache
-            .insert(("spread".to_string(), time_val), arc_spread.clone());
-        state
-            .grid_cache
-            .insert(("pmm".to_string(), time_val), arc_pmm.clone());
+        state.grid_cache.insert(
+            (EnsembleSelector::Stat(EnsembleStat::Median), time_val),
+            arc_med.clone(),
+        );
+        state.grid_cache.insert(
+            (EnsembleSelector::Stat(EnsembleStat::Maximum), time_val),
+            arc_max.clone(),
+        );
+        state.grid_cache.insert(
+            (EnsembleSelector::Stat(EnsembleStat::Probability), time_val),
+            arc_prob.clone(),
+        );
+        state.grid_cache.insert(
+            (EnsembleSelector::Stat(EnsembleStat::Spread), time_val),
+            arc_spread.clone(),
+        );
+        state.grid_cache.insert(
+            (EnsembleSelector::Stat(EnsembleStat::Pmm), time_val),
+            arc_pmm.clone(),
+        );
 
         // Insert individual member slices utilizing zero-math chunking
         for (ens_num, chunk) in meta
@@ -609,21 +614,22 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             .iter()
             .zip(all_members_data.chunks_exact(grid_size))
         {
-            state
-                .grid_cache
-                .insert((ens_num.to_string(), time_val), Arc::new(chunk.to_vec()));
+            state.grid_cache.insert(
+                (EnsembleSelector::Member(*ens_num), time_val),
+                Arc::new(chunk.to_vec()),
+            );
         }
 
         // Render WebPs for stats (med, max, prob, spread, pmm)
         let render_items = vec![
-            ("med".to_string(), arc_med),
-            ("max".to_string(), arc_max),
-            ("prob".to_string(), arc_prob),
-            ("spread".to_string(), arc_spread),
-            ("pmm".to_string(), arc_pmm),
+            (EnsembleSelector::Stat(EnsembleStat::Median), arc_med),
+            (EnsembleSelector::Stat(EnsembleStat::Maximum), arc_max),
+            (EnsembleSelector::Stat(EnsembleStat::Probability), arc_prob),
+            (EnsembleSelector::Stat(EnsembleStat::Spread), arc_spread),
+            (EnsembleSelector::Stat(EnsembleStat::Pmm), arc_pmm),
         ];
 
-        for (ens_str, slice) in render_items {
+        for (ens, slice) in render_items {
             // 3. Acquire BEFORE spawning. This exerts backpressure so the loop doesn't read gigabytes
             // of NetCDF files into memory while waiting for the GPU/CPU to finish rendering WebPs.
             let permit = semaphore.clone().acquire_owned().await.unwrap();
@@ -640,9 +646,7 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
                 .await
                 .unwrap();
 
-                state_clone
-                    .data_cache
-                    .insert((ens_str, time_val), webp_bytes);
+                state_clone.data_cache.insert((ens, time_val), webp_bytes);
 
                 // Drop the permit to signal the semaphore that a core has opened up
                 drop(permit);

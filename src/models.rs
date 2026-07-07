@@ -292,6 +292,7 @@ pub struct FileUrlResponse {
 }
 
 /// The statistical reduction to apply across ensemble members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EnsembleStat {
     /// Take the median member value.
     Median,
@@ -315,6 +316,25 @@ impl EnsembleStat {
             "spread" => Some(Self::Spread),
             "pmm" => Some(Self::Pmm),
             _ => None,
+        }
+    }
+}
+
+/// A selector for either a statistical reduction or an individual ensemble member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnsembleSelector {
+    Stat(EnsembleStat),
+    Member(i32),
+}
+
+impl EnsembleSelector {
+    pub fn from_str(s: &str) -> Option<Self> {
+        if let Some(stat) = EnsembleStat::from_str(s) {
+            Some(Self::Stat(stat))
+        } else if let Ok(member) = s.parse::<i32>() {
+            Some(Self::Member(member))
+        } else {
+            None
         }
     }
 }
