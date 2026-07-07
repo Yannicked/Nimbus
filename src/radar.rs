@@ -936,4 +936,56 @@ mod tests {
         assert!((raw_to_value(100) - 1.0).abs() < f64::EPSILON);
         assert!((raw_to_value(1234) - 12.34).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn test_find_latest_nc_file_empty_dir() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let test_dir = tmp_dir.path().to_str().unwrap();
+        let result = find_latest_nc_file(test_dir);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_latest_nc_file_no_nc_files() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let test_dir = tmp_dir.path().to_str().unwrap();
+        std::fs::File::create(tmp_dir.path().join("test.txt")).unwrap();
+        let result = find_latest_nc_file(test_dir);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_latest_nc_file_single_nc() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let test_dir = tmp_dir.path().to_str().unwrap();
+        let file_path = tmp_dir.path().join("test.nc");
+        std::fs::File::create(file_path).unwrap();
+        let result = find_latest_nc_file(test_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("test.nc"));
+    }
+
+    #[test]
+    fn test_find_latest_nc_file_multiple_nc() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let test_dir = tmp_dir.path().to_str().unwrap();
+
+        let path1 = tmp_dir.path().join("old.nc");
+        let path2 = tmp_dir.path().join("new.nc");
+
+        std::fs::File::create(path1).unwrap();
+        // Ensure some time difference
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::fs::File::create(path2).unwrap();
+
+        let result = find_latest_nc_file(test_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("new.nc"));
+    }
+
+    #[test]
+    fn test_find_latest_nc_file_non_existent_dir() {
+        let result = find_latest_nc_file("non_existent_directory_xyz");
+        assert!(result.is_none());
+    }
 }

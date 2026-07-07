@@ -23,4 +23,5 @@ rayon = "1.12"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
 
