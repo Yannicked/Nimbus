@@ -41,7 +41,7 @@ async fn main() {
         .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
 
     // Create cache directory if it doesn't exist
-    if let Err(e) = std::fs::create_dir_all(constants::CACHE_DIR) {
+    if let Err(e) = tokio::fs::create_dir_all(constants::CACHE_DIR).await {
         eprintln!(
             "Failed to create cache directory '{}': {:?}",
             constants::CACHE_DIR,

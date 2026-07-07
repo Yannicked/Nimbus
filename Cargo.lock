@@ -2816,6 +2816,7 @@ dependencies = [
  "serde_json",
  "tar",
  "tokio",
+ "tower",
  "tower-http 0.7.0",
 ]
 
