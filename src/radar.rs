@@ -161,7 +161,7 @@ pub fn compute_dilated_mask_with_dims(
                 for &(dx, dy) in &offsets {
                     let nx = x as i32 + dx;
                     let ny = y as i32 + dy;
-                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                    if (0..width as i32).contains(&nx) && (0..height as i32).contains(&ny) {
                         dilated[ny as usize * width + nx as usize] = true;
                     }
                 }
@@ -1019,7 +1019,7 @@ mod tests {
                 if dx * dx + dy * dy <= 4 {
                     let nx = 2 + dx;
                     let ny = 2 + dy;
-                    if nx >= 0 && nx < 5 && ny >= 0 && ny < 5 {
+                    if (0..5).contains(&nx) && (0..5).contains(&ny) {
                         expected[ny as usize * 5 + nx as usize] = true;
                     }
                 }
