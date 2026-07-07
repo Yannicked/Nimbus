@@ -860,7 +860,7 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
 
     let radar_meta_opt = state.metadata.read().await.clone();
     let radar_meta = match radar_meta_opt {
-        Some(m) => m,
+        Some(ref m) => m,
         None => {
             println!("No radar metadata loaded, skipping rain precalculation.");
             return;

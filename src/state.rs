@@ -5,12 +5,12 @@ use tokio::sync::RwLock;
 
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
-    pub file_path: RwLock<String>,
+    pub file_path: RwLock<Arc<String>>,
     /// Key: (ens, time), value: raw grid slice
     pub grid_cache: DashMap<(String, i64), Arc<Vec<u16>>>,
     /// Key: (ens, time), value: PNG data image bytes
     pub data_cache: DashMap<(String, i64), Vec<u8>>,
-    pub metadata: RwLock<Option<Metadata>>,
+    pub metadata: RwLock<Option<Arc<Metadata>>>,
     pub projection_lut: Vec<LutEntry>,
 
     // 2m Temperature Forecast

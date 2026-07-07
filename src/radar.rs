@@ -344,7 +344,7 @@ pub fn compute_raw_slice(
     }
 }
 
-pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
+pub async fn precalculate_all_data(state: Arc<AppState>, meta: Arc<Metadata>) {
     let target_version = meta.version;
     let file_path = state.file_path.read().await.clone();
     let num_times = meta.times.len();
@@ -744,11 +744,12 @@ pub async fn download_and_update_nc_file(
     // Perform atomic in-memory state reloading
     match load_metadata(&final_path) {
         Ok(meta) => {
+            let meta_arc = Arc::new(meta);
             let mut file_write = state.file_path.write().await;
-            *file_write = final_path.clone();
+            *file_write = Arc::new(final_path.clone());
 
             let mut meta_write = state.metadata.write().await;
-            *meta_write = Some(meta.clone());
+            *meta_write = Some(meta_arc.clone());
 
             state.grid_cache.clear();
             state.data_cache.clear();
@@ -760,7 +761,7 @@ pub async fn download_and_update_nc_file(
 
             let state_clone = state.clone();
             tokio::spawn(async move {
-                precalculate_all_data(state_clone, meta).await;
+                precalculate_all_data(state_clone, meta_arc).await;
             });
         }
         Err(e) => {

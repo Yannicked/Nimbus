@@ -73,7 +73,7 @@ async fn main() {
 
     // 2. Load initial metadata
     let metadata_val = match load_metadata(&initial_file) {
-        Ok(m) => Some(m),
+        Ok(m) => Some(Arc::new(m)),
         Err(e) => {
             eprintln!("Error loading metadata from {}: {}", initial_file, e);
             None
@@ -81,7 +81,7 @@ async fn main() {
     };
 
     let state = Arc::new(AppState {
-        file_path: tokio::sync::RwLock::new(initial_file.clone()),
+        file_path: tokio::sync::RwLock::new(Arc::new(initial_file.clone())),
         grid_cache: dashmap::DashMap::new(),
         data_cache: dashmap::DashMap::new(),
         metadata: tokio::sync::RwLock::new(metadata_val.clone()),

@@ -125,27 +125,34 @@ fn interpolate_wind(fx: f64, fy: f64, u_values: &[u16], v_values: &[u16]) -> Opt
 pub async fn get_metadata(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let meta = state.metadata.read().await.clone();
-    match meta {
-        Some(mut m) => {
+    let meta_opt = state.metadata.read().await.clone();
+    match meta_opt {
+        Some(m_arc) => {
             if let Some(ref rain_fc) = *state.rain_forecast.read().await {
-                if let Some(radar_ref_time) = parse_reference_time(&m.reference_time_str) {
-                    let last_radar_time = m.times.last().copied().unwrap_or(0);
-                    let mut extended_times = m.times.clone();
+                if let Some(radar_ref_time) = parse_reference_time(&m_arc.reference_time_str) {
+                    let last_radar_time = m_arc.times.last().copied().unwrap_or(0);
+                    let mut extended_times = m_arc.times.clone();
+                    let mut needs_extension = false;
                     for step in &rain_fc.steps {
                         let absolute_time =
                             rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
                         let relative_offset = absolute_time - radar_ref_time;
                         if relative_offset > last_radar_time {
                             extended_times.push(relative_offset);
+                            needs_extension = true;
                         }
                     }
-                    extended_times.sort_unstable();
-                    extended_times.dedup();
-                    m.times = extended_times;
+
+                    if needs_extension {
+                        extended_times.sort_unstable();
+                        extended_times.dedup();
+                        let mut m = (*m_arc).clone();
+                        m.times = extended_times;
+                        return Ok(axum::Json(m));
+                    }
                 }
             }
-            Ok(axum::Json(m))
+            Ok(axum::Json((*m_arc).clone()))
         }
         None => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -263,7 +270,7 @@ pub async fn get_data_image(
         let meta_clone = meta.clone();
         let ens_str_clone = ens_str.clone();
         let computed = tokio::task::spawn_blocking(move || {
-            compute_raw_slice(&file_path_clone, &meta_clone, &ens_str_clone, time)
+            compute_raw_slice(&*file_path_clone, &meta_clone, &ens_str_clone, time)
         })
         .await
         .map_err(|e| {
@@ -381,7 +388,7 @@ pub async fn get_value(
             let meta_clone = meta.clone();
             let ens_clone = q.ens.clone();
             let computed = tokio::task::spawn_blocking(move || {
-                compute_raw_slice(&file_path_clone, &meta_clone, &ens_clone, q.time)
+                compute_raw_slice(&*file_path_clone, &meta_clone, &ens_clone, q.time)
             })
             .await
             .map_err(|e| {
@@ -426,7 +433,7 @@ pub async fn get_value(
     let q_ens_clone = q.ens.clone();
     let meta_clone = meta.clone();
     let (status_out, value_out) = tokio::task::spawn_blocking(move || {
-        let file = netcdf::open(&file_path_clone)
+        let file = netcdf::open(&*file_path_clone)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let var = file.variable(PRECIP_VAR).ok_or((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -668,7 +675,7 @@ pub async fn get_timeseries(
                 tasks.push(TaskResult::Spawned(tokio::spawn(async move {
                     let ens_for_block = ens_clone.clone();
                     let computed = tokio::task::spawn_blocking(move || {
-                        compute_raw_slice(&file_path_clone, &meta_clone, &ens_for_block, time_val)
+                        compute_raw_slice(&*file_path_clone, &meta_clone, &ens_for_block, time_val)
                     })
                     .await
                     .map_err(|e| {
@@ -703,7 +710,7 @@ pub async fn get_timeseries(
         let q_ens_clone = q.ens.clone();
         let meta_clone = meta.clone();
         let radar_values = tokio::task::spawn_blocking(move || {
-            let file = netcdf::open(&file_path_clone)
+            let file = netcdf::open(&*file_path_clone)
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             let var = file.variable(PRECIP_VAR).ok_or((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -886,7 +893,7 @@ pub async fn get_timeseries(
         lat: q.lat,
         lon: q.lon,
         ens: q.ens,
-        times: if is_pmm { extended_times } else { meta.times },
+        times: if is_pmm { extended_times } else { meta.times.clone() },
         values,
     }))
 }
