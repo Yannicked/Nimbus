@@ -1,178 +1,43 @@
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
-use std::borrow::Cow;
-use std::sync::Arc;
+import re
 
-use crate::constants::{
-    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0,
-    KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA,
-    PRECIP_VAR, RAIN_THRESHOLD,
-};
-use crate::harmonie::parse_reference_time;
-use crate::interpolation::interpolate_bilinear;
-use crate::models::{
-    reduce_ensemble, EnsembleStat, ForecastStep, SolarMetadata, SolarTimeseriesQuery,
-    SolarTimeseriesResponse, SolarValueQuery, TempMetadata, TempTimeseriesQuery,
-    TempTimeseriesResponse, TempValueQuery, TimeseriesQuery, TimeseriesResponse, ValueQuery,
-    ValueResponse, WindMetadata, WindTimeseriesQuery, WindTimeseriesResponse, WindValueQuery,
-    WindValueResponse,
-};
-use crate::projection::{self, lonlat_to_grib_indices};
-use crate::radar::{compute_raw_slice, raw_to_value};
-use crate::rendering::{
-    render_data_webp_bytes, render_solar_webp_bytes, render_temp_webp_bytes, render_wind_webp_bytes,
-};
-use crate::state::AppState;
+def fix_file():
+    with open('src/handlers.rs', 'r') as f:
+        content = f.read()
 
-/// Generic helper to extract a value from a GRIB-based forecast (Temp, Solar, etc.)
-/// by finding the closest step and interpolating.
-#[allow(clippy::too_many_arguments)]
-fn with_grib_step<S, F, R>(
-    forecast: &F,
-    time: i64,
-    lon: f64,
-    lat: f64,
-    get_steps: impl Fn(&F) -> &[S],
-    get_forecast_hour: impl Fn(&S) -> i32,
-    extract_value: impl Fn(&S, f64, f64) -> Option<R>,
-    to_response: impl Fn(R) -> ValueResponse,
-) -> Result<axum::Json<ValueResponse>, (StatusCode, String)> {
-    let steps = get_steps(forecast);
-    if steps.is_empty() {
-        return Ok(axum::Json(ValueResponse {
-            status: "no_data".to_string(),
-            value: None,
-        }));
-    }
+    # 1. Mutability in signatures - use exact match to avoid double mut
+    content = content.replace('pub async fn get_value(\n    Query(q): Query<ValueQuery>,', 'pub async fn get_value(\n    Query(mut q): Query<ValueQuery>,')
+    content = content.replace('pub async fn get_timeseries(\n    Query(q): Query<TimeseriesQuery>,', 'pub async fn get_timeseries(\n    Query(mut q): Query<TimeseriesQuery>,')
+    content = content.replace('pub async fn get_data_image(\n    Path((ens_str, time)): Path<(String, i64)>,', 'pub async fn get_data_image(\n    Path((mut ens_str, time)): Path<(String, i64)>,')
 
-    let step = steps
-        .iter()
-        .min_by_key(|s| {
-            let step_offset = (get_forecast_hour(s) as i64) * 3600;
-            (step_offset - time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
+    # 2. Fix get_data_image body
+    # Use a more robust regex to find and replace the whole function
+    get_data_image_pattern = r'pub async fn get_data_image\(.*?Path\(\(mut ens_str, time\)\): Path<\(String, i64\)>,.*?State\(state\): State<Arc<AppState>>,.*?\).*?Result<impl IntoResponse, \(StatusCode, String\)> \{(?:.*?)\n\}'
 
-    let (fx, fy) = lonlat_to_grib_indices(lon, lat);
-
-    match extract_value(step, fx, fy) {
-        Some(val) => Ok(axum::Json(to_response(val))),
-        None => Ok(axum::Json(ValueResponse {
-            status: "out_of_bounds".to_string(),
-            value: None,
-        })),
-    }
-}
-
-/// Serves an empty favicon response to prevent 404 console errors.
-pub async fn favicon() -> impl IntoResponse {
-    StatusCode::NO_CONTENT
-}
-
-fn interpolate_temp(fx: f64, fy: f64, values: &[u16]) -> Option<f64> {
-    let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, values);
-    if val_raw != NODATA {
-        Some(val_raw as f64 / 10.0 - 273.15)
-    } else {
-        None
-    }
-}
-
-fn extract_timeseries<S, T, F>(steps: &[S], mut map_fn: F) -> (Vec<i64>, Vec<T>)
-where
-    S: ForecastStep,
-    F: FnMut(&S) -> Option<T>,
-{
-    let mut times = Vec::with_capacity(steps.len());
-    let mut values = Vec::with_capacity(steps.len());
-
-    for step in steps {
-        if let Some(val) = map_fn(step) {
-            let step_offset = (step.forecast_hour() as i64) * 3600;
-            times.push(step_offset);
-            values.push(val);
-        }
-    }
-
-    (times, values)
-}
-
-fn interpolate_solar(fx: f64, fy: f64, values: &[u16]) -> Option<f64> {
-    let val_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, values);
-    if val_raw != NODATA {
-        Some(val_raw as f64)
-    } else {
-        None
-    }
-}
-
-fn interpolate_wind(fx: f64, fy: f64, u_values: &[u16], v_values: &[u16]) -> Option<(f64, f64)> {
-    let u_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, u_values);
-    let v_raw = interpolate_bilinear(fx, fy, GRIB_WIDTH, GRIB_HEIGHT, v_values);
-
-    if u_raw != NODATA && v_raw != NODATA {
-        let u = u_raw as f64 / 100.0 - 100.0;
-        let v = v_raw as f64 / 100.0 - 100.0;
-        Some((u, v))
-    } else {
-        None
-    }
-}
-
-/// Returns the current dataset metadata as JSON.
-pub async fn get_metadata(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let meta = state.metadata.read().await.clone();
-    match meta {
-        Some(mut m) => {
-            if let Some(ref rain_fc) = *state.rain_forecast.read().await {
-                if let Some(radar_ref_time) = parse_reference_time(&m.reference_time_str) {
-                    let last_radar_time = m.times.last().copied().unwrap_or(0);
-                    let mut extended_times = m.times.clone();
-                    for step in &rain_fc.steps {
-                        let absolute_time =
-                            rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
-                        let relative_offset = absolute_time - radar_ref_time;
-                        if relative_offset > last_radar_time {
-                            extended_times.push(relative_offset);
-                        }
-                    }
-                    extended_times.sort_unstable();
-                    extended_times.dedup();
-                    m.times = extended_times;
-                }
-            }
-            Ok(axum::Json(m))
-        }
-        None => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Metadata not loaded".to_string(),
-        )),
-    }
-}
-
-/// Serves the lossless R/G packed raw radar data PNG for a timeframe.
-pub async fn get_data_image(
-    Path((mut ens_str, time)): Path<(String, i64)>,
+    # Let's use string split/join for safety
+    parts = content.split('pub async fn get_data_image(')
+    if len(parts) > 1:
+        rest = parts[1]
+        open_brace = rest.find('{')
+        # find matching close brace
+        count = 1
+        i = open_brace + 1
+        while count > 0 and i < len(rest):
+            if rest[i] == '{': count += 1
+            elif rest[i] == '}': count -= 1
+            i += 1
+        new_get_data_image = r'''Path((mut ens_str, time)): Path<(String, i64)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Check cache using "move and move back" trick to avoid cloning
-    let cached_bytes = {
-        let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time);
-        let res = state.data_cache.get(&key).map(|r| r.value().clone());
-        ens_str = key.0.into_owned();
-        res
-    };
+    let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time);
+    let cached_res = state.data_cache.get(&key);
+    ens_str = key.0.into_owned();
 
-    if let Some(webp_bytes) = cached_bytes {
+    if let Some(cached_data) = cached_res {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
             .header("Cache-Control", "public, max-age=31536000, immutable")
-            .body(axum::body::Body::from(webp_bytes))
+            .body(axum::body::Body::from(cached_data.value().clone()))
             .unwrap());
     }
 
@@ -266,33 +131,31 @@ pub async fn get_data_image(
     }
 
     // Retrieve or compute raw slice using "move and move back" trick to avoid cloning
-    let raw_slice = {
-        let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time);
-        let cached_res = state.grid_cache.get(&key).map(|r| r.value().clone());
-        ens_str = key.0.into_owned();
+    let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time);
+    let cached_res = state.grid_cache.get(&key);
+    ens_str = key.0.into_owned();
 
-        if let Some(cached) = cached_res {
-            cached
-        } else {
-            let file_path_clone = file_path.clone();
-            let meta_clone = meta.clone();
-            let ens_str_clone = ens_str.clone();
-            let computed = tokio::task::spawn_blocking(move || {
-                compute_raw_slice(&file_path_clone, &meta_clone, &ens_str_clone, time)
-            })
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Blocking task join error: {}", e),
-                )
-            })??;
-            let arc = Arc::new(computed);
-            state
-                .grid_cache
-                .insert((Cow::Owned(ens_str.clone()), time), arc.clone());
-            arc
-        }
+    let raw_slice = if let Some(cached) = cached_res {
+        cached.value().clone()
+    } else {
+        let file_path_clone = file_path.clone();
+        let meta_clone = meta.clone();
+        let ens_str_clone = ens_str.clone();
+        let computed = tokio::task::spawn_blocking(move || {
+            compute_raw_slice(&file_path_clone, &meta_clone, &ens_str_clone, time)
+        })
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Blocking task join error: {}", e),
+            )
+        })??;
+        let arc = Arc::new(computed);
+        state
+            .grid_cache
+            .insert((Cow::Owned(ens_str.clone()), time), arc.clone());
+        arc
     };
 
     // Render data webp bytes using LUT
@@ -315,11 +178,21 @@ pub async fn get_data_image(
         .body(axum::body::Body::from(webp_bytes))
         .unwrap())
 }
+'''
+        content = parts[0] + 'pub async fn get_data_image(' + new_get_data_image + rest[i:]
 
-/// Returns the precipitation value (or ensemble statistic) at a single
-/// geographic point as JSON.
-pub async fn get_value(
-    Query(mut q): Query<ValueQuery>,
+    # 3. Rewrite get_value entirely
+    parts = content.split('pub async fn get_value(')
+    if len(parts) > 1:
+        rest = parts[1]
+        open_brace = rest.find('{')
+        count = 1
+        i = open_brace + 1
+        while count > 0 and i < len(rest):
+            if rest[i] == '{': count += 1
+            elif rest[i] == '}': count -= 1
+            i += 1
+        new_get_value = r'''Query(mut q): Query<ValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let file_path = state.file_path.read().await.clone();
@@ -392,33 +265,31 @@ pub async fn get_value(
     }
 
     if q.ens == "pmm" {
-        let raw_slice = {
-            let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), q.time);
-            let cached_res = state.grid_cache.get(&key).map(|r| r.value().clone());
-            q.ens = key.0.into_owned();
+        let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), q.time);
+        let cached_res = state.grid_cache.get(&key);
+        q.ens = key.0.into_owned();
 
-            if let Some(slice) = cached_res {
-                slice
-            } else {
-                let file_path_clone = file_path.clone();
-                let meta_clone = meta.clone();
-                let ens_clone = q.ens.clone();
-                let computed = tokio::task::spawn_blocking(move || {
-                    compute_raw_slice(&file_path_clone, &meta_clone, &ens_clone, q.time)
-                })
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Blocking task join error: {}", e),
-                    )
-                })??;
-                let arc = Arc::new(computed);
-                state
-                    .grid_cache
-                    .insert((Cow::Owned(q.ens.clone()), q.time), arc.clone());
-                arc
-            }
+        let raw_slice = if let Some(slice) = cached_res {
+            slice.value().clone()
+        } else {
+            let file_path_clone = file_path.clone();
+            let meta_clone = meta.clone();
+            let ens_clone = q.ens.clone();
+            let computed = tokio::task::spawn_blocking(move || {
+                compute_raw_slice(&file_path_clone, &meta_clone, &ens_clone, q.time)
+            })
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Blocking task join error: {}", e),
+                )
+            })??;
+            let arc = Arc::new(computed);
+            state
+                .grid_cache
+                .insert((Cow::Owned(q.ens.clone()), q.time), arc.clone());
+            arc
         };
         let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
         let val_mmh = raw_to_value(val_raw);
@@ -430,12 +301,9 @@ pub async fn get_value(
     }
 
     // Try reading from cache first
-    let cached_res = {
-        let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), q.time);
-        let res = state.grid_cache.get(&key).map(|r| r.value().clone());
-        q.ens = key.0.into_owned();
-        res
-    };
+    let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), q.time);
+    let cached_res = state.grid_cache.get(&key);
+    q.ens = key.0.into_owned();
 
     if let Some(slice) = cached_res {
         let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
@@ -600,12 +468,21 @@ pub async fn get_value(
         status: status_out,
         value: Some(value_out),
     }))
-}
+}'''
+        content = parts[0] + 'pub async fn get_value(' + new_get_value + rest[i:]
 
-/// Returns a time-series of precipitation values (or ensemble statistics) at a
-/// single geographic point across all forecast time steps.
-pub async fn get_timeseries(
-    Query(mut q): Query<TimeseriesQuery>,
+    # 4. Rewrite get_timeseries entirely
+    parts = content.split('pub async fn get_timeseries(')
+    if len(parts) > 1:
+        rest = parts[1]
+        open_brace = rest.find('{')
+        count = 1
+        i = open_brace + 1
+        while count > 0 and i < len(rest):
+            if rest[i] == '{': count += 1
+            elif rest[i] == '}': count -= 1
+            i += 1
+        new_get_timeseries = r'''Query(mut q): Query<TimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let file_path = state.file_path.read().await.clone();
@@ -651,39 +528,33 @@ pub async fn get_timeseries(
 
     // Try reading all radar times from cache first
     let mut all_cached = true;
-    let mut ens_str = std::mem::take(&mut q.ens);
+    let mut ens_for_check = std::mem::take(&mut q.ens);
     for &time_val in &meta.times {
-        let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_str), time_val);
+        let key: (Cow<'static, str>, i64) = (Cow::Owned(ens_for_check), time_val);
         let found = state.grid_cache.contains_key(&key);
-        ens_str = key.0.into_owned();
+        ens_for_check = key.0.into_owned();
         if !found {
             all_cached = false;
             break;
         }
     }
-    q.ens = ens_str;
+    q.ens = ens_for_check;
 
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        let cached_ts = {
-            let key: (Cow<'static, str>, i32, i32) = (Cow::Owned(q.ens), ix, iy);
-            let res = state.timeseries_cache.get(&key).map(|r| r.value().clone());
-            q.ens = key.0.into_owned();
-            res
-        };
+        let key: (Cow<'static, str>, i32, i32) = (Cow::Owned(q.ens), ix, iy);
+        let cached_res = state.timeseries_cache.get(&key);
+        q.ens = key.0.into_owned();
 
-        if let Some(ts) = cached_ts {
-            values.extend_from_slice(&ts);
+        if let Some(cached_ts) = cached_res {
+            values.extend_from_slice(&cached_ts);
         } else {
             let mut ts_values = Vec::with_capacity(meta.times.len());
             for &time_val in &meta.times {
-                let cached_slice = {
-                    let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), time_val);
-                    let res = state.grid_cache.get(&key).map(|r| r.value().clone());
-                    q.ens = key.0.into_owned();
-                    res
-                };
+                let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), time_val);
+                let cached_slice = state.grid_cache.get(&key);
+                q.ens = key.0.into_owned();
 
                 if let Some(slice) = cached_slice {
                     let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
@@ -709,15 +580,12 @@ pub async fn get_timeseries(
 
         let mut tasks = Vec::with_capacity(meta.times.len());
         for &time_val in &meta.times {
-            let cached_res = {
-                let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), time_val);
-                let res = state.grid_cache.get(&key).map(|r| r.value().clone());
-                q.ens = key.0.into_owned();
-                res
-            };
+            let key: (Cow<'static, str>, i64) = (Cow::Owned(q.ens), time_val);
+            let cached_slice = state.grid_cache.get(&key);
+            q.ens = key.0.into_owned();
 
-            if let Some(slice) = cached_res {
-                tasks.push(TaskResult::Cached(slice));
+            if let Some(slice) = cached_slice {
+                tasks.push(TaskResult::Cached(slice.value().clone()));
             } else {
                 let file_path_clone = file_path.clone();
                 let meta_clone = meta.clone();
@@ -943,497 +811,14 @@ pub async fn get_timeseries(
         status: "ok".to_string(),
         lat: q.lat,
         lon: q.lon,
-        ens: q.ens.clone(),
+        ens: q.ens,
         times: if is_pmm { extended_times } else { meta.times },
         values,
     }))
-}
+}'''
+        content = parts[0] + 'pub async fn get_timeseries(' + new_get_timeseries + rest[i:]
 
-pub async fn get_wind_metadata(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Wind forecast not loaded".to_string(),
-    ))?;
+    with open('src/handlers.rs', 'w') as f:
+        f.write(content)
 
-    let mut times: Vec<i64> = forecast
-        .steps
-        .iter()
-        .map(|s| (s.forecast_hour as i64) * 3600)
-        .collect();
-    times.sort_unstable();
-    times.dedup();
-
-    let reference_time_str = {
-        use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc
-            .timestamp_opt(forecast.reference_time, 0)
-            .single()
-        {
-            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
-        } else {
-            "seconds since 1970-01-01 00:00:00".to_string()
-        }
-    };
-
-    Ok(axum::Json(WindMetadata {
-        left: MERCATOR_LEFT,
-        right: MERCATOR_RIGHT,
-        bottom: MERCATOR_BOTTOM,
-        top: MERCATOR_TOP,
-        width: GRID_W,
-        height: GRID_H,
-        times,
-        reference_time: forecast.reference_time,
-        reference_time_str,
-        version: 1,
-        heights: vec![10, 50, 100, 200, 300],
-    }))
-}
-
-pub async fn get_wind_data_image(
-    Path((height, time)): Path<(u32, i64)>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.wind_data_cache.get(&(height, time)) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached.value().clone()))
-            .unwrap());
-    }
-
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Wind forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
-        return Err((StatusCode::NOT_FOUND, "No wind forecast steps".to_string()));
-    }
-
-    let step = forecast
-        .steps
-        .iter()
-        .filter(|s| s.height_level == height)
-        .min_by_key(|s| {
-            let step_offset = (s.forecast_hour as i64) * 3600;
-            (step_offset - time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    let u_vals = step.u_values.clone();
-    let v_vals = step.v_values.clone();
-    let state_clone = state.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_wind_webp_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
-    })
-    .await
-    .unwrap();
-    state
-        .wind_data_cache
-        .insert((height, time), webp_bytes.clone());
-
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
-}
-
-pub async fn get_wind_data_image_legacy(
-    Path(time): Path<i64>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    get_wind_data_image(Path((10, time)), State(state)).await
-}
-
-pub async fn get_wind_value(
-    Query(q): Query<WindValueQuery>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Wind forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
-        return Ok(axum::Json(WindValueResponse {
-            status: "no_data".to_string(),
-            u: None,
-            v: None,
-            speed: None,
-            direction: None,
-        }));
-    }
-
-    let req_height = q.height.unwrap_or(10);
-
-    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
-
-    let step = forecast
-        .steps
-        .iter()
-        .filter(|s| s.height_level == req_height)
-        .min_by_key(|s| {
-            let step_offset = (s.forecast_hour as i64) * 3600;
-            (step_offset - q.time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    if let Some((u, v)) = interpolate_wind(fx, fy, &step.u_values, &step.v_values) {
-        let speed = (u * u + v * v).sqrt();
-        let mut dir_rad = u.atan2(v) + std::f64::consts::PI;
-        if dir_rad < 0.0 {
-            dir_rad += 2.0 * std::f64::consts::PI;
-        }
-        let direction = dir_rad.to_degrees();
-
-        Ok(axum::Json(WindValueResponse {
-            status: "ok".to_string(),
-            u: Some(u),
-            v: Some(v),
-            speed: Some(speed),
-            direction: Some(direction),
-        }))
-    } else {
-        Ok(axum::Json(WindValueResponse {
-            status: "out_of_bounds".to_string(),
-            u: None,
-            v: None,
-            speed: None,
-            direction: None,
-        }))
-    }
-}
-
-pub async fn get_wind_timeseries(
-    Query(q): Query<WindTimeseriesQuery>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Wind forecast not loaded".to_string(),
-    ))?;
-
-    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
-
-    let req_height = q.height.unwrap_or(10);
-
-    let steps: Vec<_> = forecast
-        .steps
-        .iter()
-        .filter(|s| s.height_level == req_height)
-        .collect();
-
-    let (times, values) = extract_timeseries(steps.as_slice(), |step| {
-        interpolate_wind(fx, fy, &step.u_values, &step.v_values)
-    });
-
-    let mut speeds = Vec::with_capacity(values.len());
-    let mut directions = Vec::with_capacity(values.len());
-
-    for (u, v) in values {
-        let speed = (u * u + v * v).sqrt();
-        let mut dir_rad = u.atan2(v) + std::f64::consts::PI;
-        if dir_rad < 0.0 {
-            dir_rad += 2.0 * std::f64::consts::PI;
-        }
-        let direction = dir_rad.to_degrees();
-        speeds.push(speed);
-        directions.push(direction);
-    }
-
-    Ok(axum::Json(WindTimeseriesResponse {
-        status: "ok".to_string(),
-        lat: q.lat,
-        lon: q.lon,
-        times,
-        speeds,
-        directions,
-    }))
-}
-
-pub async fn get_temp_metadata(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Temperature forecast not loaded".to_string(),
-    ))?;
-
-    let times: Vec<i64> = forecast
-        .steps
-        .iter()
-        .map(|s| (s.forecast_hour as i64) * 3600)
-        .collect();
-
-    let reference_time_str = {
-        use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc
-            .timestamp_opt(forecast.reference_time, 0)
-            .single()
-        {
-            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
-        } else {
-            "seconds since 1970-01-01 00:00:00".to_string()
-        }
-    };
-
-    Ok(axum::Json(TempMetadata {
-        left: MERCATOR_LEFT,
-        right: MERCATOR_RIGHT,
-        bottom: MERCATOR_BOTTOM,
-        top: MERCATOR_TOP,
-        width: GRID_W,
-        height: GRID_H,
-        times,
-        reference_time: forecast.reference_time,
-        reference_time_str,
-        version: forecast.reference_time as u64,
-    }))
-}
-
-pub async fn get_temp_data_image(
-    Path(time): Path<i64>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.temp_data_cache.get(&time) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached.value().clone()))
-            .unwrap());
-    }
-
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Temperature forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "No temperature forecast steps".to_string(),
-        ));
-    }
-
-    let step = forecast
-        .steps
-        .iter()
-        .min_by_key(|s| {
-            let step_offset = (s.forecast_hour as i64) * 3600;
-            (step_offset - time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    let vals = step.values.clone();
-    let state_clone = state.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_temp_webp_bytes(&vals, &state_clone.temp_projection_lut)
-    })
-    .await
-    .unwrap();
-    state.temp_data_cache.insert(time, webp_bytes.clone());
-
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
-}
-
-pub async fn get_temp_value(
-    Query(q): Query<TempValueQuery>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Temperature forecast not loaded".to_string(),
-    ))?;
-
-    with_grib_step(
-        forecast,
-        q.time,
-        q.lon,
-        q.lat,
-        |f| &f.steps,
-        |s| s.forecast_hour,
-        |s, fx, fy| interpolate_temp(fx, fy, &s.values),
-        |temp_c| ValueResponse {
-            status: "ok".to_string(),
-            value: Some(temp_c),
-        },
-    )
-}
-
-pub async fn get_temp_timeseries(
-    Query(q): Query<TempTimeseriesQuery>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Temperature forecast not loaded".to_string(),
-    ))?;
-
-    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
-
-    let (times, values) = extract_timeseries(&forecast.steps, |step| {
-        interpolate_temp(fx, fy, &step.values)
-    });
-
-    Ok(axum::Json(TempTimeseriesResponse {
-        status: "ok".to_string(),
-        lat: q.lat,
-        lon: q.lon,
-        times,
-        values,
-    }))
-}
-
-pub async fn get_solar_metadata(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Solar forecast not loaded".to_string(),
-    ))?;
-
-    let times: Vec<i64> = forecast
-        .steps
-        .iter()
-        .map(|s| (s.forecast_hour as i64) * 3600)
-        .collect();
-
-    let reference_time_str = {
-        use chrono::TimeZone;
-        if let Some(utc_dt) = chrono::Utc
-            .timestamp_opt(forecast.reference_time, 0)
-            .single()
-        {
-            format!("seconds since {}", utc_dt.format("%Y-%m-%d %H:%M:%S"))
-        } else {
-            "seconds since 1970-01-01 00:00:00".to_string()
-        }
-    };
-
-    Ok(axum::Json(SolarMetadata {
-        left: MERCATOR_LEFT,
-        right: MERCATOR_RIGHT,
-        bottom: MERCATOR_BOTTOM,
-        top: MERCATOR_TOP,
-        width: GRID_W,
-        height: GRID_H,
-        times,
-        reference_time: forecast.reference_time,
-        reference_time_str,
-        version: forecast.reference_time as u64,
-    }))
-}
-
-pub async fn get_solar_data_image(
-    Path(time): Path<i64>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.solar_data_cache.get(&time) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached.value().clone()))
-            .unwrap());
-    }
-
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Solar forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
-        return Err((StatusCode::NOT_FOUND, "No solar forecast steps".to_string()));
-    }
-
-    let step = forecast
-        .steps
-        .iter()
-        .min_by_key(|s| {
-            let step_offset = (s.forecast_hour as i64) * 3600;
-            (step_offset - time).abs()
-        })
-        .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
-
-    let vals = step.values.clone();
-    let state_clone = state.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_solar_webp_bytes(&vals, &state_clone.solar_projection_lut)
-    })
-    .await
-    .unwrap();
-    state.solar_data_cache.insert(time, webp_bytes.clone());
-
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
-}
-
-pub async fn get_solar_value(
-    Query(q): Query<SolarValueQuery>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Solar forecast not loaded".to_string(),
-    ))?;
-
-    with_grib_step(
-        forecast,
-        q.time,
-        q.lon,
-        q.lat,
-        |f| &f.steps,
-        |s| s.forecast_hour,
-        |s, fx, fy| interpolate_solar(fx, fy, &s.values),
-        |solar_w| ValueResponse {
-            status: "ok".to_string(),
-            value: Some(solar_w),
-        },
-    )
-}
-
-pub async fn get_solar_timeseries(
-    Query(q): Query<SolarTimeseriesQuery>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Solar forecast not loaded".to_string(),
-    ))?;
-
-    let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
-
-    let (times, values) = extract_timeseries(&forecast.steps, |step| {
-        interpolate_solar(fx, fy, &step.values)
-    });
-
-    Ok(axum::Json(SolarTimeseriesResponse {
-        status: "ok".to_string(),
-        lat: q.lat,
-        lon: q.lon,
-        times,
-        values,
-    }))
-}
+fix_file()
