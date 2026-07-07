@@ -11,13 +11,13 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 /// Scans a directory for the most-recently-modified `.nc` file and returns its path.
-pub fn find_latest_nc_file(dir: &str) -> Option<String> {
+pub async fn find_latest_nc_file(dir: &str) -> Option<String> {
     let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
+    if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "nc") {
-                if let Ok(meta) = entry.metadata() {
+                if let Ok(meta) = entry.metadata().await {
                     if let Ok(modified) = meta.modified() {
                         if latest.is_none() || modified > latest.as_ref().unwrap().1 {
                             latest = Some((path, modified));

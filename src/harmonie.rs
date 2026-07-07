@@ -581,21 +581,23 @@ pub async fn load_or_fetch_combined_forecast(
     }
 }
 
-pub fn cleanup_tar_files() {
-    if let Ok(entries) = std::fs::read_dir(crate::constants::CACHE_DIR) {
-        for entry in entries.flatten() {
+pub async fn cleanup_tar_files() {
+    if let Ok(mut entries) = tokio::fs::read_dir(crate::constants::CACHE_DIR).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "tar" {
-                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            if stem.starts_with("HARM43_")
-                                || stem == "temp_harmonie"
-                                || stem == "temp_harmonie_wind"
-                                || stem == "temp_harmonie_combined"
-                            {
-                                println!("Cleaning up leftover tar file: {:?}", path);
-                                let _ = std::fs::remove_file(path);
+            if let Ok(file_type) = entry.file_type().await {
+                if file_type.is_file() {
+                    if let Some(ext) = path.extension() {
+                        if ext == "tar" {
+                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                if stem.starts_with("HARM43_")
+                                    || stem == "temp_harmonie"
+                                    || stem == "temp_harmonie_wind"
+                                    || stem == "temp_harmonie_combined"
+                                {
+                                    println!("Cleaning up leftover tar file: {:?}", path);
+                                    let _ = tokio::fs::remove_file(path).await;
+                                }
                             }
                         }
                     }

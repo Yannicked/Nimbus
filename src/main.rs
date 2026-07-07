@@ -41,7 +41,7 @@ async fn main() {
         .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
 
     // Create cache directory if it doesn't exist
-    if let Err(e) = std::fs::create_dir_all(constants::CACHE_DIR) {
+    if let Err(e) = tokio::fs::create_dir_all(constants::CACHE_DIR).await {
         eprintln!(
             "Failed to create cache directory '{}': {:?}",
             constants::CACHE_DIR,
@@ -50,14 +50,14 @@ async fn main() {
     }
 
     // Clean up leftover tar files on startup
-    cleanup_tar_files();
+    cleanup_tar_files().await;
 
     // Load or fetch temperature, wind, solar, and rain forecasts (combined)
     let (temp_fc, wind_fc, solar_fc, rain_fc) =
         load_or_fetch_combined_forecast(&open_data_api_key).await;
 
     // 1. Find the latest netcdf file in the cache directory, or download it if none exists
-    let initial_file = match find_latest_nc_file(constants::CACHE_DIR) {
+    let initial_file = match find_latest_nc_file(constants::CACHE_DIR).await {
         Some(f) => f,
         None => {
             println!("No NetCDF (.nc) files found in cache directory. Fetching latest file from KNMI Open Data API...");
