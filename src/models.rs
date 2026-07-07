@@ -702,6 +702,31 @@ mod tests {
     use crate::constants::{NODATA, RAIN_THRESHOLD};
 
     #[test]
+    fn test_ensemble_stat_from_str() {
+        assert!(matches!(
+            EnsembleStat::from_str("med"),
+            Some(EnsembleStat::Median)
+        ));
+        assert!(matches!(
+            EnsembleStat::from_str("max"),
+            Some(EnsembleStat::Maximum)
+        ));
+        assert!(matches!(
+            EnsembleStat::from_str("prob"),
+            Some(EnsembleStat::Probability)
+        ));
+        assert!(matches!(
+            EnsembleStat::from_str("spread"),
+            Some(EnsembleStat::Spread)
+        ));
+        assert!(matches!(
+            EnsembleStat::from_str("pmm"),
+            Some(EnsembleStat::Pmm)
+        ));
+        assert!(EnsembleStat::from_str("unknown").is_none());
+    }
+
+    #[test]
     fn test_reduce_ensemble_empty() {
         let mut vals: [u16; 0] = [];
         assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals), NODATA);
@@ -738,12 +763,27 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_ensemble_probability_with_interspersed_nodata() {
+        let mut vals = [RAIN_THRESHOLD, NODATA, 0];
+        // Original logic includes NODATA in denominator: 1/3 = 33%
+        assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals), 33);
+    }
+
+    #[test]
     fn test_reduce_ensemble_median() {
         let mut vals = [30, 10, 20];
         assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals), 20);
 
         let mut vals2 = [40, 10, 30, 20]; // sorted: 10, 20, 30, 40. len/2 = 2. index 2 is 30.
         assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals2), 30);
+    }
+
+    #[test]
+    fn test_reduce_ensemble_median_with_interspersed_nodata() {
+        let mut vals = [30, 10, NODATA, 20];
+        // Original logic includes NODATA in sorted array: [10, 20, 30, 65535].
+        // Index 4/2 = 2 is 30.
+        assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals), 30);
     }
 
     #[test]
