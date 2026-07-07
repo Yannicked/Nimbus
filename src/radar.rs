@@ -610,9 +610,10 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             .iter()
             .zip(all_members_data.chunks_exact(grid_size))
         {
-            state
-                .grid_cache
-                .insert((Cow::Owned(ens_num.to_string()), time_val), Arc::new(chunk.to_vec()));
+            state.grid_cache.insert(
+                (Cow::Owned(ens_num.to_string()), time_val),
+                Arc::new(chunk.to_vec()),
+            );
         }
 
         // Render WebPs for stats (med, max, prob, spread, pmm)

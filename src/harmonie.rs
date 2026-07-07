@@ -9,6 +9,7 @@ use crate::rendering::{
 use crate::state::AppState;
 use chrono::TimeZone;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -917,7 +918,7 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
             .unwrap();
             state_clone
                 .data_cache
-                .insert((std::borrow::Cow::Borrowed("med"), time_key), webp_bytes);
+                .insert((Cow::Borrowed("med"), time_key), webp_bytes);
         });
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {

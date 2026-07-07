@@ -249,7 +249,9 @@ pub async fn get_data_image(
         })?;
 
         // Cache results
-        state.data_cache.insert((Cow::Owned(ens_str), time), webp_bytes.clone());
+        state
+            .data_cache
+            .insert((Cow::Owned(ens_str), time), webp_bytes.clone());
 
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
@@ -295,7 +297,9 @@ pub async fn get_data_image(
     .unwrap();
 
     // Cache results
-    state.data_cache.insert((Cow::Owned(ens_str), time), webp_bytes.clone());
+    state
+        .data_cache
+        .insert((Cow::Owned(ens_str), time), webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -632,7 +636,10 @@ pub async fn get_timeseries(
     // Try reading all radar times from cache first
     let mut all_cached = true;
     for &time_val in &meta.times {
-        if !state.grid_cache.contains_key(&(Cow::Borrowed(q.ens.as_str()), time_val)) {
+        if !state
+            .grid_cache
+            .contains_key(&(Cow::Borrowed(q.ens.as_str()), time_val))
+        {
             all_cached = false;
             break;
         }
@@ -660,9 +667,10 @@ pub async fn get_timeseries(
                     }
                 }
             }
-            state
-                .timeseries_cache
-                .insert((Cow::Owned(q.ens.clone()), ix, iy), Arc::new(ts_values.clone()));
+            state.timeseries_cache.insert(
+                (Cow::Owned(q.ens.clone()), ix, iy),
+                Arc::new(ts_values.clone()),
+            );
             values.extend(ts_values);
         }
     } else if q.ens == "pmm" {
