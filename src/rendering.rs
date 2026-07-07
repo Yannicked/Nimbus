@@ -123,7 +123,7 @@ mod tests {
         let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
         for i in 0..(GRID_W * GRID_H) {
             lut.push(LutEntry {
-                indices: [i as u32, i as u32, i as u32, i as u32],
+                indices: [i, i, i, i],
                 weights: [0.25, 0.25, 0.25, 0.25],
             });
         }
