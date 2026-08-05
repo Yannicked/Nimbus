@@ -288,8 +288,14 @@ export function handleMapMouseMove(e) {
     }, CONFIG.intervals.hoverThrottleMs);
 }
 
+let hoverAbortController = null;
+
 // Hide hover panel when mouse leaves map
 export function handleMapMouseLeave() {
+    if (hoverAbortController) {
+        hoverAbortController.abort();
+        hoverAbortController = null;
+    }
     DOM.hoverPanel.classList.add('hidden');
     lastLat = null;
     lastLon = null;
@@ -298,6 +304,12 @@ export function handleMapMouseLeave() {
 // Performs fetch to API value endpoint
 export async function triggerHoverQuery() {
     if (lastLat === null || lastLon === null || !state.metadata) return;
+
+    if (hoverAbortController) {
+        hoverAbortController.abort();
+    }
+    hoverAbortController = new AbortController();
+    const signal = hoverAbortController.signal;
 
     const isRight = isHoveringRightGlobal && state.isCompareModeActive;
     const mode = isRight ? state.compareLayerMode : state.currentLayerMode;
@@ -314,7 +326,7 @@ export async function triggerHoverQuery() {
 
     if (mode === 'temp') {
         try {
-            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon, signal);
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
@@ -332,13 +344,14 @@ export async function triggerHoverQuery() {
                 else DOM.hoverValue.style.color = "#f87171";
             }
         } catch (e) {
+            if (e.name === 'AbortError') return;
             console.error("Temp Hover error:", e);
             DOM.hoverValue.textContent = "Error";
             DOM.hoverValue.style.color = "#f87171";
         }
     } else if (mode === 'solar') {
         try {
-            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon, signal);
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
@@ -355,16 +368,14 @@ export async function triggerHoverQuery() {
                 else DOM.hoverValue.style.color = "#ef4444";
             }
         } catch (e) {
+            if (e.name === 'AbortError') return;
             console.error("Solar Hover error:", e);
             DOM.hoverValue.textContent = "Error";
             DOM.hoverValue.style.color = "#f87171";
         }
     } else if (mode === 'wind') {
         try {
-            const url = `/api/value/wind?time=${timeVal}&lat=${lastLat}&lon=${lastLon}&height=${windHeight}`;
-            const response = await fetch(url);
-            if (!response.ok) throw new Error("Wind Hover query failed");
-            const res = await response.json();
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon, signal);
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
@@ -385,13 +396,14 @@ export async function triggerHoverQuery() {
                 else DOM.hoverValue.style.color = "#f87171";
             }
         } catch (e) {
+            if (e.name === 'AbortError') return;
             console.error("Wind Hover error:", e);
             DOM.hoverValue.textContent = "Error";
             DOM.hoverValue.style.color = "#f87171";
         }
     } else {
         try {
-            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon);
+            const res = await fetchHoverValue(mode, ens, timeVal, lastLat, lastLon, signal);
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
@@ -418,11 +430,13 @@ export async function triggerHoverQuery() {
                 else DOM.hoverValue.style.color = "#f87171";
             }
         } catch (e) {
-            console.error("Hover error:", e);
+            if (e.name === 'AbortError') return;
+            console.error("Rain Hover error:", e);
             DOM.hoverValue.textContent = "Error";
             DOM.hoverValue.style.color = "#f87171";
         }
     }
+}
 }
 
 // Map Click Listener

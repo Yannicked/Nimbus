@@ -1,6 +1,6 @@
 import { state } from './state.js';
 
-export async function fetchMetadata(layerMode) {
+export async function fetchMetadata(layerMode, signal) {
     const endpoints = {
         'temp': '/api/metadata/temp',
         'wind': '/api/metadata/wind',
@@ -8,12 +8,12 @@ export async function fetchMetadata(layerMode) {
         'rain': '/api/metadata'
     };
     
-    const response = await fetch(endpoints[layerMode] || endpoints['rain']);
+    const response = await fetch(endpoints[layerMode] || endpoints['rain'], { signal });
     if (!response.ok) throw new Error(`${layerMode} metadata request failed`);
     return response.json();
 }
 
-export async function fetchHoverValue(layerMode, ens, time, lat, lon) {
+export async function fetchHoverValue(layerMode, ens, time, lat, lon, signal) {
     let url = `/api/value?ens=${ens}&time=${time}&lat=${lat}&lon=${lon}`;
     if (layerMode === 'temp') url = `/api/value/temp?time=${time}&lat=${lat}&lon=${lon}`;
     if (layerMode === 'solar') url = `/api/value/solar?time=${time}&lat=${lat}&lon=${lon}`;
@@ -22,12 +22,12 @@ export async function fetchHoverValue(layerMode, ens, time, lat, lon) {
         url = `/api/value/wind?time=${time}&lat=${lat}&lon=${lon}&height=${h}`;
     }
 
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error("Hover value query failed");
     return response.json();
 }
 
-export async function fetchTimeseries(layerMode, ens, lat, lon) {
+export async function fetchTimeseries(layerMode, ens, lat, lon, signal) {
     let url = `/api/timeseries?ens=${ens}&lat=${lat}&lon=${lon}`;
     if (layerMode === 'temp') url = `/api/timeseries/temp?lat=${lat}&lon=${lon}`;
     if (layerMode === 'solar') url = `/api/timeseries/solar?lat=${lat}&lon=${lon}`;
@@ -36,7 +36,8 @@ export async function fetchTimeseries(layerMode, ens, lat, lon) {
         url = `/api/timeseries/wind?lat=${lat}&lon=${lon}&height=${h}`;
     }
 
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error("Timeseries query failed");
     return response.json();
 }
+

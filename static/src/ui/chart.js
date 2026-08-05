@@ -34,11 +34,19 @@ function setChartHeaderTitle(iconClass, text) {
     DOM.chartHeaderTitle.replaceChildren(icon, document.createTextNode(text));
 }
 
+let timeseriesAbortController = null;
+
 // Renders the interactive timeseries chart using Chart.js
 export async function showTimeseriesChart(lat, lon) {
     if (!state.metadata) return;
     state.activeCoords = { lat, lon };
     syncStateToURL();
+
+    if (timeseriesAbortController) {
+        timeseriesAbortController.abort();
+    }
+    timeseriesAbortController = new AbortController();
+    const signal = timeseriesAbortController.signal;
     
     // Show the panel
     DOM.chartPanel.classList.remove('hidden');
@@ -48,7 +56,7 @@ export async function showTimeseriesChart(lat, lon) {
     }
     
     try {
-        const data = await fetchTimeseries(state.currentLayerMode, state.currentEns, lat, lon);
+        const data = await fetchTimeseries(state.currentLayerMode, state.currentEns, lat, lon, signal);
         
         const chartValues = state.currentLayerMode === 'wind' ? data.speeds : data.values;
         if (data.status === "out_of_bounds" || chartValues.length === 0) {
@@ -265,6 +273,7 @@ export async function showTimeseriesChart(lat, lon) {
             });
         }
     } catch (e) {
+        if (e.name === 'AbortError') return;
         console.error("Timeseries error:", e);
         DOM.chartCoords.textContent = "Error loading trend chart";
     }
@@ -272,6 +281,10 @@ export async function showTimeseriesChart(lat, lon) {
 
 // Close chart, destroy chart instance and remove MapLibre pin marker
 export function closeTimeseriesChart() {
+    if (timeseriesAbortController) {
+        timeseriesAbortController.abort();
+        timeseriesAbortController = null;
+    }
     DOM.chartPanel.classList.add('hidden');
     state.activeCoords = null;
     syncStateToURL();
