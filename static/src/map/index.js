@@ -437,7 +437,6 @@ export async function triggerHoverQuery() {
         }
     }
 }
-}
 
 // Map Click Listener
 export function handleMapClick(e) {
