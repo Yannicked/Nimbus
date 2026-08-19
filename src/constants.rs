@@ -30,9 +30,9 @@ pub const MERCATOR_TOP: f64 = 7560000.0;
 
 // KNMI grid parameters
 pub const KNMI_DX: f64 = 1000.0026129808;
-pub const KNMI_DY: f64 = -1000.0050704712;
+pub const KNMI_DY: f64 = 1000.0050704712;
 pub const KNMI_X0: f64 = 500.00130649042126;
-pub const KNMI_Y0: f64 = -3650495.413595936;
+pub const KNMI_Y0: f64 = -4414499.287435932;
 pub const KNMI_GRID_W: usize = 700;
 pub const KNMI_GRID_H: usize = 765;
 
