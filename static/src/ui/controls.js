@@ -6,13 +6,17 @@ import { showTimeseriesChart } from './chart.js';
 
 // Format relative time step
 export function formatRelativeTime(seconds) {
-    const mins = Math.round(seconds / 60);
+    if (seconds === 0) return 'Now';
+    const isPast = seconds < 0;
+    const absSecs = Math.abs(seconds);
+    const mins = Math.round(absSecs / 60);
     const h = Math.floor(mins / 60);
     const m = mins % 60;
+    const prefix = isPast ? '-' : '+';
     if (h > 0) {
-        return `+${h}h ${m.toString().padStart(2, '0')}m`;
+        return `${prefix}${h}h ${m.toString().padStart(2, '0')}m`;
     }
-    return `+${m}m`;
+    return `${prefix}${m}m`;
 }
 
 // Format absolute forecast time
