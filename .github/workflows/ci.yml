@@ -8,7 +8,7 @@ on:
 
 jobs:
   rust-check:
-    name: Rust (Format & Lint)
+    name: Rust (Format, Lint & Test)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -29,6 +29,9 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets
 
   flutter-check:
     name: Flutter (Format, Lint & Test)

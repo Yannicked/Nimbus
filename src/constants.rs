@@ -49,6 +49,7 @@ pub const GRIB_DLON: f64 = 0.029;
 pub const GRIB_DLAT: f64 = 0.018;
 pub const GRIB_WIDTH: usize = 390;
 pub const GRIB_HEIGHT: usize = 390;
+pub const GRIB_CELL_COUNT: usize = GRIB_WIDTH * GRIB_HEIGHT;
 
 /// Directory where all cached/downloaded files are stored.
 pub const CACHE_DIR: &str = "./cache";

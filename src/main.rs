@@ -42,6 +42,9 @@ async fn main() {
 
     let open_data_api_key = std::env::var("KNMI_OPEN_DATA_API_KEY")
         .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
+    let mqtt_password = std::env::var("KNMI_MQTT_PASSWORD")
+        .expect("KNMI_MQTT_PASSWORD environment variable not set!");
+    drop(mqtt_password);
 
     // Create cache directory if it doesn't exist
     if let Err(e) = tokio::fs::create_dir_all(constants::CACHE_DIR).await {
@@ -90,26 +93,29 @@ async fn main() {
     let initial_solar_data = Arc::new(state::SolarData::new(solar_fc));
     let initial_rain_data = Arc::new(state::RainData::new(rain_fc));
 
+    let projection_lut = Arc::new(init_projection_lut());
+    let grib_lut = Arc::new(init_temp_projection_lut());
+
     let state = Arc::new(AppState {
         radar_data: tokio::sync::RwLock::new(initial_radar_data.clone()),
-        projection_lut: init_projection_lut(),
+        projection_lut: projection_lut.clone(),
 
         actuals_data: tokio::sync::RwLock::new(None),
 
         temp_data: tokio::sync::RwLock::new(Some(initial_temp_data.clone())),
-        temp_projection_lut: init_temp_projection_lut(),
+        temp_projection_lut: grib_lut.clone(),
 
         wind_data: tokio::sync::RwLock::new(Some(initial_wind_data.clone())),
-        wind_projection_lut: init_temp_projection_lut(),
+        wind_projection_lut: grib_lut.clone(),
 
         solar_data: tokio::sync::RwLock::new(Some(initial_solar_data.clone())),
-        solar_projection_lut: init_temp_projection_lut(),
+        solar_projection_lut: grib_lut,
 
         rain_data: tokio::sync::RwLock::new(Some(initial_rain_data.clone())),
     });
 
     if let Some(radar_data) = initial_radar_data {
-        let lut_arc = Arc::new(state.projection_lut.clone());
+        let lut_arc = projection_lut.clone();
         tokio::spawn(async move {
             precalculate_all_data(radar_data, lut_arc, None).await;
         });
@@ -206,7 +212,18 @@ async fn main() {
         .with_state(state);
 
     // 6. Start Server
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    println!("Webservice running on http://localhost:8080");
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let bind_addr = format!("{}:{}", host, port);
+
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to bind server to {}: {}", bind_addr, e));
+    let display_host = if host == "0.0.0.0" {
+        "localhost"
+    } else {
+        &host
+    };
+    println!("Webservice running on http://{}:{}", display_host, port);
     axum::serve(listener, app).await.unwrap();
 }

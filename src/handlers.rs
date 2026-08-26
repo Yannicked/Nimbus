@@ -26,6 +26,26 @@ use crate::rendering::{
 };
 use crate::state::AppState;
 
+use std::sync::LazyLock;
+
+static EMPTY_WEBP_IMAGE: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    use image::codecs::webp::WebPEncoder;
+    use image::ImageEncoder;
+    let empty_pixels = vec![0u8; (GRID_W * GRID_H * 4) as usize];
+    let mut webp_bytes = Vec::new();
+    let cursor = std::io::Cursor::new(&mut webp_bytes);
+    let encoder = WebPEncoder::new_lossless(cursor);
+    encoder
+        .write_image(
+            &empty_pixels,
+            GRID_W,
+            GRID_H,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("Failed to encode static empty WebP image");
+    webp_bytes
+});
+
 /// Generic helper to extract a value from a GRIB-based forecast (Temp, Solar, etc.)
 /// by finding the closest step and interpolating.
 #[allow(clippy::too_many_arguments)]
@@ -262,22 +282,7 @@ pub async fn get_data_image(
     if !meta.times.contains(&time) {
         if ens_str != "pmm" {
             // Return transparent empty image
-            let empty_pixels = vec![0u8; (GRID_W * GRID_H * 4) as usize];
-            let mut webp_bytes = Vec::new();
-            {
-                use image::codecs::webp::WebPEncoder;
-                use image::ImageEncoder;
-                let cursor = std::io::Cursor::new(&mut webp_bytes);
-                let encoder = WebPEncoder::new_lossless(cursor);
-                encoder
-                    .write_image(
-                        &empty_pixels,
-                        GRID_W,
-                        GRID_H,
-                        image::ExtendedColorType::Rgba8,
-                    )
-                    .unwrap();
-            }
+            let webp_bytes = EMPTY_WEBP_IMAGE.clone();
             // Cache it in active radar dataset
             radar
                 .data_cache
@@ -380,7 +385,12 @@ pub async fn get_data_image(
     let webp_bytes =
         tokio::task::spawn_blocking(move || render_data_webp_bytes(&raw_slice_clone, &lut))
             .await
-            .unwrap();
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Blocking task join error: {}", e),
+                )
+            })?;
 
     // Cache results
     radar.data_cache.insert((ens_str, time), webp_bytes.clone());
@@ -1118,7 +1128,12 @@ pub async fn get_wind_data_image(
     let webp_bytes =
         tokio::task::spawn_blocking(move || render_wind_webp_bytes(&u_vals, &v_vals, &lut))
             .await
-            .unwrap();
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Blocking task join error: {}", e),
+                )
+            })?;
     wind_data
         .data_cache
         .insert((height, time), webp_bytes.clone());
@@ -1310,7 +1325,12 @@ pub async fn get_temp_data_image(
     let lut = state.temp_projection_lut.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || render_temp_webp_bytes(&vals, &lut))
         .await
-        .unwrap();
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Blocking task join error: {}", e),
+            )
+        })?;
     temp_data.data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()
@@ -1434,7 +1454,12 @@ pub async fn get_solar_data_image(
     let lut = state.solar_projection_lut.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || render_solar_webp_bytes(&vals, &lut))
         .await
-        .unwrap();
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Blocking task join error: {}", e),
+            )
+        })?;
     solar_data.data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()

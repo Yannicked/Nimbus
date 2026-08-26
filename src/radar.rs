@@ -19,7 +19,10 @@ pub async fn find_latest_nc_file(dir: &str) -> Option<String> {
             if path.extension().is_some_and(|ext| ext == "nc") {
                 if let Ok(meta) = entry.metadata().await {
                     if let Ok(modified) = meta.modified() {
-                        if latest.is_none() || modified > latest.as_ref().unwrap().1 {
+                        if latest
+                            .as_ref()
+                            .is_none_or(|(_, last_mod)| modified > *last_mod)
+                        {
                             latest = Some((path, modified));
                         }
                     }
@@ -475,17 +478,15 @@ pub async fn precalculate_all_data(
                                 return;
                             }
 
-                            // Copy non-NODATA values into a local array
-                            let mut valid_vals = [0u16; 32];
-                            let mut count = 0;
+                            // Copy non-NODATA values into a dynamically-sized buffer
+                            let mut valid_vals = Vec::with_capacity(num_ensembles);
                             for &v in ens_vals {
                                 if v != NODATA {
-                                    valid_vals[count] = v;
-                                    count += 1;
+                                    valid_vals.push(v);
                                 }
                             }
 
-                            if count == 0 {
+                            if valid_vals.is_empty() {
                                 *med_val = NODATA;
                                 *max_val = NODATA;
                                 *prob_val = NODATA;
@@ -493,7 +494,8 @@ pub async fn precalculate_all_data(
                                 return;
                             }
 
-                            let active_vals = &mut valid_vals[..count];
+                            let count = valid_vals.len();
+                            let active_vals = &mut valid_vals[..];
                             active_vals.sort_unstable();
 
                             // Median
@@ -784,7 +786,7 @@ pub async fn download_and_update_nc_file(
     // Create staged RadarData instance and precalculate all data into it
     // The active radar_data continues serving requests seamlessly without interruption!
     let new_radar_data = Arc::new(crate::state::RadarData::new(final_path.clone(), meta));
-    let lut_arc = Arc::new(state.projection_lut.clone());
+    let lut_arc = state.projection_lut.clone();
 
     let tracker_param = latest_target_version
         .as_ref()
@@ -1141,14 +1143,14 @@ mod tests {
 
         let state = Arc::new(AppState {
             radar_data: tokio::sync::RwLock::new(Some(radar_data_v1.clone())),
-            projection_lut: Vec::new(),
+            projection_lut: Arc::new(Vec::new()),
             actuals_data: tokio::sync::RwLock::new(None),
             temp_data: tokio::sync::RwLock::new(None),
-            temp_projection_lut: Vec::new(),
+            temp_projection_lut: Arc::new(Vec::new()),
             wind_data: tokio::sync::RwLock::new(None),
-            wind_projection_lut: Vec::new(),
+            wind_projection_lut: Arc::new(Vec::new()),
             solar_data: tokio::sync::RwLock::new(None),
-            solar_projection_lut: Vec::new(),
+            solar_projection_lut: Arc::new(Vec::new()),
             rain_data: tokio::sync::RwLock::new(None),
         });
 
@@ -1211,5 +1213,15 @@ mod tests {
             assert_eq!(values.len(), 765 * 700);
             println!("Successfully read image_data of length {}", values.len());
         }
+    }
+
+    #[test]
+    fn test_reduce_ensemble_large_member_count() {
+        use crate::models::{reduce_ensemble, EnsembleStat};
+        let mut vals: Vec<u16> = (1..=50).collect();
+        let med = reduce_ensemble(&EnsembleStat::Median, &mut vals);
+        assert_eq!(med, 26);
+        let max = reduce_ensemble(&EnsembleStat::Maximum, &mut vals);
+        assert_eq!(max, 50);
     }
 }
