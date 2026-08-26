@@ -62,17 +62,26 @@ pub fn read_rtcor_slice(
     // Convert:
     // Missing (65534) or Out of Image (65535) -> NODATA (65535)
     // 5-min accumulation * 12 = instantaneous rate in mm/h
-    let converted: Vec<u16> = raw_data
-        .into_iter()
-        .map(|pv| {
-            if pv == 65534 || pv == 65535 {
+    //
+    // Note on vertical orientation:
+    // In KNMI HDF5 RTCOR files, image_data has DISPLAY_ORIGIN = "UL" (Upper-Left),
+    // meaning row 0 is North (top) and row 764 is South (bottom).
+    // In our Polar Stereographic coordinate grid, index 0 is South (iy = 0) and
+    // index 764 is North (iy = 764), matching the NetCDF forecast orientation.
+    // We flip the rows vertically so spatial positions align seamlessly with the forecast.
+    let mut converted = vec![NODATA; expected_len];
+    for row in 0..KNMI_GRID_H {
+        let target_row = KNMI_GRID_H - 1 - row;
+        for col in 0..KNMI_GRID_W {
+            let pv = raw_data[row * KNMI_GRID_W + col];
+            let val = if pv == 65534 || pv == 65535 {
                 NODATA
             } else {
-                // pv is in 0.01 mm accumulation -> pv * 12 is in 0.01 mm/h
                 (pv as u32 * 12).min(65534) as u16
-            }
-        })
-        .collect();
+            };
+            converted[target_row * KNMI_GRID_W + col] = val;
+        }
+    }
 
     Ok(converted)
 }
