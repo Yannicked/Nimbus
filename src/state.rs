@@ -132,22 +132,22 @@ impl ActualsData {
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub radar_data: RwLock<Option<Arc<RadarData>>>,
-    pub projection_lut: Vec<LutEntry>,
+    pub projection_lut: Arc<Vec<LutEntry>>,
 
     // 5-minute Real-Time Corrected Radar Observations (Actuals)
     pub actuals_data: RwLock<Option<Arc<ActualsData>>>,
 
     // 2m Temperature Forecast
     pub temp_data: RwLock<Option<Arc<TempData>>>,
-    pub temp_projection_lut: Vec<LutEntry>,
+    pub temp_projection_lut: Arc<Vec<LutEntry>>,
 
     // 10m Wind Forecast
     pub wind_data: RwLock<Option<Arc<WindData>>>,
-    pub wind_projection_lut: Vec<LutEntry>,
+    pub wind_projection_lut: Arc<Vec<LutEntry>>,
 
     // Solar Radiation Forecast
     pub solar_data: RwLock<Option<Arc<SolarData>>>,
-    pub solar_projection_lut: Vec<LutEntry>,
+    pub solar_projection_lut: Arc<Vec<LutEntry>>,
 
     // Rain Forecast (Harmonie)
     pub rain_data: RwLock<Option<Arc<RainData>>>,

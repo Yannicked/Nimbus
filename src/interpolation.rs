@@ -131,6 +131,51 @@ pub fn interpolate_bilinear_lut(entry: &LutEntry, raw_slice: &[u16]) -> u16 {
     }
 }
 
+/// Bilinear interpolation of a pair of raw u16 grid values (such as u and v wind components)
+/// using a precalculated LutEntry in a single traversal pass.
+pub fn interpolate_bilinear_lut_pair(
+    entry: &LutEntry,
+    u_slice: &[u16],
+    v_slice: &[u16],
+) -> (u16, u16) {
+    let mut sum_u = 0.0f64;
+    let mut sum_v = 0.0f64;
+    let mut sum_weight_u = 0.0f64;
+    let mut sum_weight_v = 0.0f64;
+
+    for i in 0..4 {
+        let idx = entry.indices[i];
+        if idx != u32::MAX {
+            let u_val = u_slice[idx as usize];
+            let v_val = v_slice[idx as usize];
+            let w = entry.weights[i] as f64;
+
+            if u_val != NODATA {
+                sum_u += (u_val as f64) * w;
+                sum_weight_u += w;
+            }
+            if v_val != NODATA {
+                sum_v += (v_val as f64) * w;
+                sum_weight_v += w;
+            }
+        }
+    }
+
+    let u_out = if sum_weight_u > 0.001 {
+        (sum_u / sum_weight_u).round() as u16
+    } else {
+        NODATA
+    };
+
+    let v_out = if sum_weight_v > 0.001 {
+        (sum_v / sum_weight_v).round() as u16
+    } else {
+        NODATA
+    };
+
+    (u_out, v_out)
+}
+
 /// Bilinear interpolation of a raw u16 grid value at fractional grid coordinates.
 ///
 /// Returns [`NODATA`] when the query point falls entirely outside the grid or
@@ -294,5 +339,20 @@ mod tests {
         // sum_weight = 0.5
         // Result = 5.0 / 0.5 = 10
         assert_eq!(interpolate_bilinear_lut(&entry, &grid), 10);
+    }
+
+    #[test]
+    fn test_interpolate_bilinear_lut_pair() {
+        let u_grid = [10, 20, 30, 40];
+        let v_grid = [100, 200, 300, 400];
+        let entry = LutEntry {
+            indices: [0, 1, 2, 3],
+            weights: [0.25, 0.25, 0.25, 0.25],
+        };
+        let (u, v) = interpolate_bilinear_lut_pair(&entry, &u_grid, &v_grid);
+        assert_eq!(u, interpolate_bilinear_lut(&entry, &u_grid));
+        assert_eq!(v, interpolate_bilinear_lut(&entry, &v_grid));
+        assert_eq!(u, 25);
+        assert_eq!(v, 250);
     }
 }

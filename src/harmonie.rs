@@ -1,4 +1,4 @@
-use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, NODATA};
+use crate::constants::{GRIB_CELL_COUNT, GRIB_HEIGHT, GRIB_WIDTH, NODATA};
 use crate::models::{
     FileUrlResponse, RainForecast, RainStep, SolarForecast, SolarStep, TempForecast, TempStep,
     WindForecast, WindStep,
@@ -137,8 +137,8 @@ pub fn process_harmonie_tar_combined(
                 }
                 if pds.parameter_number == 11 && pds.level_type == 105 && pds.level_value == 2 {
                     let vals_f64 = msg.read_flat_data_as_f64()?;
-                    if vals_f64.len() == 152100 {
-                        let mut values = vec![NODATA; 152100];
+                    if vals_f64.len() == GRIB_CELL_COUNT {
+                        let mut values = vec![NODATA; GRIB_CELL_COUNT];
                         for (i, &v) in vals_f64.iter().enumerate() {
                             if v.is_finite() {
                                 values[i] = (v * 10.0).round() as u16;
@@ -151,7 +151,7 @@ pub fn process_harmonie_tar_combined(
                     && pds.level_value == 0
                 {
                     let vals_f64 = msg.read_flat_data_as_f64()?;
-                    if vals_f64.len() == 152100 {
+                    if vals_f64.len() == GRIB_CELL_COUNT {
                         solar_vals = Some(vals_f64);
                     }
                 } else if pds.parameter_number == 61
@@ -159,7 +159,7 @@ pub fn process_harmonie_tar_combined(
                     && pds.level_value == 0
                 {
                     let vals_f64 = msg.read_flat_data_as_f64()?;
-                    if vals_f64.len() == 152100 {
+                    if vals_f64.len() == GRIB_CELL_COUNT {
                         rain_vals = Some(vals_f64);
                     }
                 } else if pds.level_type == 105
@@ -168,8 +168,8 @@ pub fn process_harmonie_tar_combined(
                     let lvl = pds.level_value as u32;
                     if pds.parameter_number == 33 {
                         let vals_f64 = msg.read_flat_data_as_f64()?;
-                        if vals_f64.len() == 152100 {
-                            let mut values = vec![NODATA; 152100];
+                        if vals_f64.len() == GRIB_CELL_COUNT {
+                            let mut values = vec![NODATA; GRIB_CELL_COUNT];
                             for (i, &v) in vals_f64.iter().enumerate() {
                                 if v.is_finite() {
                                     values[i] = ((v + 100.0) * 100.0).round() as u16;
@@ -179,8 +179,8 @@ pub fn process_harmonie_tar_combined(
                         }
                     } else if pds.parameter_number == 34 {
                         let vals_f64 = msg.read_flat_data_as_f64()?;
-                        if vals_f64.len() == 152100 {
-                            let mut values = vec![NODATA; 152100];
+                        if vals_f64.len() == GRIB_CELL_COUNT {
+                            let mut values = vec![NODATA; GRIB_CELL_COUNT];
                             for (i, &v) in vals_f64.iter().enumerate() {
                                 if v.is_finite() {
                                     values[i] = ((v + 100.0) * 100.0).round() as u16;
@@ -235,7 +235,7 @@ pub fn process_harmonie_tar_combined(
     let mut solar_steps = Vec::new();
     for k in 0..raw_solar_steps.len() {
         let current_step = &raw_solar_steps[k];
-        let mut values = vec![NODATA; 152100];
+        let mut values = vec![NODATA; GRIB_CELL_COUNT];
 
         let prev_step = if k > 0 {
             Some(&raw_solar_steps[k - 1])
@@ -249,7 +249,7 @@ pub fn process_harmonie_tar_combined(
 
         if dt_seconds > 0.0 {
             #[allow(clippy::needless_range_loop)]
-            for i in 0..152100 {
+            for i in 0..GRIB_CELL_COUNT {
                 let curr_val = current_step.values[i];
                 if curr_val.is_finite() {
                     let prev_val = match prev_step {
@@ -275,7 +275,7 @@ pub fn process_harmonie_tar_combined(
     let mut rain_steps = Vec::new();
     for k in 0..raw_rain_steps.len() {
         let current_step = &raw_rain_steps[k];
-        let mut values = vec![NODATA; 152100];
+        let mut values = vec![NODATA; GRIB_CELL_COUNT];
 
         let prev_step = if k > 0 {
             Some(&raw_rain_steps[k - 1])
@@ -288,7 +288,7 @@ pub fn process_harmonie_tar_combined(
 
         if dt_hours > 0 {
             #[allow(clippy::needless_range_loop)]
-            for i in 0..152100 {
+            for i in 0..GRIB_CELL_COUNT {
                 let curr_val = current_step.values[i];
                 if curr_val.is_finite() {
                     let prev_val = match prev_step {
