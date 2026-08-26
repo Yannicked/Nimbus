@@ -3,10 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::constants::KNMI_DATASET;
-use crate::harmonie::{
-    download_and_process_combined_tar, precalculate_rain_data, precalculate_solar_data,
-    precalculate_temp_data, precalculate_wind_data,
-};
+use crate::harmonie::download_and_process_combined_tar;
 use crate::radar::download_and_update_nc_file;
 use crate::state::AppState;
 
@@ -98,6 +95,7 @@ pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
                                             url_opt.as_deref(),
                                             &open_data_api_key_clone,
                                             state_clone,
+                                            None,
                                         )
                                         .await
                                         {
@@ -240,65 +238,70 @@ pub async fn start_knmi_harmonie_mqtt_listener(state: Arc<AppState>) {
                                                     eprintln!("Failed to save new rain forecast to bin: {:?}", e);
                                                 }
 
-                                                // Update temperature forecast in state
-                                                {
-                                                    let mut temp_write =
-                                                        state_clone.temp_forecast.write().await;
-                                                    *temp_write = Some(temp_fc);
-                                                    state_clone.temp_data_cache.clear();
+                                                // Create staged forecast objects
+                                                let new_temp_data = Arc::new(crate::state::TempData::new(temp_fc));
+                                                let new_wind_data = Arc::new(crate::state::WindData::new(wind_fc));
+                                                let new_solar_data = Arc::new(crate::state::SolarData::new(solar_fc));
+                                                let new_rain_data = Arc::new(crate::state::RainData::new(rain_fc));
+
+                                                // Precalculate all WebPs into the staged objects before swapping
+                                                let temp_fut = crate::harmonie::precalculate_temp_data_into(
+                                                    &new_temp_data.forecast,
+                                                    &state_clone.temp_projection_lut,
+                                                    &new_temp_data.data_cache,
+                                                );
+                                                let wind_fut = crate::harmonie::precalculate_wind_data_into(
+                                                    &new_wind_data.forecast,
+                                                    &state_clone.wind_projection_lut,
+                                                    &new_wind_data.data_cache,
+                                                );
+                                                let solar_fut = crate::harmonie::precalculate_solar_data_into(
+                                                    &new_solar_data.forecast,
+                                                    &state_clone.solar_projection_lut,
+                                                    &new_solar_data.data_cache,
+                                                );
+
+                                                let radar_ref_info = {
+                                                    let radar_opt = state_clone.radar_data.read().await;
+                                                    radar_opt.as_ref().and_then(|r| {
+                                                        let ref_t = crate::harmonie::parse_reference_time(&r.metadata.reference_time_str)?;
+                                                        let last_t = r.metadata.times.last().copied().unwrap_or(0);
+                                                        Some((ref_t, last_t))
+                                                    })
+                                                };
+
+                                                if let Some((ref_t, last_t)) = radar_ref_info {
+                                                    let rain_fut = crate::harmonie::precalculate_rain_data_into(
+                                                        &new_rain_data.forecast,
+                                                        &state_clone.temp_projection_lut,
+                                                        &new_rain_data.data_cache,
+                                                        ref_t,
+                                                        last_t,
+                                                    );
+                                                    tokio::join!(temp_fut, wind_fut, solar_fut, rain_fut);
+                                                } else {
+                                                    tokio::join!(temp_fut, wind_fut, solar_fut);
                                                 }
 
-                                                // Update wind forecast in state
+                                                // Atomically swap the new forecasts and precalculated caches into active state
                                                 {
-                                                    let mut wind_write =
-                                                        state_clone.wind_forecast.write().await;
-                                                    *wind_write = Some(wind_fc);
-                                                    state_clone.wind_data_cache.clear();
+                                                    let mut temp_write = state_clone.temp_data.write().await;
+                                                    *temp_write = Some(new_temp_data);
+                                                }
+                                                {
+                                                    let mut wind_write = state_clone.wind_data.write().await;
+                                                    *wind_write = Some(new_wind_data);
+                                                }
+                                                {
+                                                    let mut solar_write = state_clone.solar_data.write().await;
+                                                    *solar_write = Some(new_solar_data);
+                                                }
+                                                {
+                                                    let mut rain_write = state_clone.rain_data.write().await;
+                                                    *rain_write = Some(new_rain_data);
                                                 }
 
-                                                // Update solar forecast in state
-                                                {
-                                                    let mut solar_write =
-                                                        state_clone.solar_forecast.write().await;
-                                                    *solar_write = Some(solar_fc);
-                                                    state_clone.solar_data_cache.clear();
-                                                }
-
-                                                // Update rain forecast in state
-                                                {
-                                                    let mut rain_write =
-                                                        state_clone.rain_forecast.write().await;
-                                                    *rain_write = Some(rain_fc);
-                                                    state_clone.data_cache.clear();
-                                                    state_clone.timeseries_cache.clear();
-                                                }
-
-                                                println!("Successfully updated temperature, wind, solar, and rain forecasts and cleared caches.");
-
-                                                // Trigger precalculations in background
-                                                let state_precalc_temp = state_clone.clone();
-                                                tokio::spawn(async move {
-                                                    precalculate_temp_data(state_precalc_temp)
-                                                        .await;
-                                                });
-
-                                                let state_precalc_wind = state_clone.clone();
-                                                tokio::spawn(async move {
-                                                    precalculate_wind_data(state_precalc_wind)
-                                                        .await;
-                                                });
-
-                                                let state_precalc_solar = state_clone.clone();
-                                                tokio::spawn(async move {
-                                                    precalculate_solar_data(state_precalc_solar)
-                                                        .await;
-                                                });
-
-                                                let state_precalc_rain = state_clone.clone();
-                                                tokio::spawn(async move {
-                                                    precalculate_rain_data(state_precalc_rain)
-                                                        .await;
-                                                });
+                                                println!("Successfully activated updated temperature, wind, solar, and rain forecasts and precalculated caches.");
                                             }
                                             Err(e) => {
                                                 eprintln!("Error processing HARMONIE combined tar file update for {}: {:?}", name_clone, e);

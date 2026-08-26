@@ -172,19 +172,16 @@ fn compute_extended_times(
 pub async fn get_metadata(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let meta = state.metadata.read().await.clone();
-    match meta {
-        Some(mut m) => {
-            if let Some(ref rain_fc) = *state.rain_forecast.read().await {
-                m.times = compute_extended_times(&m.times, rain_fc, &m.reference_time_str);
-            }
-            Ok(axum::Json(m))
-        }
-        None => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Metadata not loaded".to_string(),
-        )),
+    let radar_opt = state.radar_data.read().await;
+    let radar = radar_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Metadata not loaded".to_string(),
+    ))?;
+    let mut m = radar.metadata.clone();
+    if let Some(ref rain_data) = *state.rain_data.read().await {
+        m.times = compute_extended_times(&m.times, &rain_data.forecast, &m.reference_time_str);
     }
+    Ok(axum::Json(m))
 }
 
 /// Serves the lossless R/G packed raw radar data PNG for a timeframe.
@@ -192,8 +189,14 @@ pub async fn get_data_image(
     Path((ens_str, time)): Path<(String, i64)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let radar_opt = state.radar_data.read().await;
+    let radar = radar_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Metadata not available".to_string(),
+    ))?;
+
     // Check cache
-    if let Some(cached_data) = state.data_cache.get(&(ens_str.clone(), time)) {
+    if let Some(cached_data) = radar.data_cache.get(&(ens_str.clone(), time)) {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -201,12 +204,8 @@ pub async fn get_data_image(
             .unwrap());
     }
 
-    // Get current file path and metadata
-    let file_path = state.file_path.read().await.clone();
-    let meta = state.metadata.read().await.clone().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Metadata not available".to_string(),
-    ))?;
+    let meta = &radar.metadata;
+    let file_path = &radar.file_path;
 
     // Check if this time step is for Harmonie (i.e. past the radar forecast)
     if !meta.times.contains(&time) {
@@ -228,8 +227,8 @@ pub async fn get_data_image(
                     )
                     .unwrap();
             }
-            // Cache it
-            state
+            // Cache it in active radar dataset
+            radar
                 .data_cache
                 .insert((ens_str.clone(), time), webp_bytes.clone());
 
@@ -240,11 +239,22 @@ pub async fn get_data_image(
                 .unwrap());
         }
 
-        let rain_fc_opt = state.rain_forecast.read().await;
-        let rain_fc = rain_fc_opt.as_ref().ok_or((
+        let rain_data_opt = state.rain_data.read().await;
+        let rain_data = rain_data_opt.as_ref().ok_or((
             StatusCode::INTERNAL_SERVER_ERROR,
             "Harmonie rain forecast not loaded".to_string(),
         ))?;
+
+        if let Some(cached) = rain_data.data_cache.get(&time) {
+            radar
+                .data_cache
+                .insert((ens_str.clone(), time), cached.value().clone());
+            return Ok(Response::builder()
+                .header("Content-Type", "image/webp")
+                .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                .body(axum::body::Body::from(cached.value().clone()))
+                .unwrap());
+        }
 
         let radar_ref_time = parse_reference_time(&meta.reference_time_str).ok_or((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -253,11 +263,12 @@ pub async fn get_data_image(
 
         let absolute_time = radar_ref_time + time;
 
-        let step = rain_fc
+        let step = rain_data
+            .forecast
             .steps
             .iter()
             .min_by_key(|s| {
-                let step_abs = rain_fc.reference_time + (s.forecast_hour as i64) * 3600;
+                let step_abs = rain_data.forecast.reference_time + (s.forecast_hour as i64) * 3600;
                 (step_abs - absolute_time).abs()
             })
             .ok_or((
@@ -266,9 +277,9 @@ pub async fn get_data_image(
             ))?;
 
         let raw_values = step.values.clone();
-        let state_clone = state.clone();
+        let lut = state.temp_projection_lut.clone();
         let webp_bytes = tokio::task::spawn_blocking(move || {
-            render_data_webp_bytes(&raw_values, &state_clone.temp_projection_lut)
+            render_data_webp_bytes(&raw_values, &lut)
         })
         .await
         .map_err(|e| {
@@ -279,7 +290,8 @@ pub async fn get_data_image(
         })?;
 
         // Cache results
-        state.data_cache.insert((ens_str, time), webp_bytes.clone());
+        radar.data_cache.insert((ens_str, time), webp_bytes.clone());
+        rain_data.data_cache.insert(time, webp_bytes.clone());
 
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
@@ -289,7 +301,7 @@ pub async fn get_data_image(
     }
 
     // Retrieve or compute raw slice
-    let raw_slice = if let Some(cached) = state.grid_cache.get(&(ens_str.clone(), time)) {
+    let raw_slice = if let Some(cached) = radar.grid_cache.get(&(ens_str.clone(), time)) {
         cached.value().clone()
     } else {
         let file_path_clone = file_path.clone();
@@ -306,23 +318,23 @@ pub async fn get_data_image(
             )
         })??;
         let arc = Arc::new(computed);
-        state
+        radar
             .grid_cache
             .insert((ens_str.clone(), time), arc.clone());
         arc
     };
 
     // Render data webp bytes using LUT
-    let state_clone = state.clone();
+    let lut = state.projection_lut.clone();
     let raw_slice_clone = raw_slice.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_data_webp_bytes(&raw_slice_clone, &state_clone.projection_lut)
+        render_data_webp_bytes(&raw_slice_clone, &lut)
     })
     .await
     .unwrap();
 
     // Cache results
-    state.data_cache.insert((ens_str, time), webp_bytes.clone());
+    radar.data_cache.insert((ens_str, time), webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -337,11 +349,14 @@ pub async fn get_value(
     Query(q): Query<ValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let file_path = state.file_path.read().await.clone();
-    let meta = state.metadata.read().await.clone().ok_or((
+    let radar_opt = state.radar_data.read().await;
+    let radar = radar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Metadata not available".to_string(),
     ))?;
+
+    let file_path = &radar.file_path;
+    let meta = &radar.metadata;
 
     // Convert GPS coordinates to Polar Stereographic
     let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
@@ -355,8 +370,8 @@ pub async fn get_value(
             }));
         }
 
-        let rain_fc_opt = state.rain_forecast.read().await;
-        let rain_fc = rain_fc_opt.as_ref().ok_or((
+        let rain_data_opt = state.rain_data.read().await;
+        let rain_data = rain_data_opt.as_ref().ok_or((
             StatusCode::INTERNAL_SERVER_ERROR,
             "Harmonie rain forecast not loaded".to_string(),
         ))?;
@@ -368,9 +383,9 @@ pub async fn get_value(
 
         let absolute_time = radar_ref_time + q.time;
 
-        let harmonie_time = absolute_time - rain_fc.reference_time;
+        let harmonie_time = absolute_time - rain_data.forecast.reference_time;
         return with_grib_step(
-            rain_fc,
+            &rain_data.forecast,
             harmonie_time,
             q.lon,
             q.lat,
@@ -407,7 +422,7 @@ pub async fn get_value(
     }
 
     if q.ens == "pmm" {
-        let raw_slice = if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+        let raw_slice = if let Some(slice) = radar.grid_cache.get(&(q.ens.clone(), q.time)) {
             slice.value().clone()
         } else {
             let file_path_clone = file_path.clone();
@@ -424,7 +439,7 @@ pub async fn get_value(
                 )
             })??;
             let arc = Arc::new(computed);
-            state
+            radar
                 .grid_cache
                 .insert((q.ens.clone(), q.time), arc.clone());
             arc
@@ -439,7 +454,7 @@ pub async fn get_value(
     }
 
     // Try reading from cache first
-    if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), q.time)) {
+    if let Some(slice) = radar.grid_cache.get(&(q.ens.clone(), q.time)) {
         let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
         let (status_out, value_out) = if q.ens == "prob" {
             ("probability".to_string(), val_raw as f64)
@@ -609,11 +624,14 @@ pub async fn get_timeseries(
     Query(q): Query<TimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let file_path = state.file_path.read().await.clone();
-    let meta = state.metadata.read().await.clone().ok_or((
+    let radar_opt = state.radar_data.read().await;
+    let radar = radar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Metadata not available".to_string(),
     ))?;
+
+    let file_path = &radar.file_path;
+    let meta = &radar.metadata;
 
     // Convert GPS coordinates to Polar Stereographic
     let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
@@ -634,8 +652,8 @@ pub async fn get_timeseries(
     }
 
     // Determine extended times array
-    let extended_times = if let Some(ref rain_fc) = *state.rain_forecast.read().await {
-        compute_extended_times(&meta.times, rain_fc, &meta.reference_time_str)
+    let extended_times = if let Some(ref rain_data) = *state.rain_data.read().await {
+        compute_extended_times(&meta.times, &rain_data.forecast, &meta.reference_time_str)
     } else {
         meta.times.clone()
     };
@@ -643,7 +661,7 @@ pub async fn get_timeseries(
     // Try reading all radar times from cache first
     let mut all_cached = true;
     for &time_val in &meta.times {
-        if !state.grid_cache.contains_key(&(q.ens.clone(), time_val)) {
+        if !radar.grid_cache.contains_key(&(q.ens.clone(), time_val)) {
             all_cached = false;
             break;
         }
@@ -652,12 +670,12 @@ pub async fn get_timeseries(
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        if let Some(cached_ts) = state.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
+        if let Some(cached_ts) = radar.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
             values.extend_from_slice(&cached_ts);
         } else {
             let mut ts_values = Vec::with_capacity(meta.times.len());
             for &time_val in &meta.times {
-                if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+                if let Some(slice) = radar.grid_cache.get(&(q.ens.clone(), time_val)) {
                     let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
                     if q.ens == "prob" {
                         ts_values.push(val_raw as f64);
@@ -666,7 +684,7 @@ pub async fn get_timeseries(
                     }
                 }
             }
-            state
+            radar
                 .timeseries_cache
                 .insert((q.ens.clone(), ix, iy), Arc::new(ts_values.clone()));
             values.extend(ts_values);
@@ -680,13 +698,13 @@ pub async fn get_timeseries(
 
         let mut tasks = Vec::with_capacity(meta.times.len());
         for &time_val in &meta.times {
-            if let Some(slice) = state.grid_cache.get(&(q.ens.clone(), time_val)) {
+            if let Some(slice) = radar.grid_cache.get(&(q.ens.clone(), time_val)) {
                 tasks.push(TaskResult::Cached(slice.value().clone()));
             } else {
                 let file_path_clone = file_path.clone();
                 let meta_clone = meta.clone();
                 let ens_clone = q.ens.clone();
-                let state_clone = state.clone();
+                let radar_clone = radar.clone();
                 tasks.push(TaskResult::Spawned(tokio::spawn(async move {
                     let ens_for_block = ens_clone.clone();
                     let computed = tokio::task::spawn_blocking(move || {
@@ -700,7 +718,7 @@ pub async fn get_timeseries(
                         )
                     })??;
                     let arc = Arc::new(computed);
-                    state_clone
+                    radar_clone
                         .grid_cache
                         .insert((ens_clone, time_val), arc.clone());
                     Ok(arc)
@@ -873,15 +891,15 @@ pub async fn get_timeseries(
 
     // Append Harmonie forecast values for the extended time steps
     let last_radar_time = meta.times.last().copied().unwrap_or(0);
-    if let Some(ref rain_fc) = *state.rain_forecast.read().await {
+    if let Some(ref rain_data) = *state.rain_data.read().await {
         if let Some(radar_ref_time) = parse_reference_time(&meta.reference_time_str) {
             let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
             for &time_val in &extended_times {
                 if time_val > last_radar_time && q.ens == "pmm" {
                     let absolute_time = radar_ref_time + time_val;
-                    let harmonie_time = absolute_time - rain_fc.reference_time;
-                    let step = rain_fc.steps.iter().min_by_key(|s| {
+                    let harmonie_time = absolute_time - rain_data.forecast.reference_time;
+                    let step = rain_data.forecast.steps.iter().min_by_key(|s| {
                         let step_offset = (s.forecast_hour as i64) * 3600;
                         (step_offset - harmonie_time).abs()
                     });
@@ -907,7 +925,7 @@ pub async fn get_timeseries(
         lat: q.lat,
         lon: q.lon,
         ens: q.ens,
-        times: if is_pmm { extended_times } else { meta.times },
+        times: if is_pmm { extended_times } else { meta.times.clone() },
         values,
     }))
 }
@@ -915,14 +933,14 @@ pub async fn get_timeseries(
 pub async fn get_wind_metadata(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let wind_opt = state.wind_data.read().await;
+    let wind_data = wind_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Wind forecast not loaded".to_string(),
     ))?;
 
     let (times, reference_time_str) =
-        format_forecast_metadata(&forecast.steps, forecast.reference_time);
+        format_forecast_metadata(&wind_data.forecast.steps, wind_data.forecast.reference_time);
 
     Ok(axum::Json(WindMetadata {
         left: MERCATOR_LEFT,
@@ -932,9 +950,9 @@ pub async fn get_wind_metadata(
         width: GRID_W,
         height: GRID_H,
         times,
-        reference_time: forecast.reference_time,
+        reference_time: wind_data.forecast.reference_time,
         reference_time_str,
-        version: 1,
+        version: wind_data.forecast.reference_time as u64,
         heights: vec![10, 50, 100, 200, 300],
     }))
 }
@@ -943,7 +961,13 @@ pub async fn get_wind_data_image(
     Path((height, time)): Path<(u32, i64)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.wind_data_cache.get(&(height, time)) {
+    let wind_opt = state.wind_data.read().await;
+    let wind_data = wind_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Wind forecast not loaded".to_string(),
+    ))?;
+
+    if let Some(cached) = wind_data.data_cache.get(&(height, time)) {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -951,17 +975,12 @@ pub async fn get_wind_data_image(
             .unwrap());
     }
 
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Wind forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
+    if wind_data.forecast.steps.is_empty() {
         return Err((StatusCode::NOT_FOUND, "No wind forecast steps".to_string()));
     }
 
-    let step = forecast
+    let step = wind_data
+        .forecast
         .steps
         .iter()
         .filter(|s| s.height_level == height)
@@ -973,14 +992,14 @@ pub async fn get_wind_data_image(
 
     let u_vals = step.u_values.clone();
     let v_vals = step.v_values.clone();
-    let state_clone = state.clone();
+    let lut = state.wind_projection_lut.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_wind_webp_bytes(&u_vals, &v_vals, &state_clone.wind_projection_lut)
+        render_wind_webp_bytes(&u_vals, &v_vals, &lut)
     })
     .await
     .unwrap();
-    state
-        .wind_data_cache
+    wind_data
+        .data_cache
         .insert((height, time), webp_bytes.clone());
 
     Ok(Response::builder()
@@ -1001,13 +1020,13 @@ pub async fn get_wind_value(
     Query(q): Query<WindValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let wind_opt = state.wind_data.read().await;
+    let wind_data = wind_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Wind forecast not loaded".to_string(),
     ))?;
 
-    if forecast.steps.is_empty() {
+    if wind_data.forecast.steps.is_empty() {
         return Ok(axum::Json(WindValueResponse {
             status: "no_data".to_string(),
             u: None,
@@ -1018,10 +1037,10 @@ pub async fn get_wind_value(
     }
 
     let req_height = q.height.unwrap_or(10);
-
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
-    let step = forecast
+    let step = wind_data
+        .forecast
         .steps
         .iter()
         .filter(|s| s.height_level == req_height)
@@ -1061,17 +1080,17 @@ pub async fn get_wind_timeseries(
     Query(q): Query<WindTimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let wind_opt = state.wind_data.read().await;
+    let wind_data = wind_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Wind forecast not loaded".to_string(),
     ))?;
 
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
-
     let req_height = q.height.unwrap_or(10);
 
-    let steps: Vec<_> = forecast
+    let steps: Vec<_> = wind_data
+        .forecast
         .steps
         .iter()
         .filter(|s| s.height_level == req_height)
@@ -1108,14 +1127,14 @@ pub async fn get_wind_timeseries(
 pub async fn get_temp_metadata(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let temp_opt = state.temp_data.read().await;
+    let temp_data = temp_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Temperature forecast not loaded".to_string(),
     ))?;
 
     let (times, reference_time_str) =
-        format_forecast_metadata(&forecast.steps, forecast.reference_time);
+        format_forecast_metadata(&temp_data.forecast.steps, temp_data.forecast.reference_time);
 
     Ok(axum::Json(TempMetadata {
         left: MERCATOR_LEFT,
@@ -1125,9 +1144,9 @@ pub async fn get_temp_metadata(
         width: GRID_W,
         height: GRID_H,
         times,
-        reference_time: forecast.reference_time,
+        reference_time: temp_data.forecast.reference_time,
         reference_time_str,
-        version: forecast.reference_time as u64,
+        version: temp_data.forecast.reference_time as u64,
     }))
 }
 
@@ -1135,7 +1154,13 @@ pub async fn get_temp_data_image(
     Path(time): Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.temp_data_cache.get(&time) {
+    let temp_opt = state.temp_data.read().await;
+    let temp_data = temp_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Temperature forecast not loaded".to_string(),
+    ))?;
+
+    if let Some(cached) = temp_data.data_cache.get(&time) {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -1143,20 +1168,15 @@ pub async fn get_temp_data_image(
             .unwrap());
     }
 
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Temperature forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
+    if temp_data.forecast.steps.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
             "No temperature forecast steps".to_string(),
         ));
     }
 
-    let step = forecast
+    let step = temp_data
+        .forecast
         .steps
         .iter()
         .min_by_key(|s| {
@@ -1166,13 +1186,13 @@ pub async fn get_temp_data_image(
         .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
 
     let vals = step.values.clone();
-    let state_clone = state.clone();
+    let lut = state.temp_projection_lut.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_temp_webp_bytes(&vals, &state_clone.temp_projection_lut)
+        render_temp_webp_bytes(&vals, &lut)
     })
     .await
     .unwrap();
-    state.temp_data_cache.insert(time, webp_bytes.clone());
+    temp_data.data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -1185,14 +1205,14 @@ pub async fn get_temp_value(
     Query(q): Query<TempValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let temp_opt = state.temp_data.read().await;
+    let temp_data = temp_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Temperature forecast not loaded".to_string(),
     ))?;
 
     with_grib_step(
-        forecast,
+        &temp_data.forecast,
         q.time,
         q.lon,
         q.lat,
@@ -1210,15 +1230,15 @@ pub async fn get_temp_timeseries(
     Query(q): Query<TempTimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let temp_opt = state.temp_data.read().await;
+    let temp_data = temp_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Temperature forecast not loaded".to_string(),
     ))?;
 
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
-    let (times, values) = extract_timeseries(&forecast.steps, |step| {
+    let (times, values) = extract_timeseries(&temp_data.forecast.steps, |step| {
         interpolate_temp(fx, fy, &step.values)
     });
 
@@ -1234,14 +1254,14 @@ pub async fn get_temp_timeseries(
 pub async fn get_solar_metadata(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let solar_opt = state.solar_data.read().await;
+    let solar_data = solar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Solar forecast not loaded".to_string(),
     ))?;
 
     let (times, reference_time_str) =
-        format_forecast_metadata(&forecast.steps, forecast.reference_time);
+        format_forecast_metadata(&solar_data.forecast.steps, solar_data.forecast.reference_time);
 
     Ok(axum::Json(SolarMetadata {
         left: MERCATOR_LEFT,
@@ -1251,9 +1271,9 @@ pub async fn get_solar_metadata(
         width: GRID_W,
         height: GRID_H,
         times,
-        reference_time: forecast.reference_time,
+        reference_time: solar_data.forecast.reference_time,
         reference_time_str,
-        version: forecast.reference_time as u64,
+        version: solar_data.forecast.reference_time as u64,
     }))
 }
 
@@ -1261,7 +1281,13 @@ pub async fn get_solar_data_image(
     Path(time): Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if let Some(cached) = state.solar_data_cache.get(&time) {
+    let solar_opt = state.solar_data.read().await;
+    let solar_data = solar_opt.as_ref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Solar forecast not loaded".to_string(),
+    ))?;
+
+    if let Some(cached) = solar_data.data_cache.get(&time) {
         return Ok(Response::builder()
             .header("Content-Type", "image/webp")
             .header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -1269,17 +1295,12 @@ pub async fn get_solar_data_image(
             .unwrap());
     }
 
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Solar forecast not loaded".to_string(),
-    ))?;
-
-    if forecast.steps.is_empty() {
+    if solar_data.forecast.steps.is_empty() {
         return Err((StatusCode::NOT_FOUND, "No solar forecast steps".to_string()));
     }
 
-    let step = forecast
+    let step = solar_data
+        .forecast
         .steps
         .iter()
         .min_by_key(|s| {
@@ -1289,13 +1310,13 @@ pub async fn get_solar_data_image(
         .ok_or((StatusCode::NOT_FOUND, "No matching step".to_string()))?;
 
     let vals = step.values.clone();
-    let state_clone = state.clone();
+    let lut = state.solar_projection_lut.clone();
     let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_solar_webp_bytes(&vals, &state_clone.solar_projection_lut)
+        render_solar_webp_bytes(&vals, &lut)
     })
     .await
     .unwrap();
-    state.solar_data_cache.insert(time, webp_bytes.clone());
+    solar_data.data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()
         .header("Content-Type", "image/webp")
@@ -1308,14 +1329,14 @@ pub async fn get_solar_value(
     Query(q): Query<SolarValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let solar_opt = state.solar_data.read().await;
+    let solar_data = solar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Solar forecast not loaded".to_string(),
     ))?;
 
     with_grib_step(
-        forecast,
+        &solar_data.forecast,
         q.time,
         q.lon,
         q.lat,
@@ -1333,15 +1354,15 @@ pub async fn get_solar_timeseries(
     Query(q): Query<SolarTimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = forecast_opt.as_ref().ok_or((
+    let solar_opt = state.solar_data.read().await;
+    let solar_data = solar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
         "Solar forecast not loaded".to_string(),
     ))?;
 
     let (fx, fy) = lonlat_to_grib_indices(q.lon, q.lat);
 
-    let (times, values) = extract_timeseries(&forecast.steps, |step| {
+    let (times, values) = extract_timeseries(&solar_data.forecast.steps, |step| {
         interpolate_solar(fx, fy, &step.values)
     });
 

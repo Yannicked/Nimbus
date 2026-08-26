@@ -607,17 +607,12 @@ pub async fn cleanup_tar_files() {
     }
 }
 
-/// Precalculates all temperature forecast step WebPs in the background.
-pub async fn precalculate_temp_data(state: Arc<AppState>) {
-    let forecast_opt = state.temp_forecast.read().await;
-    let forecast = match forecast_opt.as_ref() {
-        Some(fc) => fc,
-        None => {
-            println!("No temperature forecast loaded, skipping precalculation.");
-            return;
-        }
-    };
-
+/// Precalculates all temperature forecast step WebPs into a target cache.
+pub async fn precalculate_temp_data_into(
+    forecast: &TempForecast,
+    lut: &[crate::models::LutEntry],
+    cache: &dashmap::DashMap<i64, Vec<u8>>,
+) {
     let num_steps = forecast.steps.len();
     if num_steps == 0 {
         return;
@@ -632,8 +627,8 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
         .map(|n| n.get())
         .unwrap_or(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+    let lut_arc = Arc::new(lut.to_vec());
 
-    // Collect step info while we hold the read lock
     let steps_info: Vec<(i64, Arc<Vec<u16>>)> = forecast
         .steps
         .iter()
@@ -643,26 +638,25 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
         })
         .collect();
 
-    // Drop the read lock before spawning tasks
-    drop(forecast_opt);
+    let mut handles = Vec::new();
 
     for (i, (time_key, values)) in steps_info.into_iter().enumerate() {
-        let state_clone = state.clone();
-        let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
+        let lut_clone = lut_arc.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
                 .expect("Failed to acquire semaphore for temperature precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_temp_webp_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
+                render_temp_webp_bytes(&values, &lut_clone)
             })
             .await
             .expect("Failed to join temperature rendering task");
-            state_clone.temp_data_cache.insert(time_key, webp_bytes);
+            (time_key, webp_bytes)
         });
+        handles.push(handle);
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {
             println!(
@@ -674,22 +668,32 @@ pub async fn precalculate_temp_data(state: Arc<AppState>) {
         }
     }
 
+    for handle in handles {
+        if let Ok((time_key, webp_bytes)) = handle.await {
+            cache.insert(time_key, webp_bytes);
+        }
+    }
+
     println!(
-        "Temperature WebP precalculation tasks spawned for all {} steps.",
+        "Temperature WebP precalculation completed for all {} steps.",
         num_steps
     );
 }
 
-pub async fn precalculate_wind_data(state: Arc<AppState>) {
-    let forecast_opt = state.wind_forecast.read().await;
-    let forecast = match forecast_opt.as_ref() {
-        Some(fc) => fc,
-        None => {
-            println!("No wind forecast loaded, skipping precalculation.");
-            return;
-        }
-    };
+/// Legacy wrapper for precalculating temperature on startup.
+pub async fn precalculate_temp_data(state: Arc<AppState>) {
+    let temp_opt = state.temp_data.read().await;
+    if let Some(ref temp_data) = *temp_opt {
+        precalculate_temp_data_into(&temp_data.forecast, &state.temp_projection_lut, &temp_data.data_cache).await;
+    }
+}
 
+/// Precalculates all wind forecast step WebPs into a target cache.
+pub async fn precalculate_wind_data_into(
+    forecast: &WindForecast,
+    lut: &[crate::models::LutEntry],
+    cache: &dashmap::DashMap<(u32, i64), Vec<u8>>,
+) {
     let num_steps = forecast.steps.len();
     if num_steps == 0 {
         return;
@@ -704,6 +708,7 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
         .map(|n| n.get())
         .unwrap_or(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+    let lut_arc = Arc::new(lut.to_vec());
 
     let steps_info: Vec<_> = forecast
         .steps
@@ -719,14 +724,13 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
         })
         .collect();
 
-    drop(forecast_opt);
+    let mut handles = Vec::new();
 
     for (i, (height_level, time_key, u_vals, v_vals)) in steps_info.into_iter().enumerate() {
-        let state_clone = state.clone();
-        let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
+        let lut_clone = lut_arc.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
@@ -735,15 +739,14 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
                 render_wind_webp_bytes(
                     &u_vals,
                     &v_vals,
-                    &state_clone_for_blocking.wind_projection_lut,
+                    &lut_clone,
                 )
             })
             .await
             .expect("Failed to join wind rendering task");
-            state_clone
-                .wind_data_cache
-                .insert((height_level, time_key), webp_bytes);
+            (height_level, time_key, webp_bytes)
         });
+        handles.push(handle);
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {
             println!(
@@ -755,22 +758,32 @@ pub async fn precalculate_wind_data(state: Arc<AppState>) {
         }
     }
 
+    for handle in handles {
+        if let Ok((height_level, time_key, webp_bytes)) = handle.await {
+            cache.insert((height_level, time_key), webp_bytes);
+        }
+    }
+
     println!(
-        "Wind WebP precalculation tasks spawned for all {} steps.",
+        "Wind WebP precalculation completed for all {} steps.",
         num_steps
     );
 }
 
-pub async fn precalculate_solar_data(state: Arc<AppState>) {
-    let forecast_opt = state.solar_forecast.read().await;
-    let forecast = match forecast_opt.as_ref() {
-        Some(fc) => fc,
-        None => {
-            println!("No solar forecast loaded, skipping precalculation.");
-            return;
-        }
-    };
+/// Legacy wrapper for precalculating wind on startup.
+pub async fn precalculate_wind_data(state: Arc<AppState>) {
+    let wind_opt = state.wind_data.read().await;
+    if let Some(ref wind_data) = *wind_opt {
+        precalculate_wind_data_into(&wind_data.forecast, &state.wind_projection_lut, &wind_data.data_cache).await;
+    }
+}
 
+/// Precalculates all solar forecast step WebPs into a target cache.
+pub async fn precalculate_solar_data_into(
+    forecast: &SolarForecast,
+    lut: &[crate::models::LutEntry],
+    cache: &dashmap::DashMap<i64, Vec<u8>>,
+) {
     let num_steps = forecast.steps.len();
     if num_steps == 0 {
         return;
@@ -785,8 +798,8 @@ pub async fn precalculate_solar_data(state: Arc<AppState>) {
         .map(|n| n.get())
         .unwrap_or(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+    let lut_arc = Arc::new(lut.to_vec());
 
-    // Collect step info while we hold the read lock
     let steps_info: Vec<(i64, Arc<Vec<u16>>)> = forecast
         .steps
         .iter()
@@ -796,26 +809,25 @@ pub async fn precalculate_solar_data(state: Arc<AppState>) {
         })
         .collect();
 
-    // Drop the read lock before spawning tasks
-    drop(forecast_opt);
+    let mut handles = Vec::new();
 
     for (i, (time_key, values)) in steps_info.into_iter().enumerate() {
-        let state_clone = state.clone();
-        let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
+        let lut_clone = lut_arc.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
                 .expect("Failed to acquire semaphore for solar precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_solar_webp_bytes(&values, &state_clone_for_blocking.solar_projection_lut)
+                render_solar_webp_bytes(&values, &lut_clone)
             })
             .await
             .expect("Failed to join solar rendering task");
-            state_clone.solar_data_cache.insert(time_key, webp_bytes);
+            (time_key, webp_bytes)
         });
+        handles.push(handle);
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {
             println!(
@@ -827,10 +839,24 @@ pub async fn precalculate_solar_data(state: Arc<AppState>) {
         }
     }
 
+    for handle in handles {
+        if let Ok((time_key, webp_bytes)) = handle.await {
+            cache.insert(time_key, webp_bytes);
+        }
+    }
+
     println!(
-        "Solar WebP precalculation tasks spawned for all {} steps.",
+        "Solar WebP precalculation completed for all {} steps.",
         num_steps
     );
+}
+
+/// Legacy wrapper for precalculating solar on startup.
+pub async fn precalculate_solar_data(state: Arc<AppState>) {
+    let solar_opt = state.solar_data.read().await;
+    if let Some(ref solar_data) = *solar_opt {
+        precalculate_solar_data_into(&solar_data.forecast, &state.solar_projection_lut, &solar_data.data_cache).await;
+    }
 }
 
 pub fn parse_reference_time(ref_str: &str) -> Option<i64> {
@@ -859,45 +885,22 @@ pub fn parse_reference_time(ref_str: &str) -> Option<i64> {
     None
 }
 
-pub async fn precalculate_rain_data(state: Arc<AppState>) {
-    let rain_fc_opt = state.rain_forecast.read().await;
-    let rain_fc = match rain_fc_opt.as_ref() {
-        Some(fc) => fc,
-        None => {
-            println!("No rain forecast loaded, skipping precalculation.");
-            return;
-        }
-    };
-
-    let radar_meta_opt = state.metadata.read().await.clone();
-    let radar_meta = match radar_meta_opt {
-        Some(m) => m,
-        None => {
-            println!("No radar metadata loaded, skipping rain precalculation.");
-            return;
-        }
-    };
-
-    let radar_ref_time = match parse_reference_time(&radar_meta.reference_time_str) {
-        Some(t) => t,
-        None => {
-            println!("Failed to parse radar reference time for rain precalculation.");
-            return;
-        }
-    };
-
-    let last_radar_time = radar_meta.times.last().copied().unwrap_or(0);
-
+/// Precalculates extended Harmonie rain forecast step WebPs into a target cache.
+pub async fn precalculate_rain_data_into(
+    forecast: &RainForecast,
+    lut: &[crate::models::LutEntry],
+    cache: &dashmap::DashMap<i64, Vec<u8>>,
+    radar_ref_time: i64,
+    last_radar_time: i64,
+) {
     let mut steps_info = Vec::new();
-    for step in &rain_fc.steps {
-        let abs_time = rain_fc.reference_time + (step.forecast_hour as i64) * 3600;
+    for step in &forecast.steps {
+        let abs_time = forecast.reference_time + (step.forecast_hour as i64) * 3600;
         let relative_offset = abs_time - radar_ref_time;
         if relative_offset > last_radar_time {
             steps_info.push((relative_offset, step.values.clone()));
         }
     }
-
-    drop(rain_fc_opt);
 
     let num_steps = steps_info.len();
     if num_steps == 0 {
@@ -913,26 +916,26 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
         .map(|n| n.get())
         .unwrap_or(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+    let lut_arc = Arc::new(lut.to_vec());
+    let mut handles = Vec::new();
 
     for (i, (time_key, values)) in steps_info.into_iter().enumerate() {
-        let state_clone = state.clone();
-        let state_clone_for_blocking = state.clone();
         let sem = semaphore.clone();
+        let lut_clone = lut_arc.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _permit = sem
                 .acquire()
                 .await
                 .expect("Failed to acquire semaphore for rain precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_data_webp_bytes(&values, &state_clone_for_blocking.temp_projection_lut)
+                render_data_webp_bytes(&values, &lut_clone)
             })
             .await
             .expect("Failed to join rain rendering task");
-            state_clone
-                .data_cache
-                .insert(("med".to_string(), time_key), webp_bytes);
+            (time_key, webp_bytes)
         });
+        handles.push(handle);
 
         if (i + 1) % 10 == 0 || i == num_steps - 1 {
             println!(
@@ -944,10 +947,45 @@ pub async fn precalculate_rain_data(state: Arc<AppState>) {
         }
     }
 
+    for handle in handles {
+        if let Ok((time_key, webp_bytes)) = handle.await {
+            cache.insert(time_key, webp_bytes);
+        }
+    }
+
     println!(
-        "Rain WebP precalculation tasks spawned for all {} steps.",
+        "Rain WebP precalculation completed for all {} steps.",
         num_steps
     );
+}
+
+/// Legacy wrapper for precalculating rain on startup.
+pub async fn precalculate_rain_data(state: Arc<AppState>) {
+    let rain_opt = state.rain_data.read().await;
+    let rain_data = match rain_opt.as_ref() {
+        Some(r) => r.clone(),
+        None => return,
+    };
+    drop(rain_opt);
+
+    let radar_opt = state.radar_data.read().await;
+    let radar_data = match radar_opt.as_ref() {
+        Some(m) => m.clone(),
+        None => return,
+    };
+    drop(radar_opt);
+
+    if let Some(radar_ref_time) = parse_reference_time(&radar_data.metadata.reference_time_str) {
+        let last_radar_time = radar_data.metadata.times.last().copied().unwrap_or(0);
+        precalculate_rain_data_into(
+            &rain_data.forecast,
+            &state.temp_projection_lut,
+            &rain_data.data_cache,
+            radar_ref_time,
+            last_radar_time,
+        )
+        .await;
+    }
 }
 
 #[cfg(test)]
