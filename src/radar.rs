@@ -361,11 +361,15 @@ pub fn compute_raw_slice(
     }
 }
 
-pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
-    let target_version = meta.version;
-    let file_path = state.file_path.read().await.clone();
-    let num_times = meta.times.len();
-    let num_ensembles = meta.ensembles.len();
+pub async fn precalculate_all_data(
+    radar_data: Arc<crate::state::RadarData>,
+    projection_lut: Arc<Vec<crate::models::LutEntry>>,
+    cancel_tracker: Option<(Arc<std::sync::atomic::AtomicU64>, u64)>,
+) -> bool {
+    let target_version = radar_data.metadata.version;
+    let file_path = radar_data.file_path.clone();
+    let num_times = radar_data.metadata.times.len();
+    let num_ensembles = radar_data.metadata.ensembles.len();
 
     println!(
         "Starting background precalculation for NetCDF version {} ({} times, {} ensembles)...",
@@ -377,15 +381,21 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         .map(|n| n.get())
         .unwrap_or(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
+    let mut render_handles = Vec::new();
 
     let grid_size = KNMI_GRID_H * KNMI_GRID_W;
 
     // Loop over time steps
-    for (time_idx, &time_val) in meta.times.iter().enumerate() {
-        // Check for cancellation
-        if state.metadata.read().await.as_ref().map(|m| m.version) != Some(target_version) {
-            println!("Precalculation for version {} cancelled.", target_version);
-            return;
+    for (time_idx, &time_val) in radar_data.metadata.times.iter().enumerate() {
+        // Check for cancellation if a newer forecast arrived
+        if let Some((ref tracker, expected_ver)) = cancel_tracker {
+            if tracker.load(std::sync::atomic::Ordering::Relaxed) != expected_ver {
+                println!(
+                    "Precalculation for version {} cancelled (newer version active).",
+                    target_version
+                );
+                return false;
+            }
         }
 
         if time_idx % 10 == 0 || time_idx == num_times - 1 {
@@ -604,29 +614,30 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
             .unwrap();
 
         // Insert stats into grid_cache
-        state
+        radar_data
             .grid_cache
             .insert(("med".to_string(), time_val), arc_med.clone());
-        state
+        radar_data
             .grid_cache
             .insert(("max".to_string(), time_val), arc_max.clone());
-        state
+        radar_data
             .grid_cache
             .insert(("prob".to_string(), time_val), arc_prob.clone());
-        state
+        radar_data
             .grid_cache
             .insert(("spread".to_string(), time_val), arc_spread.clone());
-        state
+        radar_data
             .grid_cache
             .insert(("pmm".to_string(), time_val), arc_pmm.clone());
 
         // Insert individual member slices utilizing zero-math chunking
-        for (ens_num, chunk) in meta
+        for (ens_num, chunk) in radar_data
+            .metadata
             .ensembles
             .iter()
             .zip(all_members_data.chunks_exact(grid_size))
         {
-            state
+            radar_data
                 .grid_cache
                 .insert((ens_num.to_string(), time_val), Arc::new(chunk.to_vec()));
         }
@@ -641,48 +652,52 @@ pub async fn precalculate_all_data(state: Arc<AppState>, meta: Metadata) {
         ];
 
         for (ens_str, slice) in render_items {
-            // 3. Acquire BEFORE spawning. This exerts backpressure so the loop doesn't read gigabytes
-            // of NetCDF files into memory while waiting for the GPU/CPU to finish rendering WebPs.
             let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let radar_data_clone = radar_data.clone();
+            let lut_clone = projection_lut.clone();
 
-            let state_clone = state.clone();
-
-            tokio::spawn(async move {
-                let state_for_blocking = state_clone.clone();
+            let handle = tokio::spawn(async move {
                 let slice_clone = slice.clone();
-
                 let webp_bytes = tokio::task::spawn_blocking(move || {
-                    render_data_webp_bytes(&slice_clone, &state_for_blocking.projection_lut)
+                    render_data_webp_bytes(&slice_clone, &lut_clone)
                 })
                 .await
                 .unwrap();
 
-                state_clone
+                radar_data_clone
                     .data_cache
                     .insert((ens_str, time_val), webp_bytes);
 
-                // Drop the permit to signal the semaphore that a core has opened up
                 drop(permit);
             });
+            render_handles.push(handle);
         }
 
         // Yield control back to executor
         tokio::task::yield_now().await;
     }
 
+    // Wait for all spawned WebP render tasks to complete before concluding precalculation
+    for handle in render_handles {
+        let _ = handle.await;
+    }
+
     println!(
         "Background precalculation completed for NetCDF version {}.",
         target_version
     );
+    true
 }
 
 /// Downloads a new NetCDF file from the KNMI Open Data API, saves it to the
-/// current directory, and removes stale files.
+/// current directory, precalculates all slices into a staged RadarData,
+/// and atomically activates it without interrupting active requests.
 pub async fn download_and_update_nc_file(
     filename: &str,
     file_url: Option<&str>,
     api_key: &str,
     state: Arc<AppState>,
+    latest_target_version: Option<Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Sanitize filename to prevent path traversal
     let safe_filename = std::path::Path::new(filename)
@@ -758,32 +773,38 @@ pub async fn download_and_update_nc_file(
     tokio::fs::rename(&temp_path, &final_path).await?;
     println!("Successfully downloaded and saved: {}", final_path);
 
-    // Perform atomic in-memory state reloading
-    match load_metadata(&final_path).await {
-        Ok(meta) => {
-            let mut file_write = state.file_path.write().await;
-            *file_write = final_path.clone();
+    // Load metadata from new file
+    let meta = load_metadata(&final_path).await?;
+    let target_version = meta.version;
 
-            let mut meta_write = state.metadata.write().await;
-            *meta_write = Some(meta.clone());
+    if let Some(ref tracker) = latest_target_version {
+        tracker.store(target_version, std::sync::atomic::Ordering::Relaxed);
+    }
 
-            state.grid_cache.clear();
-            state.data_cache.clear();
-            state.timeseries_cache.clear();
+    // Create staged RadarData instance and precalculate all data into it
+    // The active radar_data continues serving requests seamlessly without interruption!
+    let new_radar_data = Arc::new(crate::state::RadarData::new(final_path.clone(), meta));
+    let lut_arc = Arc::new(state.projection_lut.clone());
+
+    let tracker_param = latest_target_version
+        .as_ref()
+        .map(|t| (t.clone(), target_version));
+    let success = precalculate_all_data(new_radar_data.clone(), lut_arc, tracker_param).await;
+
+    if success {
+        let is_latest = match latest_target_version {
+            Some(ref tracker) => {
+                tracker.load(std::sync::atomic::Ordering::Relaxed) == target_version
+            }
+            None => true,
+        };
+
+        if is_latest {
+            let mut radar_write = state.radar_data.write().await;
+            *radar_write = Some(new_radar_data);
             println!(
-                "Successfully reloaded metadata and cleared caches for new file: {}",
+                "Successfully activated new NetCDF metadata and precalculated caches for: {}",
                 final_path
-            );
-
-            let state_clone = state.clone();
-            tokio::spawn(async move {
-                precalculate_all_data(state_clone, meta).await;
-            });
-        }
-        Err(e) => {
-            eprintln!(
-                "Failed to load new NetCDF metadata from {}: {}",
-                final_path, e
             );
         }
     }
@@ -1077,5 +1098,118 @@ mod tests {
 
         assert_eq!(mask, expected);
         assert!(expected[7]); // Overlap point (2, 1) is true
+    }
+
+    #[tokio::test]
+    async fn test_atomic_staged_dataset_swapping() {
+        use crate::models::Metadata;
+        use crate::state::{AppState, RadarData};
+        use std::sync::Arc;
+
+        let meta1 = Metadata {
+            left: 0.0,
+            right: 1.0,
+            bottom: 0.0,
+            top: 1.0,
+            width: 10,
+            height: 10,
+            ensembles: vec![0],
+            times: vec![0, 300],
+            reference_time_str: "2026-01-01T00:00:00Z".to_string(),
+            version: 1,
+            radar_times_len: 2,
+        };
+
+        let meta2 = Metadata {
+            left: 0.0,
+            right: 1.0,
+            bottom: 0.0,
+            top: 1.0,
+            width: 10,
+            height: 10,
+            ensembles: vec![0],
+            times: vec![300, 600],
+            reference_time_str: "2026-01-01T00:05:00Z".to_string(),
+            version: 2,
+            radar_times_len: 2,
+        };
+
+        let radar_data_v1 = Arc::new(RadarData::new("file_v1.nc".to_string(), meta1));
+        radar_data_v1
+            .data_cache
+            .insert(("med".to_string(), 0), vec![1, 2, 3]);
+
+        let state = Arc::new(AppState {
+            radar_data: tokio::sync::RwLock::new(Some(radar_data_v1.clone())),
+            projection_lut: Vec::new(),
+            actuals_data: tokio::sync::RwLock::new(None),
+            temp_data: tokio::sync::RwLock::new(None),
+            temp_projection_lut: Vec::new(),
+            wind_data: tokio::sync::RwLock::new(None),
+            wind_projection_lut: Vec::new(),
+            solar_data: tokio::sync::RwLock::new(None),
+            solar_projection_lut: Vec::new(),
+            rain_data: tokio::sync::RwLock::new(None),
+        });
+
+        // Verify active dataset is v1
+        {
+            let active = state.radar_data.read().await;
+            let rd = active.as_ref().unwrap();
+            assert_eq!(rd.metadata.version, 1);
+            assert_eq!(
+                rd.data_cache.get(&("med".to_string(), 0)).unwrap().value(),
+                &vec![1, 2, 3]
+            );
+        }
+
+        // Staging v2 while v1 is serving
+        let radar_data_v2 = Arc::new(RadarData::new("file_v2.nc".to_string(), meta2));
+        radar_data_v2
+            .data_cache
+            .insert(("med".to_string(), 300), vec![4, 5, 6]);
+
+        // Concurrent reads still see v1 without any cache clearing or lock starvation
+        {
+            let active = state.radar_data.read().await;
+            let rd = active.as_ref().unwrap();
+            assert_eq!(rd.metadata.version, 1);
+            assert_eq!(
+                rd.data_cache.get(&("med".to_string(), 0)).unwrap().value(),
+                &vec![1, 2, 3]
+            );
+        }
+
+        // Atomically swap
+        {
+            let mut write = state.radar_data.write().await;
+            *write = Some(radar_data_v2);
+        }
+
+        // Active dataset is now v2 with warm precalculated caches
+        {
+            let active = state.radar_data.read().await;
+            let rd = active.as_ref().unwrap();
+            assert_eq!(rd.metadata.version, 2);
+            assert_eq!(
+                rd.data_cache
+                    .get(&("med".to_string(), 300))
+                    .unwrap()
+                    .value(),
+                &vec![4, 5, 6]
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_rtcor_h5() {
+        if std::path::Path::new("scratch/test_rtcor.h5").exists() {
+            let file = netcdf::open("scratch/test_rtcor.h5").unwrap();
+            let image1 = file.group("image1").unwrap().unwrap();
+            let var = image1.variable("image_data").unwrap();
+            let values: Vec<u16> = var.get_values((.., ..)).unwrap();
+            assert_eq!(values.len(), 765 * 700);
+            println!("Successfully read image_data of length {}", values.len());
+        }
     }
 }

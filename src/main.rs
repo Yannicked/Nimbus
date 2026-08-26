@@ -14,6 +14,7 @@ mod mqtt;
 mod projection;
 mod radar;
 mod rendering;
+mod rtcor;
 mod state;
 
 use axum::{routing::get, Router};
@@ -27,7 +28,9 @@ use harmonie::{
     precalculate_solar_data, precalculate_temp_data, precalculate_wind_data,
 };
 use interpolation::{init_projection_lut, init_temp_projection_lut};
-use mqtt::{start_knmi_harmonie_mqtt_listener, start_knmi_mqtt_listener};
+use mqtt::{
+    start_knmi_harmonie_mqtt_listener, start_knmi_mqtt_listener, start_knmi_rtcor_mqtt_listener,
+};
 use radar::{fetch_latest_nc_file, find_latest_nc_file, load_metadata, precalculate_all_data};
 use state::AppState;
 
@@ -80,38 +83,48 @@ async fn main() {
         }
     };
 
+    let initial_radar_data =
+        metadata_val.map(|m| Arc::new(state::RadarData::new(initial_file.clone(), m)));
+    let initial_temp_data = Arc::new(state::TempData::new(temp_fc));
+    let initial_wind_data = Arc::new(state::WindData::new(wind_fc));
+    let initial_solar_data = Arc::new(state::SolarData::new(solar_fc));
+    let initial_rain_data = Arc::new(state::RainData::new(rain_fc));
+
     let state = Arc::new(AppState {
-        file_path: tokio::sync::RwLock::new(initial_file.clone()),
-        grid_cache: dashmap::DashMap::new(),
-        data_cache: dashmap::DashMap::new(),
-        metadata: tokio::sync::RwLock::new(metadata_val.clone()),
+        radar_data: tokio::sync::RwLock::new(initial_radar_data.clone()),
         projection_lut: init_projection_lut(),
 
-        temp_forecast: tokio::sync::RwLock::new(Some(temp_fc)),
+        actuals_data: tokio::sync::RwLock::new(None),
+
+        temp_data: tokio::sync::RwLock::new(Some(initial_temp_data.clone())),
         temp_projection_lut: init_temp_projection_lut(),
-        temp_data_cache: dashmap::DashMap::new(),
 
-        wind_forecast: tokio::sync::RwLock::new(Some(wind_fc)),
+        wind_data: tokio::sync::RwLock::new(Some(initial_wind_data.clone())),
         wind_projection_lut: init_temp_projection_lut(),
-        wind_data_cache: dashmap::DashMap::new(),
 
-        solar_forecast: tokio::sync::RwLock::new(Some(solar_fc)),
+        solar_data: tokio::sync::RwLock::new(Some(initial_solar_data.clone())),
         solar_projection_lut: init_temp_projection_lut(),
-        solar_data_cache: dashmap::DashMap::new(),
 
-        rain_forecast: tokio::sync::RwLock::new(Some(rain_fc)),
-        timeseries_cache: dashmap::DashMap::new(),
+        rain_data: tokio::sync::RwLock::new(Some(initial_rain_data.clone())),
     });
 
-    if let Some(ref meta) = metadata_val {
-        let state_clone = state.clone();
-        let meta_clone = meta.clone();
+    if let Some(radar_data) = initial_radar_data {
+        let lut_arc = Arc::new(state.projection_lut.clone());
         tokio::spawn(async move {
-            precalculate_all_data(state_clone, meta_clone).await;
+            precalculate_all_data(radar_data, lut_arc, None).await;
         });
     }
 
-    // Precalculate temperature PNGs in background
+    // Backfill recent 5-minute radar actuals on startup
+    {
+        let state_clone = state.clone();
+        let api_key_clone = open_data_api_key.clone();
+        tokio::spawn(async move {
+            rtcor::backfill_recent_rtcor_frames(state_clone, &api_key_clone).await;
+        });
+    }
+
+    // Precalculate temperature WebPs in background
     {
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -119,7 +132,7 @@ async fn main() {
         });
     }
 
-    // Precalculate wind PNGs in background
+    // Precalculate wind WebPs in background
     {
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -127,7 +140,7 @@ async fn main() {
         });
     }
 
-    // Precalculate solar PNGs in background
+    // Precalculate solar WebPs in background
     {
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -135,7 +148,7 @@ async fn main() {
         });
     }
 
-    // Precalculate rain PNGs in background
+    // Precalculate rain WebPs in background
     {
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -143,10 +156,16 @@ async fn main() {
         });
     }
 
-    // Spawn MQTT client to listen for radar updates from KNMI
+    // Spawn MQTT client to listen for radar forecast updates from KNMI
     let state_clone_mqtt = state.clone();
     tokio::spawn(async move {
         start_knmi_mqtt_listener(state_clone_mqtt).await;
+    });
+
+    // Spawn MQTT client to listen for real-time radar actuals from KNMI (RTCOR)
+    let state_clone_rtcor_mqtt = state.clone();
+    tokio::spawn(async move {
+        start_knmi_rtcor_mqtt_listener(state_clone_rtcor_mqtt).await;
     });
 
     // Spawn MQTT client to listen for HARMONIE updates from KNMI (combined temp and wind)
