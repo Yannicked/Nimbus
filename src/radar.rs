@@ -1,5 +1,5 @@
 use crate::constants::{
-    GRID_H, GRID_W, KNMI_DATASET, KNMI_GRID_H, KNMI_GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT,
+    FORECAST_GRID_H, FORECAST_GRID_W, GRID_H, GRID_W, KNMI_DATASET, MERCATOR_BOTTOM, MERCATOR_LEFT,
     MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR, RAIN_THRESHOLD, SCALE_FACTOR,
 };
 use crate::models::{reduce_ensemble, EnsembleStat, FileUrlResponse, Metadata};
@@ -100,7 +100,7 @@ pub fn read_netcdf_slice(
 
     let slice = var.get_values::<u16, _>((
         &[ens_idx, time_idx, 0, 0][..],
-        &[1, 1, KNMI_GRID_H, KNMI_GRID_W][..],
+        &[1, 1, FORECAST_GRID_H, FORECAST_GRID_W][..],
     ))?;
     Ok(slice)
 }
@@ -118,7 +118,7 @@ pub fn read_netcdf_all_ensembles(
 
     let values = var.get_values::<u16, _>((
         &[0, time_idx, 0, 0][..],
-        &[num_ensembles, 1, KNMI_GRID_H, KNMI_GRID_W][..],
+        &[num_ensembles, 1, FORECAST_GRID_H, FORECAST_GRID_W][..],
     ))?;
     Ok(values)
 }
@@ -127,7 +127,7 @@ pub fn read_netcdf_all_ensembles(
 /// The mask represents whether there is any precipitation exceeding RAIN_THRESHOLD within
 /// the specified circular radius (in grid cells) of each pixel.
 pub fn compute_dilated_mask(member_data: &[u16], radius: usize) -> Vec<bool> {
-    compute_dilated_mask_with_dims(member_data, radius, KNMI_GRID_W, KNMI_GRID_H)
+    compute_dilated_mask_with_dims(member_data, radius, FORECAST_GRID_W, FORECAST_GRID_H)
 }
 
 /// Core logic for mask dilation with custom dimensions.
@@ -206,11 +206,11 @@ pub fn compute_raw_slice(
                 )
             })?;
 
-        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+        let grid_size = FORECAST_GRID_H * FORECAST_GRID_W;
         let member_slices: Vec<&[u16]> = all_members_data.chunks_exact(grid_size).collect();
 
         if matches!(stat, EnsembleStat::Pmm) {
-            let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+            let grid_size = FORECAST_GRID_H * FORECAST_GRID_W;
             let num_ensembles = member_slices.len();
             let mut transposed = vec![0u16; grid_size * num_ensembles];
             for ens_idx in 0..num_ensembles {
@@ -328,7 +328,7 @@ pub fn compute_raw_slice(
         }
 
         // Compute statistics for each cell
-        let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+        let grid_size = FORECAST_GRID_H * FORECAST_GRID_W;
         let mut raw_slice = vec![NODATA; grid_size];
         for i in 0..grid_size {
             let mut vals: Vec<u16> = member_slices.iter().map(|s| s[i]).collect();
@@ -386,7 +386,7 @@ pub async fn precalculate_all_data(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(cpus));
     let mut render_handles = Vec::new();
 
-    let grid_size = KNMI_GRID_H * KNMI_GRID_W;
+    let grid_size = FORECAST_GRID_H * FORECAST_GRID_W;
 
     // Loop over time steps
     for (time_idx, &time_val) in radar_data.metadata.times.iter().enumerate() {
@@ -1145,6 +1145,7 @@ mod tests {
             radar_data: tokio::sync::RwLock::new(Some(radar_data_v1.clone())),
             projection_lut: Arc::new(Vec::new()),
             actuals_data: tokio::sync::RwLock::new(None),
+            actuals_projection_lut: Arc::new(Vec::new()),
             temp_data: tokio::sync::RwLock::new(None),
             temp_projection_lut: Arc::new(Vec::new()),
             wind_data: tokio::sync::RwLock::new(None),
@@ -1211,7 +1212,6 @@ mod tests {
             let var = image1.variable("image_data").unwrap();
             let values: Vec<u16> = var.get_values((.., ..)).unwrap();
             assert_eq!(values.len(), 765 * 700);
-            println!("Successfully read image_data of length {}", values.len());
         }
     }
 

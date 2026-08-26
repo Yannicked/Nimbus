@@ -1,11 +1,13 @@
 use crate::constants::{
-    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0,
-    KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NODATA,
+    FORECAST_DLAT, FORECAST_DLON, FORECAST_GRID_H, FORECAST_GRID_W, FORECAST_LAT_0, FORECAST_LON_0,
+    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT,
+    MERCATOR_TOP, NODATA, RTCOR_DX, RTCOR_DY, RTCOR_GRID_H, RTCOR_GRID_W, RTCOR_X0, RTCOR_Y0,
 };
 use crate::models::LutEntry;
 use crate::projection::{self, lonlat_to_grib_indices};
 
-/// Initializes the coordinate projection lookup table.
+/// Initializes the coordinate projection lookup table for the seamless precipitation forecast
+/// (780 x 780 regular lat/lon grid).
 pub fn init_projection_lut() -> Vec<LutEntry> {
     let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
     for row in 0..GRID_H {
@@ -17,10 +19,9 @@ pub fn init_projection_lut() -> Vec<LutEntry> {
             let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
 
             let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
-            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
 
-            let fx = ((px - KNMI_X0) / KNMI_DX) as f32;
-            let fy = ((py - KNMI_Y0) / KNMI_DY) as f32;
+            let fx = ((lon - FORECAST_LON_0) / FORECAST_DLON) as f32;
+            let fy = ((lat - FORECAST_LAT_0) / FORECAST_DLAT) as f32;
 
             let ix1 = fx.floor() as i32;
             let iy1 = fy.floor() as i32;
@@ -40,8 +41,59 @@ pub fn init_projection_lut() -> Vec<LutEntry> {
 
             let coords = [(ix1, iy1), (ix2, iy1), (ix1, iy2), (ix2, iy2)];
 
-            let grid_w = KNMI_GRID_W as i32;
-            let grid_h = KNMI_GRID_H as i32;
+            let grid_w = FORECAST_GRID_W as i32;
+            let grid_h = FORECAST_GRID_H as i32;
+
+            for (idx, &(x, y)) in coords.iter().enumerate() {
+                if x >= 0 && x < grid_w && y >= 0 && y < grid_h {
+                    indices[idx] = (y * grid_w + x) as u32;
+                }
+            }
+
+            lut.push(LutEntry { indices, weights });
+        }
+    }
+    lut
+}
+
+/// Initializes the coordinate projection lookup table for KNMI radar observations (RTCOR)
+/// (765 x 700 Polar Stereographic grid).
+pub fn init_actuals_projection_lut() -> Vec<LutEntry> {
+    let mut lut = Vec::with_capacity((GRID_W * GRID_H) as usize);
+    for row in 0..GRID_H {
+        for col in 0..GRID_W {
+            let col_frac = (col as f64 + 0.5) / GRID_W as f64;
+            let row_frac = (row as f64 + 0.5) / GRID_H as f64;
+
+            let x_merc = MERCATOR_LEFT + col_frac * (MERCATOR_RIGHT - MERCATOR_LEFT);
+            let y_merc = MERCATOR_TOP - row_frac * (MERCATOR_TOP - MERCATOR_BOTTOM);
+
+            let (lon, lat) = projection::mercator_to_lonlat(x_merc, y_merc);
+            let (px, py) = projection::lonlat_to_polar_stereographic(lon, lat);
+
+            let fx = ((px - RTCOR_X0) / RTCOR_DX) as f32;
+            let fy = ((py - RTCOR_Y0) / RTCOR_DY) as f32;
+
+            let ix1 = fx.floor() as i32;
+            let iy1 = fy.floor() as i32;
+            let ix2 = ix1 + 1;
+            let iy2 = iy1 + 1;
+
+            let wx = fx - ix1 as f32;
+            let wy = fy - iy1 as f32;
+
+            let w00 = (1.0 - wx) * (1.0 - wy);
+            let w10 = wx * (1.0 - wy);
+            let w01 = (1.0 - wx) * wy;
+            let w11 = wx * wy;
+
+            let mut indices = [u32::MAX; 4];
+            let weights = [w00, w10, w01, w11];
+
+            let coords = [(ix1, iy1), (ix2, iy1), (ix1, iy2), (ix2, iy2)];
+
+            let grid_w = RTCOR_GRID_W as i32;
+            let grid_h = RTCOR_GRID_H as i32;
 
             for (idx, &(x, y)) in coords.iter().enumerate() {
                 if x >= 0 && x < grid_w && y >= 0 && y < grid_h {

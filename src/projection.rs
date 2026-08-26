@@ -119,19 +119,19 @@ mod tests {
 
     #[test]
     fn test_polar_stereographic_bounds() {
-        use crate::constants::{KNMI_DX, KNMI_DY, KNMI_X0, KNMI_Y0};
+        use crate::constants::{RTCOR_DX, RTCOR_DY, RTCOR_X0, RTCOR_Y0};
 
         // South-West corner of domain (approx lat 49.3663, lon 0.0065)
         let (px_sw, py_sw) = lonlat_to_polar_stereographic(0.0065, 49.3663);
-        let ix_sw = ((px_sw - KNMI_X0) / KNMI_DX).round() as i32;
-        let iy_sw = ((py_sw - KNMI_Y0) / KNMI_DY).round() as i32;
+        let ix_sw = ((px_sw - RTCOR_X0) / RTCOR_DX).round() as i32;
+        let iy_sw = ((py_sw - RTCOR_Y0) / RTCOR_DY).round() as i32;
         assert_eq!(ix_sw, 0);
         assert_eq!(iy_sw, 0);
 
         // North-West corner of domain (approx lat 55.9692, lon 0.0078)
         let (px_nw, py_nw) = lonlat_to_polar_stereographic(0.0078, 55.9692);
-        let ix_nw = ((px_nw - KNMI_X0) / KNMI_DX).round() as i32;
-        let iy_nw = ((py_nw - KNMI_Y0) / KNMI_DY).round() as i32;
+        let ix_nw = ((px_nw - RTCOR_X0) / RTCOR_DX).round() as i32;
+        let iy_nw = ((py_nw - RTCOR_Y0) / RTCOR_DY).round() as i32;
         assert_eq!(ix_nw, 0);
         assert_eq!(iy_nw, 764);
     }
