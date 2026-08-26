@@ -34,13 +34,21 @@ pub const MERCATOR_RIGHT: f64 = 1210000.0;
 pub const MERCATOR_BOTTOM: f64 = 6250000.0;
 pub const MERCATOR_TOP: f64 = 7560000.0;
 
-// KNMI grid parameters
-pub const KNMI_DX: f64 = 1000.0026129808;
-pub const KNMI_DY: f64 = 1000.0050704712;
-pub const KNMI_X0: f64 = 500.00130649042126;
-pub const KNMI_Y0: f64 = -4414499.287435932;
-pub const KNMI_GRID_W: usize = 700;
-pub const KNMI_GRID_H: usize = 765;
+// KNMI seamless precipitation forecast grid parameters (780 x 780 regular lat/lon)
+pub const FORECAST_LON_0: f64 = -0.00725;
+pub const FORECAST_LAT_0: f64 = 48.9955;
+pub const FORECAST_DLON: f64 = 0.0145;
+pub const FORECAST_DLAT: f64 = 0.009;
+pub const FORECAST_GRID_W: usize = 780;
+pub const FORECAST_GRID_H: usize = 780;
+
+// KNMI radar observation RTCOR grid parameters (765 x 700 Polar Stereographic)
+pub const RTCOR_DX: f64 = 1000.0026129808;
+pub const RTCOR_DY: f64 = 1000.0050704712;
+pub const RTCOR_X0: f64 = 500.00130649042126;
+pub const RTCOR_Y0: f64 = -4414499.287435932;
+pub const RTCOR_GRID_W: usize = 700;
+pub const RTCOR_GRID_H: usize = 765;
 
 // Harmonie GRIB1 grid parameters (for Temp, Solar, Wind)
 pub const GRIB_LON_0: f64 = 0.0;

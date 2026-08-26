@@ -4,7 +4,7 @@
 //! Polar Stereographic grid as the forecast product.
 
 use crate::constants::{
-    CACHE_DIR, KNMI_GRID_H, KNMI_GRID_W, KNMI_RTCOR_DATASET, NODATA, RTCOR_MAX_HISTORY_FRAMES,
+    CACHE_DIR, KNMI_RTCOR_DATASET, NODATA, RTCOR_GRID_H, RTCOR_GRID_W, RTCOR_MAX_HISTORY_FRAMES,
 };
 use crate::models::{FileUrlResponse, LutEntry};
 use crate::rendering::render_data_webp_bytes;
@@ -47,7 +47,7 @@ pub fn read_rtcor_slice(
         .variable("image_data")
         .ok_or("Missing image_data variable in RTCOR HDF5 file")?;
 
-    let expected_len = KNMI_GRID_H * KNMI_GRID_W;
+    let expected_len = RTCOR_GRID_H * RTCOR_GRID_W;
     let raw_data: Vec<u16> = var.get_values((.., ..))?;
 
     if raw_data.len() != expected_len {
@@ -67,19 +67,19 @@ pub fn read_rtcor_slice(
     // In KNMI HDF5 RTCOR files, image_data has DISPLAY_ORIGIN = "UL" (Upper-Left),
     // meaning row 0 is North (top) and row 764 is South (bottom).
     // In our Polar Stereographic coordinate grid, index 0 is South (iy = 0) and
-    // index 764 is North (iy = 764), matching the NetCDF forecast orientation.
-    // We flip the rows vertically so spatial positions align seamlessly with the forecast.
+    // index 764 is North (iy = 764), matching the Polar Stereographic LUT orientation.
+    // We flip the rows vertically so spatial positions align seamlessly.
     let mut converted = vec![NODATA; expected_len];
-    for row in 0..KNMI_GRID_H {
-        let target_row = KNMI_GRID_H - 1 - row;
-        for col in 0..KNMI_GRID_W {
-            let pv = raw_data[row * KNMI_GRID_W + col];
+    for row in 0..RTCOR_GRID_H {
+        let target_row = RTCOR_GRID_H - 1 - row;
+        for col in 0..RTCOR_GRID_W {
+            let pv = raw_data[row * RTCOR_GRID_W + col];
             let val = if pv == 65534 || pv == 65535 {
                 NODATA
             } else {
                 (pv as u32 * 12).min(65534) as u16
             };
-            converted[target_row * KNMI_GRID_W + col] = val;
+            converted[target_row * RTCOR_GRID_W + col] = val;
         }
     }
 
@@ -237,7 +237,7 @@ pub async fn backfill_recent_rtcor_frames(state: Arc<AppState>, api_key: &str) {
             &file_info.filename,
             None,
             api_key,
-            &state.projection_lut,
+            &state.actuals_projection_lut,
         )
         .await
         {

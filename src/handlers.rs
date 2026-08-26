@@ -6,9 +6,10 @@ use axum::{
 use std::sync::Arc;
 
 use crate::constants::{
-    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, KNMI_DX, KNMI_DY, KNMI_GRID_H, KNMI_GRID_W, KNMI_X0,
-    KNMI_Y0, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT, MERCATOR_TOP, NEP_RADIUS, NODATA,
-    PRECIP_VAR, RAIN_THRESHOLD,
+    FORECAST_DLAT, FORECAST_DLON, FORECAST_GRID_H, FORECAST_GRID_W, FORECAST_LAT_0, FORECAST_LON_0,
+    GRIB_HEIGHT, GRIB_WIDTH, GRID_H, GRID_W, MERCATOR_BOTTOM, MERCATOR_LEFT, MERCATOR_RIGHT,
+    MERCATOR_TOP, NEP_RADIUS, NODATA, PRECIP_VAR, RAIN_THRESHOLD, RTCOR_DX, RTCOR_DY, RTCOR_GRID_H,
+    RTCOR_GRID_W, RTCOR_X0, RTCOR_Y0,
 };
 use crate::harmonie::parse_reference_time;
 use crate::interpolation::interpolate_bilinear;
@@ -417,15 +418,12 @@ pub async fn get_value(
     let file_path = &radar.file_path;
     let meta = &radar.metadata;
 
-    // Convert GPS coordinates to Polar Stereographic
-    let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
-
-    // Get grid cell index
-    let ix = ((px - KNMI_X0) / KNMI_DX).round() as i32;
-    let iy = ((py - KNMI_Y0) / KNMI_DY).round() as i32;
-
     // Check if time is for historical actuals (negative relative offset)
     if q.time < 0 {
+        let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
+        let ix = ((px - RTCOR_X0) / RTCOR_DX).round() as i32;
+        let iy = ((py - RTCOR_Y0) / RTCOR_DY).round() as i32;
+
         if let Some(ref actuals) = *state.actuals_data.read().await {
             if let Some(radar_ref_time) = parse_reference_time(&meta.reference_time_str) {
                 if let Some(frame) = actuals
@@ -433,13 +431,13 @@ pub async fn get_value(
                     .iter()
                     .find(|f| f.timestamp - radar_ref_time == q.time || f.timestamp == q.time)
                 {
-                    if ix < 0 || ix >= KNMI_GRID_W as i32 || iy < 0 || iy >= KNMI_GRID_H as i32 {
+                    if ix < 0 || ix >= RTCOR_GRID_W as i32 || iy < 0 || iy >= RTCOR_GRID_H as i32 {
                         return Ok(axum::Json(ValueResponse {
                             status: "out_of_bounds".to_string(),
                             value: None,
                         }));
                     }
-                    let val_raw = frame.raw_values[iy as usize * KNMI_GRID_W + ix as usize];
+                    let val_raw = frame.raw_values[iy as usize * RTCOR_GRID_W + ix as usize];
                     let val_mmh = raw_to_value(val_raw);
                     let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
                     return Ok(axum::Json(ValueResponse {
@@ -504,11 +502,11 @@ pub async fn get_value(
         );
     }
 
-    // Get grid cell index
-    let ix = ((px - KNMI_X0) / KNMI_DX).round() as i32;
-    let iy = ((py - KNMI_Y0) / KNMI_DY).round() as i32;
+    // Get grid cell index in 780x780 regular lat/lon forecast grid
+    let ix = ((q.lon - FORECAST_LON_0) / FORECAST_DLON).round() as i32;
+    let iy = ((q.lat - FORECAST_LAT_0) / FORECAST_DLAT).round() as i32;
 
-    if ix < 0 || ix >= KNMI_GRID_W as i32 || iy < 0 || iy >= KNMI_GRID_H as i32 {
+    if ix < 0 || ix >= FORECAST_GRID_W as i32 || iy < 0 || iy >= FORECAST_GRID_H as i32 {
         return Ok(axum::Json(ValueResponse {
             status: "out_of_bounds".to_string(),
             value: None,
@@ -538,7 +536,7 @@ pub async fn get_value(
                 .insert((q.ens.clone(), q.time), arc.clone());
             arc
         };
-        let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
+        let val_raw = raw_slice[iy as usize * FORECAST_GRID_W + ix as usize];
         let val_mmh = raw_to_value(val_raw);
         let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
         return Ok(axum::Json(ValueResponse {
@@ -549,7 +547,7 @@ pub async fn get_value(
 
     // Try reading from cache first
     if let Some(slice) = radar.grid_cache.get(&(q.ens.clone(), q.time)) {
-        let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
+        let val_raw = slice[iy as usize * FORECAST_GRID_W + ix as usize];
         let (status_out, value_out) = if q.ens == "prob" {
             ("probability".to_string(), val_raw as f64)
         } else {
@@ -589,9 +587,11 @@ pub async fn get_value(
                 let r_sq = (NEP_RADIUS * NEP_RADIUS) as i32;
                 let num_ensembles = meta_clone.ensembles.len();
                 let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
-                let y_max = std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
+                let y_max =
+                    std::cmp::min(FORECAST_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
                 let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
-                let x_max = std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
+                let x_max =
+                    std::cmp::min(FORECAST_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
                 let height_box = y_max - y_min + 1;
                 let width_box = x_max - x_min + 1;
 
@@ -727,14 +727,17 @@ pub async fn get_timeseries(
     let file_path = &radar.file_path;
     let meta = &radar.metadata;
 
-    // Convert GPS coordinates to Polar Stereographic
+    // Forecast grid cell indices (780 x 780 regular lat/lon)
+    let ix_fc = ((q.lon - FORECAST_LON_0) / FORECAST_DLON).round() as i32;
+    let iy_fc = ((q.lat - FORECAST_LAT_0) / FORECAST_DLAT).round() as i32;
+
+    // Actuals radar grid cell indices (765 x 700 Polar Stereographic)
     let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
+    let ix_act = ((px - RTCOR_X0) / RTCOR_DX).round() as i32;
+    let iy_act = ((py - RTCOR_Y0) / RTCOR_DY).round() as i32;
 
-    // Get grid cell index
-    let ix = ((px - KNMI_X0) / KNMI_DX).round() as i32;
-    let iy = ((py - KNMI_Y0) / KNMI_DY).round() as i32;
-
-    if ix < 0 || ix >= KNMI_GRID_W as i32 || iy < 0 || iy >= KNMI_GRID_H as i32 {
+    if ix_fc < 0 || ix_fc >= FORECAST_GRID_W as i32 || iy_fc < 0 || iy_fc >= FORECAST_GRID_H as i32
+    {
         return Ok(axum::Json(TimeseriesResponse {
             status: "out_of_bounds".to_string(),
             lat: q.lat,
@@ -768,15 +771,24 @@ pub async fn get_timeseries(
                     if let Some(frame) = actuals.frames.iter().find(|f| {
                         f.timestamp - radar_ref_time == time_val || f.timestamp == time_val
                     }) {
-                        let val_raw = frame.raw_values[iy as usize * KNMI_GRID_W + ix as usize];
-                        if q.ens == "prob" {
-                            if val_raw != NODATA && val_raw >= RAIN_THRESHOLD {
-                                100.0
+                        if ix_act >= 0
+                            && ix_act < RTCOR_GRID_W as i32
+                            && iy_act >= 0
+                            && iy_act < RTCOR_GRID_H as i32
+                        {
+                            let val_raw =
+                                frame.raw_values[iy_act as usize * RTCOR_GRID_W + ix_act as usize];
+                            if q.ens == "prob" {
+                                if val_raw != NODATA && val_raw >= RAIN_THRESHOLD {
+                                    100.0
+                                } else {
+                                    0.0
+                                }
                             } else {
-                                0.0
+                                raw_to_value(val_raw)
                             }
                         } else {
-                            raw_to_value(val_raw)
+                            0.0
                         }
                     } else {
                         0.0
@@ -800,13 +812,13 @@ pub async fn get_timeseries(
     let mut values = Vec::with_capacity(extended_times.len());
 
     if all_cached {
-        if let Some(cached_ts) = radar.timeseries_cache.get(&(q.ens.clone(), ix, iy)) {
+        if let Some(cached_ts) = radar.timeseries_cache.get(&(q.ens.clone(), ix_fc, iy_fc)) {
             values.extend_from_slice(&cached_ts);
         } else {
             let mut ts_values = Vec::with_capacity(meta.times.len());
             for &time_val in &meta.times {
                 if let Some(slice) = radar.grid_cache.get(&(q.ens.clone(), time_val)) {
-                    let val_raw = slice[iy as usize * KNMI_GRID_W + ix as usize];
+                    let val_raw = slice[iy_fc as usize * FORECAST_GRID_W + ix_fc as usize];
                     if q.ens == "prob" {
                         ts_values.push(val_raw as f64);
                     } else {
@@ -816,7 +828,7 @@ pub async fn get_timeseries(
             }
             radar
                 .timeseries_cache
-                .insert((q.ens.clone(), ix, iy), Arc::new(ts_values.clone()));
+                .insert((q.ens.clone(), ix_fc, iy_fc), Arc::new(ts_values.clone()));
             values.extend(ts_values);
         }
     } else if q.ens == "pmm" {
@@ -865,7 +877,7 @@ pub async fn get_timeseries(
                     )
                 })??,
             };
-            let val_raw = raw_slice[iy as usize * KNMI_GRID_W + ix as usize];
+            let val_raw = raw_slice[iy_fc as usize * FORECAST_GRID_W + ix_fc as usize];
             values.push(raw_to_value(val_raw));
         }
     } else {
@@ -887,12 +899,12 @@ pub async fn get_timeseries(
             if let Some(stat) = EnsembleStat::from_str(&q_ens_clone) {
                 if matches!(stat, EnsembleStat::Probability) {
                     let r_sq = (NEP_RADIUS * NEP_RADIUS) as i32;
-                    let y_min = std::cmp::max(0, iy - NEP_RADIUS as i32) as usize;
-                    let y_max =
-                        std::cmp::min(KNMI_GRID_H as i32 - 1, iy + NEP_RADIUS as i32) as usize;
-                    let x_min = std::cmp::max(0, ix - NEP_RADIUS as i32) as usize;
-                    let x_max =
-                        std::cmp::min(KNMI_GRID_W as i32 - 1, ix + NEP_RADIUS as i32) as usize;
+                    let y_min = std::cmp::max(0, iy_fc - NEP_RADIUS as i32) as usize;
+                    let y_max = std::cmp::min(FORECAST_GRID_H as i32 - 1, iy_fc + NEP_RADIUS as i32)
+                        as usize;
+                    let x_min = std::cmp::max(0, ix_fc - NEP_RADIUS as i32) as usize;
+                    let x_max = std::cmp::min(FORECAST_GRID_W as i32 - 1, ix_fc + NEP_RADIUS as i32)
+                        as usize;
 
                     let height_box = y_max - y_min + 1;
                     let width_box = x_max - x_min + 1;
@@ -908,9 +920,9 @@ pub async fn get_timeseries(
                     // Precompute neighbor offsets within radius
                     let mut offsets = Vec::with_capacity(height_box * width_box);
                     for dy_idx in 0..height_box {
-                        let dy = (y_min + dy_idx) as i32 - iy;
+                        let dy = (y_min + dy_idx) as i32 - iy_fc;
                         for dx_idx in 0..width_box {
-                            let dx = (x_min + dx_idx) as i32 - ix;
+                            let dx = (x_min + dx_idx) as i32 - ix_fc;
                             if dx * dx + dy * dy <= r_sq {
                                 offsets.push(dy_idx * width_box + dx_idx);
                             }
@@ -919,8 +931,8 @@ pub async fn get_timeseries(
 
                     let time_stride = height_box * width_box;
                     let ens_stride = num_times * time_stride;
-                    let center_dy = iy as usize - y_min;
-                    let center_dx = ix as usize - x_min;
+                    let center_dy = iy_fc as usize - y_min;
+                    let center_dx = ix_fc as usize - x_min;
                     let center_offset_in_time = center_dy * width_box + center_dx;
 
                     // For each time step, compute NEP
@@ -963,7 +975,7 @@ pub async fn get_timeseries(
                     // Read values for all ensembles and all times at the target pixel (non-probability)
                     let raw_grid = var
                         .get_values::<u16, _>((
-                            &[0, 0, iy as usize, ix as usize][..],
+                            &[0, 0, iy_fc as usize, ix_fc as usize][..],
                             &[num_ensembles, num_times, 1, 1][..],
                         ))
                         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -997,7 +1009,7 @@ pub async fn get_timeseries(
 
                 let raw_values = var
                     .get_values::<u16, _>((
-                        &[ens_idx, 0, iy as usize, ix as usize][..],
+                        &[ens_idx, 0, iy_fc as usize, ix_fc as usize][..],
                         &[1, num_times, 1, 1][..],
                     ))
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

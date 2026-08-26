@@ -432,7 +432,7 @@ pub async fn start_knmi_rtcor_mqtt_listener(state: Arc<AppState>) {
                                             &name_clone,
                                             url_opt.as_deref(),
                                             &api_key,
-                                            &state_clone.projection_lut,
+                                            &state_clone.actuals_projection_lut,
                                         )
                                         .await
                                         {

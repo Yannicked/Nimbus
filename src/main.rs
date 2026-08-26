@@ -27,7 +27,7 @@ use harmonie::{
     cleanup_tar_files, load_or_fetch_combined_forecast, precalculate_rain_data,
     precalculate_solar_data, precalculate_temp_data, precalculate_wind_data,
 };
-use interpolation::{init_projection_lut, init_temp_projection_lut};
+use interpolation::{init_actuals_projection_lut, init_projection_lut, init_temp_projection_lut};
 use mqtt::{
     start_knmi_harmonie_mqtt_listener, start_knmi_mqtt_listener, start_knmi_rtcor_mqtt_listener,
 };
@@ -94,6 +94,7 @@ async fn main() {
     let initial_rain_data = Arc::new(state::RainData::new(rain_fc));
 
     let projection_lut = Arc::new(init_projection_lut());
+    let actuals_lut = Arc::new(init_actuals_projection_lut());
     let grib_lut = Arc::new(init_temp_projection_lut());
 
     let state = Arc::new(AppState {
@@ -101,6 +102,7 @@ async fn main() {
         projection_lut: projection_lut.clone(),
 
         actuals_data: tokio::sync::RwLock::new(None),
+        actuals_projection_lut: actuals_lut,
 
         temp_data: tokio::sync::RwLock::new(Some(initial_temp_data.clone())),
         temp_projection_lut: grib_lut.clone(),

@@ -136,6 +136,7 @@ pub struct AppState {
 
     // 5-minute Real-Time Corrected Radar Observations (Actuals)
     pub actuals_data: RwLock<Option<Arc<ActualsData>>>,
+    pub actuals_projection_lut: Arc<Vec<LutEntry>>,
 
     // 2m Temperature Forecast
     pub temp_data: RwLock<Option<Arc<TempData>>>,
