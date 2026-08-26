@@ -168,6 +168,32 @@ fn compute_extended_times(
     extended_times
 }
 
+/// Prepends negative relative offsets for historical radar observations (actuals) to base forecast times.
+fn merge_actuals_and_forecast_times(
+    base_times: &[i64],
+    radar_ref_time_str: &str,
+    actuals: Option<&crate::state::ActualsData>,
+) -> Vec<i64> {
+    let radar_ref_time = match parse_reference_time(radar_ref_time_str) {
+        Some(t) => t,
+        None => return base_times.to_vec(),
+    };
+
+    let mut merged = Vec::new();
+    if let Some(actuals) = actuals {
+        for frame in &actuals.frames {
+            let rel = frame.timestamp - radar_ref_time;
+            if rel < 0 {
+                merged.push(rel);
+            }
+        }
+    }
+    merged.sort_unstable();
+    merged.dedup();
+    merged.extend_from_slice(base_times);
+    merged
+}
+
 /// Returns the current dataset metadata as JSON.
 pub async fn get_metadata(
     State(state): State<Arc<AppState>>,
@@ -178,6 +204,12 @@ pub async fn get_metadata(
         "Metadata not loaded".to_string(),
     ))?;
     let mut m = radar.metadata.clone();
+    let actuals_guard = state.actuals_data.read().await;
+    m.times = merge_actuals_and_forecast_times(
+        &m.times,
+        &m.reference_time_str,
+        actuals_guard.as_ref().map(|a| &**a),
+    );
     if let Some(ref rain_data) = *state.rain_data.read().await {
         m.times = compute_extended_times(&m.times, &rain_data.forecast, &m.reference_time_str);
     }
@@ -194,6 +226,25 @@ pub async fn get_data_image(
         StatusCode::INTERNAL_SERVER_ERROR,
         "Metadata not available".to_string(),
     ))?;
+
+    // Check if requested time is for historical actuals (negative relative offset)
+    if time < 0 {
+        if let Some(ref actuals) = *state.actuals_data.read().await {
+            if let Some(radar_ref_time) = parse_reference_time(&radar.metadata.reference_time_str) {
+                if let Some(frame) = actuals
+                    .frames
+                    .iter()
+                    .find(|f| f.timestamp - radar_ref_time == time || f.timestamp == time)
+                {
+                    return Ok(Response::builder()
+                        .header("Content-Type", "image/webp")
+                        .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                        .body(axum::body::Body::from(frame.webp_bytes.clone()))
+                        .unwrap());
+                }
+            }
+        }
+    }
 
     // Check cache
     if let Some(cached_data) = radar.data_cache.get(&(ens_str.clone(), time)) {
@@ -278,16 +329,15 @@ pub async fn get_data_image(
 
         let raw_values = step.values.clone();
         let lut = state.temp_projection_lut.clone();
-        let webp_bytes = tokio::task::spawn_blocking(move || {
-            render_data_webp_bytes(&raw_values, &lut)
-        })
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Blocking task join error: {}", e),
-            )
-        })?;
+        let webp_bytes =
+            tokio::task::spawn_blocking(move || render_data_webp_bytes(&raw_values, &lut))
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Blocking task join error: {}", e),
+                    )
+                })?;
 
         // Cache results
         radar.data_cache.insert((ens_str, time), webp_bytes.clone());
@@ -327,11 +377,10 @@ pub async fn get_data_image(
     // Render data webp bytes using LUT
     let lut = state.projection_lut.clone();
     let raw_slice_clone = raw_slice.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_data_webp_bytes(&raw_slice_clone, &lut)
-    })
-    .await
-    .unwrap();
+    let webp_bytes =
+        tokio::task::spawn_blocking(move || render_data_webp_bytes(&raw_slice_clone, &lut))
+            .await
+            .unwrap();
 
     // Cache results
     radar.data_cache.insert((ens_str, time), webp_bytes.clone());
@@ -360,6 +409,41 @@ pub async fn get_value(
 
     // Convert GPS coordinates to Polar Stereographic
     let (px, py) = projection::lonlat_to_polar_stereographic(q.lon, q.lat);
+
+    // Get grid cell index
+    let ix = ((px - KNMI_X0) / KNMI_DX).round() as i32;
+    let iy = ((py - KNMI_Y0) / KNMI_DY).round() as i32;
+
+    // Check if time is for historical actuals (negative relative offset)
+    if q.time < 0 {
+        if let Some(ref actuals) = *state.actuals_data.read().await {
+            if let Some(radar_ref_time) = parse_reference_time(&meta.reference_time_str) {
+                if let Some(frame) = actuals
+                    .frames
+                    .iter()
+                    .find(|f| f.timestamp - radar_ref_time == q.time || f.timestamp == q.time)
+                {
+                    if ix < 0 || ix >= KNMI_GRID_W as i32 || iy < 0 || iy >= KNMI_GRID_H as i32 {
+                        return Ok(axum::Json(ValueResponse {
+                            status: "out_of_bounds".to_string(),
+                            value: None,
+                        }));
+                    }
+                    let val_raw = frame.raw_values[iy as usize * KNMI_GRID_W + ix as usize];
+                    let val_mmh = raw_to_value(val_raw);
+                    let status = if val_mmh > 0.0 { "ok" } else { "no_rain" };
+                    return Ok(axum::Json(ValueResponse {
+                        status: status.to_string(),
+                        value: Some(val_mmh),
+                    }));
+                }
+            }
+        }
+        return Ok(axum::Json(ValueResponse {
+            status: "no_data".to_string(),
+            value: None,
+        }));
+    }
 
     // Check if this time step is for Harmonie (i.e. past the radar forecast)
     if !meta.times.contains(&q.time) {
@@ -651,12 +735,48 @@ pub async fn get_timeseries(
         }));
     }
 
-    // Determine extended times array
+    // Determine extended times array including actuals and Harmonie
+    let actuals_guard = state.actuals_data.read().await;
+    let merged_times = merge_actuals_and_forecast_times(
+        &meta.times,
+        &meta.reference_time_str,
+        actuals_guard.as_ref().map(|a| &**a),
+    );
     let extended_times = if let Some(ref rain_data) = *state.rain_data.read().await {
-        compute_extended_times(&meta.times, &rain_data.forecast, &meta.reference_time_str)
+        compute_extended_times(&merged_times, &rain_data.forecast, &meta.reference_time_str)
     } else {
-        meta.times.clone()
+        merged_times.clone()
     };
+
+    // Calculate past values for historical actuals
+    let radar_ref_time = parse_reference_time(&meta.reference_time_str).unwrap_or(0);
+    let mut past_values = Vec::new();
+    for &time_val in &merged_times {
+        if time_val < 0 {
+            let val =
+                if let Some(actuals) = actuals_guard.as_deref() {
+                    if let Some(frame) = actuals.frames.iter().find(|f| {
+                        f.timestamp - radar_ref_time == time_val || f.timestamp == time_val
+                    }) {
+                        let val_raw = frame.raw_values[iy as usize * KNMI_GRID_W + ix as usize];
+                        if q.ens == "prob" {
+                            if val_raw != NODATA && val_raw >= RAIN_THRESHOLD {
+                                100.0
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            raw_to_value(val_raw)
+                        }
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+            past_values.push(val);
+        }
+    }
 
     // Try reading all radar times from cache first
     let mut all_cached = true;
@@ -920,12 +1040,14 @@ pub async fn get_timeseries(
     }
 
     let is_pmm = q.ens == "pmm";
+    values.splice(0..0, past_values);
+
     Ok(axum::Json(TimeseriesResponse {
         status: "ok".to_string(),
         lat: q.lat,
         lon: q.lon,
         ens: q.ens,
-        times: if is_pmm { extended_times } else { meta.times.clone() },
+        times: if is_pmm { extended_times } else { merged_times },
         values,
     }))
 }
@@ -993,11 +1115,10 @@ pub async fn get_wind_data_image(
     let u_vals = step.u_values.clone();
     let v_vals = step.v_values.clone();
     let lut = state.wind_projection_lut.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_wind_webp_bytes(&u_vals, &v_vals, &lut)
-    })
-    .await
-    .unwrap();
+    let webp_bytes =
+        tokio::task::spawn_blocking(move || render_wind_webp_bytes(&u_vals, &v_vals, &lut))
+            .await
+            .unwrap();
     wind_data
         .data_cache
         .insert((height, time), webp_bytes.clone());
@@ -1187,11 +1308,9 @@ pub async fn get_temp_data_image(
 
     let vals = step.values.clone();
     let lut = state.temp_projection_lut.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_temp_webp_bytes(&vals, &lut)
-    })
-    .await
-    .unwrap();
+    let webp_bytes = tokio::task::spawn_blocking(move || render_temp_webp_bytes(&vals, &lut))
+        .await
+        .unwrap();
     temp_data.data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()
@@ -1260,8 +1379,10 @@ pub async fn get_solar_metadata(
         "Solar forecast not loaded".to_string(),
     ))?;
 
-    let (times, reference_time_str) =
-        format_forecast_metadata(&solar_data.forecast.steps, solar_data.forecast.reference_time);
+    let (times, reference_time_str) = format_forecast_metadata(
+        &solar_data.forecast.steps,
+        solar_data.forecast.reference_time,
+    );
 
     Ok(axum::Json(SolarMetadata {
         left: MERCATOR_LEFT,
@@ -1311,11 +1432,9 @@ pub async fn get_solar_data_image(
 
     let vals = step.values.clone();
     let lut = state.solar_projection_lut.clone();
-    let webp_bytes = tokio::task::spawn_blocking(move || {
-        render_solar_webp_bytes(&vals, &lut)
-    })
-    .await
-    .unwrap();
+    let webp_bytes = tokio::task::spawn_blocking(move || render_solar_webp_bytes(&vals, &lut))
+        .await
+        .unwrap();
     solar_data.data_cache.insert(time, webp_bytes.clone());
 
     Ok(Response::builder()

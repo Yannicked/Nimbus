@@ -14,8 +14,14 @@ pub const RAIN_THRESHOLD: u16 = 10;
 /// At 1 km per pixel, this represents 10 km.
 pub const NEP_RADIUS: usize = 10;
 
-/// KNMI Open Data dataset identifier.
+/// KNMI Open Data dataset identifier for seamless forecast.
 pub const KNMI_DATASET: &str = "seamless_precipitation_ensemble_forecast_members";
+
+/// KNMI Open Data dataset identifier for 5-minute real-time gauge-corrected radar observations (RTCOR).
+pub const KNMI_RTCOR_DATASET: &str = "nl_rdr_data_rtcor_5m";
+
+/// Maximum number of historical 5-minute actuals frames to retain in memory (24 frames = 2 hours).
+pub const RTCOR_MAX_HISTORY_FRAMES: usize = 24;
 
 /// NetCDF variable name for precipitation intensity.
 pub const PRECIP_VAR: &str = "precip_intensity";

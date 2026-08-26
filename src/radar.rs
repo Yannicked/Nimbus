@@ -786,7 +786,9 @@ pub async fn download_and_update_nc_file(
     let new_radar_data = Arc::new(crate::state::RadarData::new(final_path.clone(), meta));
     let lut_arc = Arc::new(state.projection_lut.clone());
 
-    let tracker_param = latest_target_version.as_ref().map(|t| (t.clone(), target_version));
+    let tracker_param = latest_target_version
+        .as_ref()
+        .map(|t| (t.clone(), target_version));
     let success = precalculate_all_data(new_radar_data.clone(), lut_arc, tracker_param).await;
 
     if success {
@@ -1100,8 +1102,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_atomic_staged_dataset_swapping() {
-        use crate::state::{AppState, RadarData};
         use crate::models::Metadata;
+        use crate::state::{AppState, RadarData};
         use std::sync::Arc;
 
         let meta1 = Metadata {
@@ -1133,11 +1135,14 @@ mod tests {
         };
 
         let radar_data_v1 = Arc::new(RadarData::new("file_v1.nc".to_string(), meta1));
-        radar_data_v1.data_cache.insert(("med".to_string(), 0), vec![1, 2, 3]);
+        radar_data_v1
+            .data_cache
+            .insert(("med".to_string(), 0), vec![1, 2, 3]);
 
         let state = Arc::new(AppState {
             radar_data: tokio::sync::RwLock::new(Some(radar_data_v1.clone())),
             projection_lut: Vec::new(),
+            actuals_data: tokio::sync::RwLock::new(None),
             temp_data: tokio::sync::RwLock::new(None),
             temp_projection_lut: Vec::new(),
             wind_data: tokio::sync::RwLock::new(None),
@@ -1152,19 +1157,27 @@ mod tests {
             let active = state.radar_data.read().await;
             let rd = active.as_ref().unwrap();
             assert_eq!(rd.metadata.version, 1);
-            assert_eq!(rd.data_cache.get(&("med".to_string(), 0)).unwrap().value(), &vec![1, 2, 3]);
+            assert_eq!(
+                rd.data_cache.get(&("med".to_string(), 0)).unwrap().value(),
+                &vec![1, 2, 3]
+            );
         }
 
         // Staging v2 while v1 is serving
         let radar_data_v2 = Arc::new(RadarData::new("file_v2.nc".to_string(), meta2));
-        radar_data_v2.data_cache.insert(("med".to_string(), 300), vec![4, 5, 6]);
+        radar_data_v2
+            .data_cache
+            .insert(("med".to_string(), 300), vec![4, 5, 6]);
 
         // Concurrent reads still see v1 without any cache clearing or lock starvation
         {
             let active = state.radar_data.read().await;
             let rd = active.as_ref().unwrap();
             assert_eq!(rd.metadata.version, 1);
-            assert_eq!(rd.data_cache.get(&("med".to_string(), 0)).unwrap().value(), &vec![1, 2, 3]);
+            assert_eq!(
+                rd.data_cache.get(&("med".to_string(), 0)).unwrap().value(),
+                &vec![1, 2, 3]
+            );
         }
 
         // Atomically swap
@@ -1178,7 +1191,25 @@ mod tests {
             let active = state.radar_data.read().await;
             let rd = active.as_ref().unwrap();
             assert_eq!(rd.metadata.version, 2);
-            assert_eq!(rd.data_cache.get(&("med".to_string(), 300)).unwrap().value(), &vec![4, 5, 6]);
+            assert_eq!(
+                rd.data_cache
+                    .get(&("med".to_string(), 300))
+                    .unwrap()
+                    .value(),
+                &vec![4, 5, 6]
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_rtcor_h5() {
+        if std::path::Path::new("scratch/test_rtcor.h5").exists() {
+            let file = netcdf::open("scratch/test_rtcor.h5").unwrap();
+            let image1 = file.group("image1").unwrap().unwrap();
+            let var = image1.variable("image_data").unwrap();
+            let values: Vec<u16> = var.get_values((.., ..)).unwrap();
+            assert_eq!(values.len(), 765 * 700);
+            println!("Successfully read image_data of length {}", values.len());
         }
     }
 }

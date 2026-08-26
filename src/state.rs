@@ -88,10 +88,54 @@ impl RainData {
     }
 }
 
+/// Single historical 5-minute radar observation frame from KNMI RTCOR (`nl_rdr_data_rtcor_5m`).
+#[derive(Clone)]
+pub struct ActualsFrame {
+    /// UTC timestamp of the observation (seconds since Unix epoch)
+    pub timestamp: i64,
+    /// Raw radar pixel slice (u16 mm/h * 100, NODATA=65535)
+    pub raw_values: Arc<Vec<u16>>,
+    /// Precalculated WebP image bytes projected onto the Web Mercator tile
+    pub webp_bytes: Vec<u8>,
+}
+
+/// In-memory store holding the most recent historical radar observation frames (sorted ascending by timestamp).
+#[derive(Clone, Default)]
+pub struct ActualsData {
+    pub frames: Vec<ActualsFrame>,
+}
+
+impl ActualsData {
+    pub fn new() -> Self {
+        Self { frames: Vec::new() }
+    }
+
+    pub fn insert_or_update(&mut self, frame: ActualsFrame, max_frames: usize) {
+        if let Some(pos) = self
+            .frames
+            .iter()
+            .position(|f| f.timestamp == frame.timestamp)
+        {
+            self.frames[pos] = frame;
+        } else {
+            self.frames.push(frame);
+            self.frames.sort_by_key(|f| f.timestamp);
+        }
+
+        if self.frames.len() > max_frames {
+            let overflow = self.frames.len() - max_frames;
+            self.frames.drain(0..overflow);
+        }
+    }
+}
+
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub radar_data: RwLock<Option<Arc<RadarData>>>,
     pub projection_lut: Vec<LutEntry>,
+
+    // 5-minute Real-Time Corrected Radar Observations (Actuals)
+    pub actuals_data: RwLock<Option<Arc<ActualsData>>>,
 
     // 2m Temperature Forecast
     pub temp_data: RwLock<Option<Arc<TempData>>>,

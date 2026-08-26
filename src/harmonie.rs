@@ -649,11 +649,10 @@ pub async fn precalculate_temp_data_into(
                 .acquire()
                 .await
                 .expect("Failed to acquire semaphore for temperature precalculation");
-            let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_temp_webp_bytes(&values, &lut_clone)
-            })
-            .await
-            .expect("Failed to join temperature rendering task");
+            let webp_bytes =
+                tokio::task::spawn_blocking(move || render_temp_webp_bytes(&values, &lut_clone))
+                    .await
+                    .expect("Failed to join temperature rendering task");
             (time_key, webp_bytes)
         });
         handles.push(handle);
@@ -684,7 +683,12 @@ pub async fn precalculate_temp_data_into(
 pub async fn precalculate_temp_data(state: Arc<AppState>) {
     let temp_opt = state.temp_data.read().await;
     if let Some(ref temp_data) = *temp_opt {
-        precalculate_temp_data_into(&temp_data.forecast, &state.temp_projection_lut, &temp_data.data_cache).await;
+        precalculate_temp_data_into(
+            &temp_data.forecast,
+            &state.temp_projection_lut,
+            &temp_data.data_cache,
+        )
+        .await;
     }
 }
 
@@ -736,11 +740,7 @@ pub async fn precalculate_wind_data_into(
                 .await
                 .expect("Failed to acquire semaphore for wind precalculation");
             let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_wind_webp_bytes(
-                    &u_vals,
-                    &v_vals,
-                    &lut_clone,
-                )
+                render_wind_webp_bytes(&u_vals, &v_vals, &lut_clone)
             })
             .await
             .expect("Failed to join wind rendering task");
@@ -774,7 +774,12 @@ pub async fn precalculate_wind_data_into(
 pub async fn precalculate_wind_data(state: Arc<AppState>) {
     let wind_opt = state.wind_data.read().await;
     if let Some(ref wind_data) = *wind_opt {
-        precalculate_wind_data_into(&wind_data.forecast, &state.wind_projection_lut, &wind_data.data_cache).await;
+        precalculate_wind_data_into(
+            &wind_data.forecast,
+            &state.wind_projection_lut,
+            &wind_data.data_cache,
+        )
+        .await;
     }
 }
 
@@ -820,11 +825,10 @@ pub async fn precalculate_solar_data_into(
                 .acquire()
                 .await
                 .expect("Failed to acquire semaphore for solar precalculation");
-            let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_solar_webp_bytes(&values, &lut_clone)
-            })
-            .await
-            .expect("Failed to join solar rendering task");
+            let webp_bytes =
+                tokio::task::spawn_blocking(move || render_solar_webp_bytes(&values, &lut_clone))
+                    .await
+                    .expect("Failed to join solar rendering task");
             (time_key, webp_bytes)
         });
         handles.push(handle);
@@ -855,7 +859,12 @@ pub async fn precalculate_solar_data_into(
 pub async fn precalculate_solar_data(state: Arc<AppState>) {
     let solar_opt = state.solar_data.read().await;
     if let Some(ref solar_data) = *solar_opt {
-        precalculate_solar_data_into(&solar_data.forecast, &state.solar_projection_lut, &solar_data.data_cache).await;
+        precalculate_solar_data_into(
+            &solar_data.forecast,
+            &state.solar_projection_lut,
+            &solar_data.data_cache,
+        )
+        .await;
     }
 }
 
@@ -928,11 +937,10 @@ pub async fn precalculate_rain_data_into(
                 .acquire()
                 .await
                 .expect("Failed to acquire semaphore for rain precalculation");
-            let webp_bytes = tokio::task::spawn_blocking(move || {
-                render_data_webp_bytes(&values, &lut_clone)
-            })
-            .await
-            .expect("Failed to join rain rendering task");
+            let webp_bytes =
+                tokio::task::spawn_blocking(move || render_data_webp_bytes(&values, &lut_clone))
+                    .await
+                    .expect("Failed to join rain rendering task");
             (time_key, webp_bytes)
         });
         handles.push(handle);
