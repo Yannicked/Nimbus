@@ -28,6 +28,18 @@ export class WebGLWindLayer {
         this.windPositionBuffer = null;
         this.windTexcoordBuffer = null;
         this.lastAnimTime = 0;
+
+        // Cached location dictionaries to eliminate getUniformLocation/getAttribLocation in render()
+        this.updateLocations = null;
+        this.windLocations = null;
+        this.particleLocations = null;
+
+        this.map = null;
+        this.gl = null;
+        this.isContextLost = false;
+
+        this._onContextLost = this.handleContextLost.bind(this);
+        this._onContextRestored = this.handleContextRestored.bind(this);
     }
 
     // Keep this for MapLibre/index.js callbacks, but make it CPU-overhead-free
@@ -73,15 +85,69 @@ export class WebGLWindLayer {
         return program;
     }
 
-    onAdd(mapInstance, gl) {
-        if (this.isCompare) {
-            state.glContextRight = gl;
-        } else {
-            state.glContext = gl;
+    resetResources(gl) {
+        if (gl && !this.isContextLost) {
+            if (this.windProgram) {
+                try { gl.deleteProgram(this.windProgram); } catch (e) {}
+            }
+            if (this.particleProgram) {
+                try { gl.deleteProgram(this.particleProgram); } catch (e) {}
+            }
+            if (this.updateProgram) {
+                try { gl.deleteProgram(this.updateProgram); } catch (e) {}
+            }
+            if (this.windPositionBuffer) {
+                try { gl.deleteBuffer(this.windPositionBuffer); } catch (e) {}
+            }
+            if (this.windTexcoordBuffer) {
+                try { gl.deleteBuffer(this.windTexcoordBuffer); } catch (e) {}
+            }
+            if (this.quadBuffer) {
+                try { gl.deleteBuffer(this.quadBuffer); } catch (e) {}
+            }
+            if (this.particleUVBuffer) {
+                try { gl.deleteBuffer(this.particleUVBuffer); } catch (e) {}
+            }
+            for (let i = 0; i < 2; i++) {
+                if (this.stateTextures[i]) {
+                    try { gl.deleteTexture(this.stateTextures[i]); } catch (e) {}
+                }
+                if (this.stateFBOs[i]) {
+                    try { gl.deleteFramebuffer(this.stateFBOs[i]); } catch (e) {}
+                }
+            }
         }
-        console.log(`Initializing WebGL Wind Layer (${this.id}) fully on GPU...`);
+        this.windProgram = null;
+        this.particleProgram = null;
+        this.updateProgram = null;
+        this.windPositionBuffer = null;
+        this.windTexcoordBuffer = null;
+        this.quadBuffer = null;
+        this.particleUVBuffer = null;
+        this.stateTextures = [null, null];
+        this.stateFBOs = [null, null];
+        this.updateLocations = null;
+        this.windLocations = null;
+        this.particleLocations = null;
 
-        // 1. Compile background heat map overlay shader (with manual 16-bit bilinear interpolation)
+        if (this.isCompare) {
+            state.windProgramRight = null;
+            state.particleProgramRight = null;
+            state.windPositionBufferRight = null;
+            state.windTexcoordBufferRight = null;
+        } else {
+            state.windProgram = null;
+            state.particleProgram = null;
+            state.windPositionBuffer = null;
+            state.windTexcoordBuffer = null;
+        }
+    }
+
+    rebuildPrograms(gl) {
+        if (!gl) return;
+        this.resetResources(gl);
+
+        // 1. Compile background heat map overlay shader (with manual 16-bit bilinear interpolation & high precision)
         const vertexShaderSource = `
             attribute vec2 a_position;
             attribute vec2 a_texcoord;
@@ -94,7 +160,12 @@ export class WebGLWindLayer {
         `;
 
         const fragmentShaderSource = `
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
+
             varying vec2 v_texcoord;
             uniform sampler2D u_texture;
             uniform float u_opacity;
@@ -184,8 +255,15 @@ export class WebGLWindLayer {
         `;
 
         this.windProgram = this._createProgram(gl, vertexShaderSource, fragmentShaderSource);
+        this.windLocations = {
+            aPosition: gl.getAttribLocation(this.windProgram, 'a_position'),
+            aTexcoord: gl.getAttribLocation(this.windProgram, 'a_texcoord'),
+            uMatrix: gl.getUniformLocation(this.windProgram, 'u_matrix'),
+            uTexture: gl.getUniformLocation(this.windProgram, 'u_texture'),
+            uOpacity: gl.getUniformLocation(this.windProgram, 'u_opacity')
+        };
 
-        // 2. Compile GPU simulation update program
+        // 2. Compile GPU simulation update program with high precision
         const updateVsSource = `
             attribute vec2 a_position;
             varying vec2 v_texcoord;
@@ -196,7 +274,12 @@ export class WebGLWindLayer {
         `;
 
         const updateFsSource = `
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
+
             varying vec2 v_texcoord;
             uniform sampler2D u_state_texture;
             uniform sampler2D u_wind_texture;
@@ -352,8 +435,17 @@ export class WebGLWindLayer {
         `;
 
         this.updateProgram = this._createProgram(gl, updateVsSource, updateFsSource);
+        this.updateLocations = {
+            aPosition: gl.getAttribLocation(this.updateProgram, 'a_position'),
+            uStateTexture: gl.getUniformLocation(this.updateProgram, 'u_state_texture'),
+            uWindTexture: gl.getUniformLocation(this.updateProgram, 'u_wind_texture'),
+            uDt: gl.getUniformLocation(this.updateProgram, 'u_dt'),
+            uSpeedFactor: gl.getUniformLocation(this.updateProgram, 'u_speed_factor'),
+            uRandSeed: gl.getUniformLocation(this.updateProgram, 'u_rand_seed'),
+            uTexSize: gl.getUniformLocation(this.updateProgram, 'u_tex_size')
+        };
 
-        // 3. Compile particle rendering program
+        // 3. Compile particle rendering program with high precision
         const particleVsSource = `
             attribute vec2 a_particle_uv;
             varying float v_fade;
@@ -453,7 +545,12 @@ export class WebGLWindLayer {
         `;
 
         const particleFsSource = `
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
+
             varying float v_fade;
             varying float v_trail;
             uniform float u_arrow_opacity;
@@ -471,6 +568,14 @@ export class WebGLWindLayer {
         `;
 
         this.particleProgram = this._createProgram(gl, particleVsSource, particleFsSource);
+        this.particleLocations = {
+            aParticleUV: gl.getAttribLocation(this.particleProgram, 'a_particle_uv'),
+            uMatrix: gl.getUniformLocation(this.particleProgram, 'u_matrix'),
+            uStateTexture: gl.getUniformLocation(this.particleProgram, 'u_state_texture'),
+            uWindTexture: gl.getUniformLocation(this.particleProgram, 'u_wind_texture'),
+            uPointSize: gl.getUniformLocation(this.particleProgram, 'u_point_size'),
+            uArrowOpacity: gl.getUniformLocation(this.particleProgram, 'u_arrow_opacity')
+        };
 
         // 4. Set up Mercator quad buffers (background speed field overlay)
         const MAP_LIMIT = 20037508.342789244;
@@ -590,10 +695,62 @@ export class WebGLWindLayer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
         this.lastAnimTime = performance.now();
+
+        if (this.isCompare) {
+            state.windProgramRight = this.windProgram;
+            state.particleProgramRight = this.particleProgram;
+            state.windPositionBufferRight = this.windPositionBuffer;
+            state.windTexcoordBufferRight = this.windTexcoordBuffer;
+        } else {
+            state.windProgram = this.windProgram;
+            state.particleProgram = this.particleProgram;
+            state.windPositionBuffer = this.windPositionBuffer;
+            state.windTexcoordBuffer = this.windTexcoordBuffer;
+        }
+    }
+
+    handleContextLost(e) {
+        e.preventDefault();
+        console.warn(`WebGLWindLayer (${this.id}) context lost.`);
+        this.isContextLost = true;
+        this.resetResources(null);
+    }
+
+    handleContextRestored(e) {
+        console.log(`WebGLWindLayer (${this.id}) context restored. Rebuilding programs...`);
+        this.isContextLost = false;
+        const gl = this.gl || (this.isCompare ? state.glContextRight : state.glContext);
+        if (gl) {
+            this.rebuildPrograms(gl);
+        }
+        if (this.map) {
+            this.map.triggerRepaint();
+        }
+    }
+
+    onAdd(mapInstance, gl) {
+        this.map = mapInstance;
+        this.gl = gl;
+        this.isContextLost = false;
+
+        if (this.isCompare) {
+            state.glContextRight = gl;
+        } else {
+            state.glContext = gl;
+        }
+        console.log(`Initializing WebGL Wind Layer (${this.id}) fully on GPU...`);
+
+        const canvas = mapInstance?.getCanvas?.() || gl?.canvas;
+        if (canvas) {
+            canvas.addEventListener('webglcontextlost', this._onContextLost, false);
+            canvas.addEventListener('webglcontextrestored', this._onContextRestored, false);
+        }
+
+        this.rebuildPrograms(gl);
     }
 
     render(gl, matrix) {
-        if (!state.metadata || !this.windProgram || !this.particleProgram || !this.updateProgram) return;
+        if (this.isContextLost || !state.metadata || !this.windProgram || !this.particleProgram || !this.updateProgram || !this.updateLocations || !this.windLocations || !this.particleLocations) return;
 
         const timeVal = state.metadata.times[state.currentTimeIndex];
         const windTexture = getOrLoadTexture(gl, timeVal, this.isCompare);
@@ -635,32 +792,31 @@ export class WebGLWindLayer {
         gl.useProgram(this.updateProgram);
 
         // Bind update quad position attribute
-        const aUpdatePos = gl.getAttribLocation(this.updateProgram, 'a_position');
-        gl.enableVertexAttribArray(aUpdatePos);
+        gl.enableVertexAttribArray(this.updateLocations.aPosition);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
-        gl.vertexAttribPointer(aUpdatePos, 2, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribPointer(this.updateLocations.aPosition, 2, gl.FLOAT, false, 0, 0);
 
         // Set state textures
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, srcTex);
-        gl.uniform1i(gl.getUniformLocation(this.updateProgram, 'u_state_texture'), 0);
+        gl.uniform1i(this.updateLocations.uStateTexture, 0);
 
         // Set wind velocity texture
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, windTexture);
-        gl.uniform1i(gl.getUniformLocation(this.updateProgram, 'u_wind_texture'), 1);
+        gl.uniform1i(this.updateLocations.uWindTexture, 1);
 
         // Set update uniforms
-        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_dt'), dt);
-        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_speed_factor'), 2.5 * 4);
-        gl.uniform1f(gl.getUniformLocation(this.updateProgram, 'u_rand_seed'), Math.random());
-        gl.uniform2f(gl.getUniformLocation(this.updateProgram, 'u_tex_size'), this.numParticles, this.trailLength);
+        gl.uniform1f(this.updateLocations.uDt, dt);
+        gl.uniform1f(this.updateLocations.uSpeedFactor, 2.5 * 4);
+        gl.uniform1f(this.updateLocations.uRandSeed, Math.random());
+        gl.uniform2f(this.updateLocations.uTexSize, this.numParticles, this.trailLength);
 
         // Execute update pass
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
         // Clean up update pass
-        gl.disableVertexAttribArray(aUpdatePos);
+        gl.disableVertexAttribArray(this.updateLocations.aPosition);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
         // Swap ping-pong FBOs
@@ -680,60 +836,61 @@ export class WebGLWindLayer {
         // -------------------------------------------------------------
         gl.useProgram(this.windProgram);
 
-        const aPosition = gl.getAttribLocation(this.windProgram, 'a_position');
-        gl.enableVertexAttribArray(aPosition);
+        gl.enableVertexAttribArray(this.windLocations.aPosition);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.windPositionBuffer);
-        gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribPointer(this.windLocations.aPosition, 2, gl.FLOAT, false, 0, 0);
 
-        const aTexcoord = gl.getAttribLocation(this.windProgram, 'a_texcoord');
-        gl.enableVertexAttribArray(aTexcoord);
+        gl.enableVertexAttribArray(this.windLocations.aTexcoord);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.windTexcoordBuffer);
-        gl.vertexAttribPointer(aTexcoord, 2, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribPointer(this.windLocations.aTexcoord, 2, gl.FLOAT, false, 0, 0);
 
-        gl.uniformMatrix4fv(gl.getUniformLocation(this.windProgram, 'u_matrix'), false, matrix);
+        gl.uniformMatrix4fv(this.windLocations.uMatrix, false, matrix);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, windTexture);
-        gl.uniform1i(gl.getUniformLocation(this.windProgram, 'u_texture'), 0);
+        gl.uniform1i(this.windLocations.uTexture, 0);
 
-        const opacity = parseFloat(DOM.opacitySlider.value) / 100;
-        gl.uniform1f(gl.getUniformLocation(this.windProgram, 'u_opacity'), opacity);
+        const opacity = (DOM.opacitySlider && DOM.opacitySlider.value)
+            ? parseFloat(DOM.opacitySlider.value) / 100
+            : 0.7;
+        gl.uniform1f(this.windLocations.uOpacity, opacity);
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-        gl.disableVertexAttribArray(aPosition);
-        gl.disableVertexAttribArray(aTexcoord);
+        gl.disableVertexAttribArray(this.windLocations.aPosition);
+        gl.disableVertexAttribArray(this.windLocations.aTexcoord);
 
         // -------------------------------------------------------------
         // Step C: Draw Particle Trails from GPU State Texture
         // -------------------------------------------------------------
         gl.useProgram(this.particleProgram);
 
-        const aPartUV = gl.getAttribLocation(this.particleProgram, 'a_particle_uv');
-        gl.enableVertexAttribArray(aPartUV);
+        gl.enableVertexAttribArray(this.particleLocations.aParticleUV);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.particleUVBuffer);
-        gl.vertexAttribPointer(aPartUV, 2, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribPointer(this.particleLocations.aParticleUV, 2, gl.FLOAT, false, 0, 0);
 
-        gl.uniformMatrix4fv(gl.getUniformLocation(this.particleProgram, 'u_matrix'), false, matrix);
+        gl.uniformMatrix4fv(this.particleLocations.uMatrix, false, matrix);
 
         // Bind current state texture to look up coordinates in vertex shader
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, currentUpdatedTex);
-        gl.uniform1i(gl.getUniformLocation(this.particleProgram, 'u_state_texture'), 0);
+        gl.uniform1i(this.particleLocations.uStateTexture, 0);
 
         // Bind wind texture to look up velocity/speed in vertex shader
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, windTexture);
-        gl.uniform1i(gl.getUniformLocation(this.particleProgram, 'u_wind_texture'), 1);
+        gl.uniform1i(this.particleLocations.uWindTexture, 1);
 
-        gl.uniform1f(gl.getUniformLocation(this.particleProgram, 'u_point_size'), 5.5);
-        gl.uniform1f(gl.getUniformLocation(this.particleProgram, 'u_arrow_opacity'), opacity);
+        // High-DPI dynamic scaling: scale particle point size by devicePixelRatio (clamped up to 2.0)
+        const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? Math.min(window.devicePixelRatio, 2.0) : 1.0;
+        gl.uniform1f(this.particleLocations.uPointSize, 5.5 * dpr);
+        gl.uniform1f(this.particleLocations.uArrowOpacity, opacity);
 
         gl.drawArrays(gl.POINTS, 0, this.numParticles * this.trailLength);
 
-        gl.disableVertexAttribArray(aPartUV);
+        gl.disableVertexAttribArray(this.particleLocations.aParticleUV);
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
         if (depthTestEnabled) {
@@ -749,43 +906,15 @@ export class WebGLWindLayer {
     }
 
     onRemove(map, gl) {
-        if (this.windProgram) {
-            gl.deleteProgram(this.windProgram);
-            this.windProgram = null;
+        const canvas = map?.getCanvas?.() || gl?.canvas;
+        if (canvas) {
+            canvas.removeEventListener('webglcontextlost', this._onContextLost, false);
+            canvas.removeEventListener('webglcontextrestored', this._onContextRestored, false);
         }
-        if (this.particleProgram) {
-            gl.deleteProgram(this.particleProgram);
-            this.particleProgram = null;
-        }
-        if (this.updateProgram) {
-            gl.deleteProgram(this.updateProgram);
-            this.updateProgram = null;
-        }
-        if (this.windPositionBuffer) {
-            gl.deleteBuffer(this.windPositionBuffer);
-            this.windPositionBuffer = null;
-        }
-        if (this.windTexcoordBuffer) {
-            gl.deleteBuffer(this.windTexcoordBuffer);
-            this.windTexcoordBuffer = null;
-        }
-        if (this.quadBuffer) {
-            gl.deleteBuffer(this.quadBuffer);
-            this.quadBuffer = null;
-        }
-        if (this.particleUVBuffer) {
-            gl.deleteBuffer(this.particleUVBuffer);
-            this.particleUVBuffer = null;
-        }
-        for (let i = 0; i < 2; i++) {
-            if (this.stateTextures[i]) {
-                gl.deleteTexture(this.stateTextures[i]);
-                this.stateTextures[i] = null;
-            }
-            if (this.stateFBOs[i]) {
-                gl.deleteFramebuffer(this.stateFBOs[i]);
-                this.stateFBOs[i] = null;
-            }
-        }
+
+        this.resetResources(gl);
+        this.map = null;
+        this.gl = null;
     }
 }
+

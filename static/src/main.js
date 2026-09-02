@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { state, parseURLState } from './state.js';
 import { DOM } from './ui/dom.js';
-import { fetchMetadata } from './api.js';
+import { fetchMetadata, showErrorBanner } from './api.js';
 import { initMap, updateRadarOverlay, clearRadarLayers } from './map/index.js';
 import { initControls, drawSliderTicks, updateTimeStepDisplay, updateLegend, formatAbsoluteTime, selectEnsemble, selectLayerMode, selectWindHeight, updateTimelineSlider } from './ui/controls.js';
 import { showTimeseriesChart, closeTimeseriesChart } from './ui/chart.js';
@@ -34,7 +34,7 @@ async function loadApp() {
         }
         
         // Find index closest to current system time
-        const refMatch = state.metadata.reference_time_str.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+        const refMatch = state.metadata?.reference_time_str?.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
         let refTimeMs = Date.now();
         if (refMatch) {
             refTimeMs = new Date(`${refMatch[1]}T${refMatch[2]}Z`).getTime();
@@ -42,8 +42,9 @@ async function loadApp() {
         const targetOffset = (Date.now() - refTimeMs) / 1000;
         let closestIndex = 0;
         let minDiff = Infinity;
-        for (let i = 0; i < state.metadata.times.length; i++) {
-            const diff = Math.abs(state.metadata.times[i] - targetOffset);
+        const times = state.metadata?.times || [];
+        for (let i = 0; i < times.length; i++) {
+            const diff = Math.abs(times[i] - targetOffset);
             if (diff < minDiff) {
                 minDiff = diff;
                 closestIndex = i;
@@ -52,48 +53,56 @@ async function loadApp() {
         state.currentTimeIndex = closestIndex;
         
         // Display reference time
-        DOM.refTimeVal.textContent = formatAbsoluteTime(state.metadata.reference_time_str, 0);
+        if (DOM.refTimeVal && state.metadata) {
+            DOM.refTimeVal.textContent = formatAbsoluteTime(state.metadata.reference_time_str, 0);
+        }
 
         // Create Ensemble Selector Options Grouped by Category
-        DOM.ensembleSelect.replaceChildren();
-        
-        // Add statistics first (separate / at the beginning)
-        const statsGroup = document.createElement('optgroup');
-        statsGroup.label = 'Statistics / Summary';
-        
-        const stats = ['pmm', 'med', 'max', 'prob', 'spread'];
-        const statLabels = { 
-            'pmm': 'Probability Matched Mean (PMM)',
-            'med': 'Median Forecast (MED)', 
-            'max': 'Maximum Forecast (MAX)', 
-            'prob': 'Neighborhood Probability (NEP)',
-            'spread': 'Forecast Uncertainty (SPREAD)'
-        };
-        stats.forEach(stat => {
-            const opt = document.createElement('option');
-            opt.value = stat;
-            opt.textContent = statLabels[stat];
-            if (stat === state.currentEns) opt.selected = true;
-            statsGroup.appendChild(opt);
-        });
-        DOM.ensembleSelect.appendChild(statsGroup);
+        if (DOM.ensembleSelect) {
+            DOM.ensembleSelect.replaceChildren();
+            
+            // Add statistics first (separate / at the beginning)
+            const statsGroup = document.createElement('optgroup');
+            statsGroup.label = 'Statistics / Summary';
+            
+            const stats = ['pmm', 'med', 'max', 'prob', 'spread'];
+            const statLabels = { 
+                'pmm': 'Probability Matched Mean (PMM)',
+                'med': 'Median Forecast (MED)', 
+                'max': 'Maximum Forecast (MAX)', 
+                'prob': 'Neighborhood Probability (NEP)',
+                'spread': 'Forecast Uncertainty (SPREAD)'
+            };
+            stats.forEach(stat => {
+                const opt = document.createElement('option');
+                opt.value = stat;
+                opt.textContent = statLabels[stat];
+                if (stat === state.currentEns) opt.selected = true;
+                statsGroup.appendChild(opt);
+            });
+            DOM.ensembleSelect.appendChild(statsGroup);
 
-        // Add individual ensemble members
-        const membersGroup = document.createElement('optgroup');
-        membersGroup.label = 'Ensemble Members';
-        
-        state.rainMetadata.ensembles.forEach(ens => {
-            const opt = document.createElement('option');
-            opt.value = ens.toString();
-            opt.textContent = `Ensemble Member E${ens}`;
-            if (ens === state.currentEns) opt.selected = true;
-            membersGroup.appendChild(opt);
-        });
-        DOM.ensembleSelect.appendChild(membersGroup);
+            // Add individual ensemble members
+            if (state.rainMetadata?.ensembles) {
+                const membersGroup = document.createElement('optgroup');
+                membersGroup.label = 'Ensemble Members';
+                
+                state.rainMetadata.ensembles.forEach(ens => {
+                    const opt = document.createElement('option');
+                    opt.value = ens.toString();
+                    opt.textContent = `Ensemble Member E${ens}`;
+                    if (ens === state.currentEns) opt.selected = true;
+                    membersGroup.appendChild(opt);
+                });
+                DOM.ensembleSelect.appendChild(membersGroup);
+            }
+        }
 
         // Initialize Timeline Slider
-        DOM.timeSlider.min = 0;
-        updateTimelineSlider();
+        if (DOM.timeSlider) {
+            DOM.timeSlider.min = 0;
+            updateTimelineSlider();
+        }
 
         // Load initial overlay
         updateRadarOverlay();
@@ -101,11 +110,14 @@ async function loadApp() {
         updateLegend();
 
         // Trigger background rain alert notification check
-        checkRainAndNotify(state.rainMetadata);
+        if (state.rainMetadata) {
+            checkRainAndNotify(state.rainMetadata);
+        }
 
     } catch (e) {
-        console.error(e);
-        DOM.refTimeVal.textContent = "Error loading data!";
+        console.error("Failed to load weather data during bootstrap:", e);
+        if (DOM.refTimeVal) DOM.refTimeVal.textContent = "Error loading data!";
+        showErrorBanner("Could not fetch forecast data from server. Please check your connection or reload.", 0);
     }
 }
 

@@ -15,65 +15,172 @@ export let windLayerInstanceRight = new WebGLWindLayer('wind-webgl-layer-right',
 let activeWindCacheKey = null;
 let activeWindCacheKeyRight = null;
 
-// Helper to load/bind WebGL textures asynchronously
+// Strict LRU Texture Cache bounded to prevent GPU VRAM exhaustion (48 desktop / 24 mobile)
+export class LRUTextureCache {
+    constructor(maxSize = null) {
+        this.maxSize = maxSize || (LRUTextureCache.isMobile() ? 24 : 48);
+        this.cache = new Map();
+    }
+
+    static isMobile() {
+        if (typeof navigator !== 'undefined' && navigator.userAgent) {
+            if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+                return true;
+            }
+        }
+        if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+            return true;
+        }
+        return false;
+    }
+
+    get(key) {
+        if (!this.cache.has(key)) return null;
+        const entry = this.cache.get(key);
+        // Refresh position in Map to most recently used
+        this.cache.delete(key);
+        this.cache.set(key, entry);
+        return entry;
+    }
+
+    set(key, entry, gl = null) {
+        if (this.cache.has(key)) {
+            this.cache.delete(key);
+        } else if (this.cache.size >= this.maxSize) {
+            this.evictOldest(gl);
+        }
+        this.cache.set(key, entry);
+    }
+
+    has(key) {
+        return this.cache.has(key);
+    }
+
+    evictOldest(gl = null) {
+        const oldestKey = this.cache.keys().next().value;
+        if (oldestKey !== undefined) {
+            const oldestEntry = this.cache.get(oldestKey);
+            if (oldestEntry && oldestEntry.texture && gl) {
+                try {
+                    gl.deleteTexture(oldestEntry.texture);
+                } catch (e) {
+                    console.warn(`Error deleting texture on eviction: ${e}`);
+                }
+            }
+            this.cache.delete(oldestKey);
+        }
+    }
+
+    delete(key, gl = null) {
+        if (this.cache.has(key)) {
+            const entry = this.cache.get(key);
+            if (entry && entry.texture && gl) {
+                try {
+                    gl.deleteTexture(entry.texture);
+                } catch (e) {
+                    console.warn(`Error deleting texture on delete: ${e}`);
+                }
+            }
+            return this.cache.delete(key);
+        }
+        return false;
+    }
+
+    clear(gl = null) {
+        for (const [key, entry] of this.cache.entries()) {
+            if (entry && entry.texture && gl) {
+                try {
+                    gl.deleteTexture(entry.texture);
+                } catch (e) {
+                    console.warn(`Error deleting texture on clear: ${e}`);
+                }
+            }
+        }
+        this.cache.clear();
+    }
+
+    get size() {
+        return this.cache.size;
+    }
+
+    keys() {
+        return this.cache.keys();
+    }
+
+    values() {
+        return this.cache.values();
+    }
+
+    entries() {
+        return this.cache.entries();
+    }
+
+    forEach(callback, thisArg) {
+        this.cache.forEach(callback, thisArg);
+    }
+
+    [Symbol.iterator]() {
+        return this.cache[Symbol.iterator]();
+    }
+}
+
+function getTextureCache(isCompare = false) {
+    if (isCompare) {
+        if (!(state.textureCacheRight instanceof LRUTextureCache)) {
+            state.textureCacheRight = new LRUTextureCache();
+        }
+        return state.textureCacheRight;
+    } else {
+        if (!(state.textureCache instanceof LRUTextureCache)) {
+            state.textureCache = new LRUTextureCache();
+        }
+        return state.textureCache;
+    }
+}
+
+// Helper to load/bind WebGL textures asynchronously with strict LRU memory bounding
 export function getOrLoadTexture(gl, timeVal, isCompare = false) {
     const layerMode = isCompare ? state.compareLayerMode : state.currentLayerMode;
     const ens = isCompare ? state.compareEns : state.currentEns;
     const windHeight = isCompare ? state.compareSelectedWindHeight : state.selectedWindHeight;
-    const cache = isCompare ? state.textureCacheRight : state.textureCache;
+    const cache = getTextureCache(isCompare);
     const metadata = isCompare ? (layerMode === 'temp' ? state.tempMetadata : (layerMode === 'solar' ? state.solarMetadata : (layerMode === 'wind' ? state.windMetadata : state.rainMetadata))) : state.metadata;
 
-    if (!metadata) return null;
+    if (!metadata || !gl) return null;
     
-    const cacheKey = `${layerMode}-${ens}-${timeVal}-${metadata.version}`;
+    const cacheKey = `${layerMode}-${ens}-${timeVal}-${metadata.version || ''}`;
     
-    if (cache[cacheKey]) {
-        const entry = cache[cacheKey];
-        if (!entry.loaded) {
+    const cachedEntry = cache.get(cacheKey);
+    if (cachedEntry) {
+        if (!cachedEntry.loaded) {
             return null; // Still loading the image
         }
         if (layerMode === 'wind' && timeVal === metadata.times[state.currentTimeIndex]) {
             if (isCompare) {
                 if (state.windPixelDataRight === null || activeWindCacheKeyRight !== cacheKey) {
                     activeWindCacheKeyRight = cacheKey;
-                    windLayerInstanceRight.updateWindPixelData(entry.image);
+                    windLayerInstanceRight.updateWindPixelData(cachedEntry.image);
                 }
             } else {
                 if (state.windPixelData === null || activeWindCacheKey !== cacheKey) {
                     activeWindCacheKey = cacheKey;
-                    windLayerInstance.updateWindPixelData(entry.image);
+                    windLayerInstance.updateWindPixelData(cachedEntry.image);
                 }
             }
         }
-        if (!entry.uploaded) {
-            console.log(`Uploading texture to GPU for ${cacheKey}...`);
-            gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+        if (!cachedEntry.uploaded) {
+            gl.bindTexture(gl.TEXTURE_2D, cachedEntry.texture);
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, entry.image);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cachedEntry.image);
             
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
             
-            entry.uploaded = true;
-            console.log(`Texture uploaded successfully for ${cacheKey}.`);
+            cachedEntry.uploaded = true;
         }
-        return entry.texture;
-    }
-    
-    // Keep cache size bounded to prevent memory bloat
-    const keys = Object.keys(cache);
-    if (keys.length > 250) {
-        const oldestKey = keys[0];
-        const oldestEntry = cache[oldestKey];
-        if (oldestEntry) {
-            console.log(`Evicting cached texture: ${oldestKey}`);
-            if (gl && oldestEntry.texture) {
-                gl.deleteTexture(oldestEntry.texture);
-            }
-            delete cache[oldestKey];
-        }
+        return cachedEntry.texture;
     }
 
     // Create texture slot and load image asynchronously
@@ -84,13 +191,11 @@ export function getOrLoadTexture(gl, timeVal, isCompare = false) {
         uploaded: false,
         image: null
     };
-    cache[cacheKey] = entry;
+    cache.set(cacheKey, entry, gl);
     
-    console.log(`Starting image load for ${cacheKey}...`);
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-        console.log(`Image loaded successfully for ${cacheKey}.`);
         entry.image = img;
         entry.loaded = true;
         if (layerMode === 'wind' && timeVal === metadata.times[state.currentTimeIndex]) {
@@ -111,7 +216,7 @@ export function getOrLoadTexture(gl, timeVal, isCompare = false) {
     const srcPath = layerMode === 'temp'
         ? `/api/data/temp/${timeVal}`
         : (layerMode === 'solar' ? `/api/data/solar/${timeVal}` : (layerMode === 'wind' ? `/api/data/wind/${windHeight}/${timeVal}` : `/api/data/${ens}/${timeVal}`));
-    img.src = `${window.location.origin}${srcPath}?v=${metadata.version}`;
+    img.src = `${window.location.origin}${srcPath}?v=${metadata.version || ''}`;
     
     return null;
 }
@@ -134,23 +239,31 @@ export function lonLatToMercator(lat, lon) {
 
 // Clear cached textures and release GPU memory
 export function clearRadarLayers() {
-    if (state.glContext) {
-        for (const cacheKey in state.textureCache) {
-            if (state.textureCache[cacheKey].texture) {
-                state.glContext.deleteTexture(state.textureCache[cacheKey].texture);
+    if (state.textureCache && typeof state.textureCache.clear === 'function') {
+        state.textureCache.clear(state.glContext);
+    } else {
+        if (state.glContext && state.textureCache) {
+            for (const cacheKey in state.textureCache) {
+                if (state.textureCache[cacheKey]?.texture) {
+                    try { state.glContext.deleteTexture(state.textureCache[cacheKey].texture); } catch (e) {}
+                }
             }
         }
+        state.textureCache = new LRUTextureCache();
     }
-    state.textureCache = {};
 
-    if (state.glContextRight) {
-        for (const cacheKey in state.textureCacheRight) {
-            if (state.textureCacheRight[cacheKey].texture) {
-                state.glContextRight.deleteTexture(state.textureCacheRight[cacheKey].texture);
+    if (state.textureCacheRight && typeof state.textureCacheRight.clear === 'function') {
+        state.textureCacheRight.clear(state.glContextRight);
+    } else {
+        if (state.glContextRight && state.textureCacheRight) {
+            for (const cacheKey in state.textureCacheRight) {
+                if (state.textureCacheRight[cacheKey]?.texture) {
+                    try { state.glContextRight.deleteTexture(state.textureCacheRight[cacheKey].texture); } catch (e) {}
+                }
             }
         }
+        state.textureCacheRight = new LRUTextureCache();
     }
-    state.textureCacheRight = {};
 
     if (state.map) state.map.triggerRepaint();
     if (state.mapRight) state.mapRight.triggerRepaint();
@@ -331,7 +444,7 @@ export async function triggerHoverQuery() {
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
-            } else if (res.value === null) {
+            } else if (res.value === null || typeof res.value !== 'number') {
                 DOM.hoverValue.textContent = "No Data";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else {
@@ -356,7 +469,7 @@ export async function triggerHoverQuery() {
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
-            } else if (res.value === null) {
+            } else if (res.value === null || typeof res.value !== 'number') {
                 DOM.hoverValue.textContent = "No Data";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else {
@@ -380,7 +493,7 @@ export async function triggerHoverQuery() {
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
-            } else if (res.speed === null) {
+            } else if (res.speed === null || typeof res.speed !== 'number') {
                 DOM.hoverValue.textContent = "No Data";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else {
@@ -407,6 +520,9 @@ export async function triggerHoverQuery() {
 
             if (res.status === "out_of_bounds") {
                 DOM.hoverValue.textContent = "Out of Grid";
+                DOM.hoverValue.style.color = "var(--text-secondary)";
+            } else if (res.value === null || typeof res.value !== 'number') {
+                DOM.hoverValue.textContent = "No Data";
                 DOM.hoverValue.style.color = "var(--text-secondary)";
             } else if (res.status === "no_rain" || res.value === 0.0) {
                 if (ens === 'prob') {
@@ -496,6 +612,26 @@ export function initMap() {
     state.map.on('moveend', () => {
         syncStateToURL();
     });
+
+    const canvas = state.map.getCanvas();
+    if (canvas) {
+        canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            console.warn('Main map canvas WebGL context lost.');
+            if (state.textureCache && typeof state.textureCache.clear === 'function') {
+                state.textureCache.clear(null);
+            } else {
+                state.textureCache = new LRUTextureCache();
+            }
+        }, false);
+
+        canvas.addEventListener('webglcontextrestored', () => {
+            console.log('Main map canvas WebGL context restored.');
+            setupRadarSourceAndLayer();
+            updateRadarOverlay();
+            if (state.map) state.map.triggerRepaint();
+        }, false);
+    }
 }
 
 // Initialize right-hand compare map
@@ -527,6 +663,26 @@ export function initMapRight() {
     state.mapRight.on('mousemove', handleMapMouseMove);
     state.mapRight.on('mouseout', handleMapMouseLeave);
     state.mapRight.on('click', handleMapClick);
+
+    const canvasRight = state.mapRight.getCanvas();
+    if (canvasRight) {
+        canvasRight.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            console.warn('Compare map canvas WebGL context lost.');
+            if (state.textureCacheRight && typeof state.textureCacheRight.clear === 'function') {
+                state.textureCacheRight.clear(null);
+            } else {
+                state.textureCacheRight = new LRUTextureCache();
+            }
+        }, false);
+
+        canvasRight.addEventListener('webglcontextrestored', () => {
+            console.log('Compare map canvas WebGL context restored.');
+            setupRadarSourceAndLayerRight();
+            updateRadarOverlay();
+            if (state.mapRight) state.mapRight.triggerRepaint();
+        }, false);
+    }
 }
 
 let leftMoveListener = null;

@@ -17,6 +17,11 @@ export const state = {
     chartInstance: null,
     activeCoords: null,
 
+    // Network & Error UI State
+    isLoading: false,
+    activeRequests: 0,
+    currentError: null,
+
     // WebGL Custom Layer variables
     radarProgram: null,
     positionBuffer: null,

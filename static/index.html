@@ -22,6 +22,16 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- Network Loading Progress Bar -->
+    <div id="network-progress-bar" class="network-progress-bar hidden"></div>
+
+    <!-- Error Banner Overlay -->
+    <div id="error-banner" class="glass-panel error-banner hidden" role="alert">
+        <i class="fa-solid fa-triangle-exclamation error-icon"></i>
+        <span id="error-banner-text" class="error-text">Network error loading weather data.</span>
+        <button id="error-banner-close" class="error-close-btn" title="Dismiss error"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+
     <!-- Main Map Container -->
     <div id="map-container">
         <div id="map" class="map-pane"></div>
@@ -63,12 +73,21 @@
 
     <!-- Chart Panel (Location Time-Series) -->
     <div id="chart-panel" class="glass-panel hidden">
+        <div class="bottom-sheet-drag-handle"></div>
         <button id="chart-close" class="chart-close-btn" title="Close Panel"><i class="fa-solid fa-xmark"></i></button>
         <header class="chart-header">
             <h3><i class="fa-solid fa-chart-line chart-header-icon"></i> Rainfall Forecast Trend</h3>
             <div id="chart-coords" class="chart-coords">lat: --, lon: --</div>
         </header>
         <div class="chart-container">
+            <div id="chart-loading" class="chart-loading hidden">
+                <i class="fa-solid fa-circle-notch fa-spin chart-spinner"></i>
+                <span>Loading forecast trend...</span>
+            </div>
+            <div id="chart-empty-state" class="chart-empty-state hidden">
+                <i class="fa-solid fa-circle-info"></i>
+                <span id="chart-empty-text">No forecast data available for this location</span>
+            </div>
             <canvas id="rainfall-chart"></canvas>
         </div>
         <div class="chart-stats">
@@ -96,6 +115,9 @@
                 <h1>Nimbus <span class="badge">Ensemble</span></h1>
             </div>
             <div class="header-right">
+                <div id="header-spinner" class="header-spinner hidden" title="Fetching weather data...">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                </div>
                 <div class="ref-time">
                     <span class="label">Reference Time:</span>
                     <span id="ref-time-value" class="value">Loading...</span>
