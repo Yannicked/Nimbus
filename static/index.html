@@ -313,11 +313,18 @@
                         <p class="dataset-desc">An experimental 20-member pilot dataset providing a seamless ensemble precipitation forecast for the Netherlands. Generated every 5 minutes extending up to 6 hours ahead, combining 5-minute real-time radar accumulations with the Harmonie-Arome ensemble using <strong>pySTEPS</strong>.</p>
                     </li>
                     <li>
-                        <strong>Harmonie Temperature & Wind:</strong>
+                        <strong>Real-Time Radar Actuals:</strong>
+                        <div class="dataset-container">
+                            <a href="https://dataplatform.knmi.nl/dataset/nl-rdr-data-rtcor-5m-1-0" target="_blank" rel="noopener noreferrer" class="dataset-name-link">nl_rdr_data_rtcor_5m <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                        </div>
+                        <p class="dataset-desc">Real-time 5-minute gauge-corrected radar observations for the Netherlands, providing continuous actuals backfill prior to forecast projection steps.</p>
+                    </li>
+                    <li>
+                        <strong>Harmonie Temperature, Wind & Solar Radiation:</strong>
                         <div class="dataset-container">
                             <a href="https://dataplatform.knmi.nl/dataset/harmonie-arome-cy43-p1-1-0" target="_blank" rel="noopener noreferrer" class="dataset-name-link">harmonie_arome_cy43_p1 <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
                         </div>
-                        <p class="dataset-desc">Derived from the high-resolution <strong>UWC-West HARMONIE-AROME Cy43</strong> numerical weather prediction model, developed in collaboration with meteorological services of the Netherlands, Iceland, Denmark, and Ireland. Provides 2m Temperature and 10m Wind forecasts at selectable levels (10m to 300m) at 1-hour frequency in GRIB format.</p>
+                        <p class="dataset-desc">Derived from the high-resolution <strong>UWC-West HARMONIE-AROME Cy43</strong> numerical weather prediction model, developed in collaboration with meteorological services of the Netherlands, Iceland, Denmark, and Ireland. Provides 2m Temperature, Wind forecasts at selectable levels (10m to 300m), and Global Solar Radiation at 1-hour frequency in GRIB format.</p>
                     </li>
                 </ul>
             </section>
@@ -335,9 +342,9 @@
                 <h4><i class="fa-solid fa-gears"></i> How it Works</h4>
                 <p>Nimbus is built using a high-performance stack:</p>
                 <ul>
-                    <li><strong>Rust Backend:</strong> Built with Axum and Tokio, subscribing to the KNMI MQTT broker for instant updates, downloading raw NetCDF and GRIB1 files, and serving data.</li>
-                    <li><strong>Lossless WebP Packing:</strong> Precision float grids are packed into the Red and Green channels of WebP images for highly compressed, lossless transmission to the client.</li>
-                    <li><strong>GPU Acceleration:</strong> The frontend uses custom WebGL fragment shaders to unpack the WebP pixels on-the-fly and render smooth coordinate projections.</li>
+                    <li><strong>Rust Backend:</strong> Built with Axum and Tokio, subscribing to the KNMI MQTT broker for instant updates, processing NetCDF, GRIB1, and HDF5 files, and executing parallel statistical reductions with Rayon.</li>
+                    <li><strong>Lossless WebP Packing:</strong> Precision float grids are packed into the Red and Green channels of WebP images for highly compressed, 16-bit lossless transmission to the client.</li>
+                    <li><strong>GPU Acceleration:</strong> The frontend uses custom WebGL fragment shaders to unpack WebP pixels on-the-fly, render smooth coordinate projections, and execute 60fps GPU particle advection for wind velocity fields.</li>
                 </ul>
             </section>
             
