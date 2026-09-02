@@ -239,14 +239,19 @@ pub fn interpolate_bilinear(
     grid_h: usize,
     raw_slice: &[u16],
 ) -> u16 {
+    if !fx.is_finite() || !fy.is_finite() {
+        return NODATA;
+    }
+
     let ix1 = fx.floor() as i32;
     let iy1 = fy.floor() as i32;
-    let ix2 = ix1 + 1;
-    let iy2 = iy1 + 1;
 
     if ix1 < -1 || ix1 >= grid_w as i32 || iy1 < -1 || iy1 >= grid_h as i32 {
         return NODATA;
     }
+
+    let ix2 = ix1 + 1;
+    let iy2 = iy1 + 1;
 
     let wx = (fx - ix1 as f64) as f32;
     let wy = (fy - iy1 as f64) as f32;
@@ -335,6 +340,28 @@ mod tests {
         assert_eq!(interpolate_bilinear(2.0, 0.0, w, h, &grid), NODATA);
         assert_eq!(interpolate_bilinear(0.0, -1.1, w, h, &grid), NODATA);
         assert_eq!(interpolate_bilinear(0.0, 2.0, w, h, &grid), NODATA);
+
+        // Non-finite and extreme coordinates
+        assert_eq!(interpolate_bilinear(f64::NAN, 0.0, w, h, &grid), NODATA);
+        assert_eq!(interpolate_bilinear(0.0, f64::NAN, w, h, &grid), NODATA);
+        assert_eq!(
+            interpolate_bilinear(f64::INFINITY, 0.0, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(
+            interpolate_bilinear(0.0, f64::INFINITY, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(
+            interpolate_bilinear(f64::NEG_INFINITY, 0.0, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(
+            interpolate_bilinear(0.0, f64::NEG_INFINITY, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(interpolate_bilinear(1e30, 0.0, w, h, &grid), NODATA);
+        assert_eq!(interpolate_bilinear(-1e30, 0.0, w, h, &grid), NODATA);
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
         .expect("KNMI_OPEN_DATA_API_KEY environment variable not set!");
     let topic = format!("dataplatform/file/v1/{}/1.0/#", KNMI_DATASET);
 
+    let latest_target_version = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     loop {
         let client_id = format!(
             "weer-service-{}",
@@ -89,13 +91,14 @@ pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
                                     let name_clone = name.to_string();
                                     let url_opt = file_url.map(|s| s.to_string());
                                     let open_data_api_key_clone = open_data_api_key.to_string();
+                                    let tracker_clone = latest_target_version.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = download_and_update_nc_file(
                                             &name_clone,
                                             url_opt.as_deref(),
                                             &open_data_api_key_clone,
                                             state_clone,
-                                            None,
+                                            Some(tracker_clone),
                                         )
                                         .await
                                         {
@@ -122,6 +125,12 @@ pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
 
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
+}
+
+/// Alias for `start_knmi_mqtt_listener` for seamless precipitation radar ensemble ingestion.
+#[allow(dead_code)]
+pub async fn start_radar_ensemble_mqtt_listener(state: Arc<AppState>) {
+    start_knmi_mqtt_listener(state).await;
 }
 
 /// Spawn MQTT client to listen for HARMONIE updates from KNMI (combined temp and wind)

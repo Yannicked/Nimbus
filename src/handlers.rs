@@ -47,6 +47,20 @@ static EMPTY_WEBP_IMAGE: LazyLock<Vec<u8>> = LazyLock::new(|| {
     webp_bytes
 });
 
+/// Helper to construct a standard WebP image response with cache headers.
+fn webp_response(bytes: Vec<u8>) -> Response {
+    Response::builder()
+        .header("Content-Type", "image/webp")
+        .header("Cache-Control", "no-store, no-cache, must-revalidate")
+        .body(axum::body::Body::from(bytes))
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap_or_default()
+        })
+}
+
 /// Generic helper to extract a value from a GRIB-based forecast (Temp, Solar, etc.)
 /// by finding the closest step and interpolating.
 #[allow(clippy::too_many_arguments)]
@@ -60,6 +74,13 @@ fn with_grib_step<S, F, R>(
     extract_value: impl Fn(&S, f64, f64) -> Option<R>,
     to_response: impl Fn(R) -> ValueResponse,
 ) -> Result<axum::Json<ValueResponse>, (StatusCode, String)> {
+    if !lon.is_finite() || !lat.is_finite() {
+        return Ok(axum::Json(ValueResponse {
+            status: "out_of_bounds".to_string(),
+            value: None,
+        }));
+    }
+
     let steps = get_steps(forecast);
     if steps.is_empty() {
         return Ok(axum::Json(ValueResponse {
@@ -257,11 +278,7 @@ pub async fn get_data_image(
                     .iter()
                     .find(|f| f.timestamp - radar_ref_time == time || f.timestamp == time)
                 {
-                    return Ok(Response::builder()
-                        .header("Content-Type", "image/webp")
-                        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-                        .body(axum::body::Body::from(frame.webp_bytes.clone()))
-                        .unwrap());
+                    return Ok(webp_response(frame.webp_bytes.clone()));
                 }
             }
         }
@@ -269,11 +286,7 @@ pub async fn get_data_image(
 
     // Check cache
     if let Some(cached_data) = radar.data_cache.get(&(ens_str.clone(), time)) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached_data.value().clone()))
-            .unwrap());
+        return Ok(webp_response(cached_data.value().clone()));
     }
 
     let meta = &radar.metadata;
@@ -289,11 +302,7 @@ pub async fn get_data_image(
                 .data_cache
                 .insert((ens_str.clone(), time), webp_bytes.clone());
 
-            return Ok(Response::builder()
-                .header("Content-Type", "image/webp")
-                .header("Cache-Control", "no-store, no-cache, must-revalidate")
-                .body(axum::body::Body::from(webp_bytes))
-                .unwrap());
+            return Ok(webp_response(webp_bytes));
         }
 
         let rain_data_opt = state.rain_data.read().await;
@@ -306,11 +315,7 @@ pub async fn get_data_image(
             radar
                 .data_cache
                 .insert((ens_str.clone(), time), cached.value().clone());
-            return Ok(Response::builder()
-                .header("Content-Type", "image/webp")
-                .header("Cache-Control", "no-store, no-cache, must-revalidate")
-                .body(axum::body::Body::from(cached.value().clone()))
-                .unwrap());
+            return Ok(webp_response(cached.value().clone()));
         }
 
         let radar_ref_time = parse_reference_time(&meta.reference_time_str).ok_or((
@@ -349,11 +354,7 @@ pub async fn get_data_image(
         radar.data_cache.insert((ens_str, time), webp_bytes.clone());
         rain_data.data_cache.insert(time, webp_bytes.clone());
 
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(webp_bytes))
-            .unwrap());
+        return Ok(webp_response(webp_bytes));
     }
 
     // Retrieve or compute raw slice
@@ -396,11 +397,7 @@ pub async fn get_data_image(
     // Cache results
     radar.data_cache.insert((ens_str, time), webp_bytes.clone());
 
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
+    Ok(webp_response(webp_bytes))
 }
 
 /// Returns the precipitation value (or ensemble statistic) at a single
@@ -409,6 +406,13 @@ pub async fn get_value(
     Query(q): Query<ValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !q.lon.is_finite() || !q.lat.is_finite() {
+        return Ok(axum::Json(ValueResponse {
+            status: "out_of_bounds".to_string(),
+            value: None,
+        }));
+    }
+
     let radar_opt = state.radar_data.read().await;
     let radar = radar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -718,6 +722,17 @@ pub async fn get_timeseries(
     Query(q): Query<TimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !q.lon.is_finite() || !q.lat.is_finite() {
+        return Ok(axum::Json(TimeseriesResponse {
+            status: "out_of_bounds".to_string(),
+            lat: q.lat,
+            lon: q.lon,
+            ens: q.ens,
+            times: Vec::new(),
+            values: Vec::new(),
+        }));
+    }
+
     let radar_opt = state.radar_data.read().await;
     let radar = radar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1112,11 +1127,7 @@ pub async fn get_wind_data_image(
     ))?;
 
     if let Some(cached) = wind_data.data_cache.get(&(height, time)) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached.value().clone()))
-            .unwrap());
+        return Ok(webp_response(cached.value().clone()));
     }
 
     if wind_data.forecast.steps.is_empty() {
@@ -1150,11 +1161,7 @@ pub async fn get_wind_data_image(
         .data_cache
         .insert((height, time), webp_bytes.clone());
 
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
+    Ok(webp_response(webp_bytes))
 }
 
 pub async fn get_wind_data_image_legacy(
@@ -1168,6 +1175,16 @@ pub async fn get_wind_value(
     Query(q): Query<WindValueQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !q.lon.is_finite() || !q.lat.is_finite() {
+        return Ok(axum::Json(WindValueResponse {
+            status: "out_of_bounds".to_string(),
+            u: None,
+            v: None,
+            speed: None,
+            direction: None,
+        }));
+    }
+
     let wind_opt = state.wind_data.read().await;
     let wind_data = wind_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1228,6 +1245,17 @@ pub async fn get_wind_timeseries(
     Query(q): Query<WindTimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !q.lon.is_finite() || !q.lat.is_finite() {
+        return Ok(axum::Json(WindTimeseriesResponse {
+            status: "out_of_bounds".to_string(),
+            lat: q.lat,
+            lon: q.lon,
+            times: Vec::new(),
+            speeds: Vec::new(),
+            directions: Vec::new(),
+        }));
+    }
+
     let wind_opt = state.wind_data.read().await;
     let wind_data = wind_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1309,11 +1337,7 @@ pub async fn get_temp_data_image(
     ))?;
 
     if let Some(cached) = temp_data.data_cache.get(&time) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached.value().clone()))
-            .unwrap());
+        return Ok(webp_response(cached.value().clone()));
     }
 
     if temp_data.forecast.steps.is_empty() {
@@ -1345,11 +1369,7 @@ pub async fn get_temp_data_image(
         })?;
     temp_data.data_cache.insert(time, webp_bytes.clone());
 
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
+    Ok(webp_response(webp_bytes))
 }
 
 pub async fn get_temp_value(
@@ -1381,6 +1401,16 @@ pub async fn get_temp_timeseries(
     Query(q): Query<TempTimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !q.lon.is_finite() || !q.lat.is_finite() {
+        return Ok(axum::Json(TempTimeseriesResponse {
+            status: "out_of_bounds".to_string(),
+            lat: q.lat,
+            lon: q.lon,
+            times: Vec::new(),
+            values: Vec::new(),
+        }));
+    }
+
     let temp_opt = state.temp_data.read().await;
     let temp_data = temp_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1441,11 +1471,7 @@ pub async fn get_solar_data_image(
     ))?;
 
     if let Some(cached) = solar_data.data_cache.get(&time) {
-        return Ok(Response::builder()
-            .header("Content-Type", "image/webp")
-            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-            .body(axum::body::Body::from(cached.value().clone()))
-            .unwrap());
+        return Ok(webp_response(cached.value().clone()));
     }
 
     if solar_data.forecast.steps.is_empty() {
@@ -1474,11 +1500,7 @@ pub async fn get_solar_data_image(
         })?;
     solar_data.data_cache.insert(time, webp_bytes.clone());
 
-    Ok(Response::builder()
-        .header("Content-Type", "image/webp")
-        .header("Cache-Control", "no-store, no-cache, must-revalidate")
-        .body(axum::body::Body::from(webp_bytes))
-        .unwrap())
+    Ok(webp_response(webp_bytes))
 }
 
 pub async fn get_solar_value(
@@ -1510,6 +1532,16 @@ pub async fn get_solar_timeseries(
     Query(q): Query<SolarTimeseriesQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !q.lon.is_finite() || !q.lat.is_finite() {
+        return Ok(axum::Json(SolarTimeseriesResponse {
+            status: "out_of_bounds".to_string(),
+            lat: q.lat,
+            lon: q.lon,
+            times: Vec::new(),
+            values: Vec::new(),
+        }));
+    }
+
     let solar_opt = state.solar_data.read().await;
     let solar_data = solar_opt.as_ref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,

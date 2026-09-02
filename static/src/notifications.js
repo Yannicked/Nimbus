@@ -101,8 +101,8 @@ export async function checkRainAndNotify(rainMeta) {
             return;
         }
         
-        const times = ts.times;
-        const vals = ts.values;
+        const times = ts.times || [];
+        const vals = (ts.values || []).map(v => (typeof v === 'number' && !isNaN(v)) ? v : 0);
         
         // 5. Check if rain exceeds threshold
         let rainStartIndex = -1;
@@ -134,12 +134,13 @@ export async function checkRainAndNotify(rainMeta) {
                 }
             }
             
-            const startSecs = times[rainStartIndex];
-            const endSecs = times[rainEndIndex] + 300; // include the full step
+            const startSecs = times[rainStartIndex] !== undefined ? times[rainStartIndex] : 0;
+            const endSecs = (times[rainEndIndex] !== undefined ? times[rainEndIndex] : startSecs) + 300; // include the full step
             const durationSecs = endSecs - startSecs;
-            const durationMins = Math.round(durationSecs / 60);
+            const durationMins = Math.max(5, Math.round(durationSecs / 60));
             
-            const peak = Math.max(...vals.slice(rainStartIndex, rainEndIndex + 1));
+            const sub = vals.slice(rainStartIndex, rainEndIndex + 1).filter(v => typeof v === 'number' && !isNaN(v));
+            const peak = sub.length > 0 ? Math.max(...sub) : threshold;
             const startRel = formatRelativeTime(startSecs);
             
             let refTimeStr = rainMeta ? rainMeta.reference_time_str : null;

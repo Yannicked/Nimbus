@@ -1,6 +1,7 @@
 import { CONFIG } from '../config.js';
 import { state, syncStateToURL } from '../state.js';
 import { DOM } from './dom.js';
+import { abortAllPendingRequests } from '../api.js';
 import { updateRadarOverlay, triggerHoverQuery, clearRadarLayers, setupRadarSourceAndLayer, setupRadarSourceAndLayerRight, initMapRight, enableMapSync, disableMapSync } from '../map/index.js';
 import { showTimeseriesChart } from './chart.js';
 
@@ -170,6 +171,7 @@ export function stepForward() {
 
 // Select ensemble member or stat mode
 export function selectEnsemble(ens) {
+    abortAllPendingRequests();
     state.currentEns = ens;
     clearRadarLayers();
     
@@ -203,6 +205,7 @@ export function selectEnsemble(ens) {
 // Toggle layer mode between rain, temperature, solar, and wind
 export function selectLayerMode(mode) {
     if (mode === state.currentLayerMode) return;
+    abortAllPendingRequests();
     state.currentLayerMode = mode;
     
     // Update button active state
@@ -590,7 +593,12 @@ export function initControls() {
         DOM.swipeDivider.addEventListener('touchstart', onStart, { passive: true });
         
         window.addEventListener('mousemove', onMove);
-        window.addEventListener('touchmove', onMove, { passive: true });
+        window.addEventListener('touchmove', (e) => {
+            if (isDragging && e.cancelable) {
+                e.preventDefault();
+            }
+            onMove(e);
+        }, { passive: false });
         
         window.addEventListener('mouseup', onEnd);
         window.addEventListener('touchend', onEnd);
@@ -632,6 +640,7 @@ export function initControls() {
 
 // Select wind height
 export function selectWindHeight(height) {
+    abortAllPendingRequests();
     state.selectedWindHeight = parseInt(height);
     clearRadarLayers();
     

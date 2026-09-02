@@ -417,12 +417,18 @@ pub async fn precalculate_all_data(
             read_netcdf_all_ensembles(&file_path_clone, time_idx, num_ensembles)
         })
         .await
-        .unwrap()
         {
-            Ok(data) => data,
-            Err(e) => {
+            Ok(Ok(data)) => data,
+            Ok(Err(e)) => {
                 eprintln!(
                     "Error reading all ensemble slices for time index {}: {}",
+                    time_idx, e
+                );
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Join error reading all ensemble slices for time index {}: {:?}",
                     time_idx, e
                 );
                 continue;
@@ -431,7 +437,7 @@ pub async fn precalculate_all_data(
 
         // 2. Offload heavy CPU-bound (Rayon) work to prevent starving the Tokio runtime
         let (arc_med, arc_max, arc_prob, arc_spread, arc_pmm, all_members_data) =
-            tokio::task::spawn_blocking(move || {
+            match tokio::task::spawn_blocking(move || {
                 // Fast, Cache-Friendly Parallel Transpose
                 let mut transposed = vec![0u16; grid_size * num_ensembles];
                 transposed
@@ -613,7 +619,13 @@ pub async fn precalculate_all_data(
                 )
             })
             .await
-            .unwrap();
+            {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("Failed to join Rayon statistical reduction task: {:?}", e);
+                    continue;
+                }
+            };
 
         // Insert stats into grid_cache
         radar_data
@@ -654,21 +666,32 @@ pub async fn precalculate_all_data(
         ];
 
         for (ens_str, slice) in render_items {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let Ok(permit) = semaphore.clone().acquire_owned().await else {
+                eprintln!("Failed to acquire semaphore permit for rendering WebP");
+                continue;
+            };
             let radar_data_clone = radar_data.clone();
             let lut_clone = projection_lut.clone();
 
             let handle = tokio::spawn(async move {
                 let slice_clone = slice.clone();
-                let webp_bytes = tokio::task::spawn_blocking(move || {
+                match tokio::task::spawn_blocking(move || {
                     render_data_webp_bytes(&slice_clone, &lut_clone)
                 })
                 .await
-                .unwrap();
-
-                radar_data_clone
-                    .data_cache
-                    .insert((ens_str, time_val), webp_bytes);
+                {
+                    Ok(webp_bytes) => {
+                        radar_data_clone
+                            .data_cache
+                            .insert((ens_str, time_val), webp_bytes);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to join WebP rendering task for {}: {:?}",
+                            ens_str, e
+                        );
+                    }
+                }
 
                 drop(permit);
             });

@@ -544,9 +544,10 @@ pub async fn load_or_fetch_combined_forecast(
         return (temp_fc, wind_fc, solar_fc, rain_fc);
     }
 
-    // If any is missing, we must download the latest run
+    // If any is missing, attempt to download the latest run with bounded retries
     println!("One or more HARMONIE caches are missing or invalid. Downloading latest run...");
-    loop {
+    const MAX_STARTUP_RETRIES: usize = 3;
+    for attempt in 1..=MAX_STARTUP_RETRIES {
         match fetch_latest_harmonie_filename(api_key).await {
             Ok(latest_filename) => {
                 match download_and_process_combined_tar(&latest_filename, None, api_key).await {
@@ -566,19 +567,50 @@ pub async fn load_or_fetch_combined_forecast(
                         return (temp_fc, wind_fc, solar_fc, rain_fc);
                     }
                     Err(e) => {
-                        eprintln!("Failed to download/process latest combined run: {:?}. Retrying in 10 seconds...", e);
+                        eprintln!(
+                            "Failed to download/process latest combined run (attempt {}/{}): {:?}",
+                            attempt, MAX_STARTUP_RETRIES, e
+                        );
                     }
                 }
             }
             Err(e) => {
                 eprintln!(
-                    "Failed to get latest filename: {:?}. Retrying in 10 seconds...",
-                    e
+                    "Failed to get latest filename (attempt {}/{}): {:?}",
+                    attempt, MAX_STARTUP_RETRIES, e
                 );
             }
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        if attempt < MAX_STARTUP_RETRIES {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
+
+    eprintln!(
+        "Warning: Could not fetch initial HARMONIE model run after {} attempts. Continuing server startup with available/empty forecasts.",
+        MAX_STARTUP_RETRIES
+    );
+
+    // Fall back to existing cached forecasts if available, or empty forecasts
+    let temp_fc = TempForecast::read_from_file(&temp_bin_path).unwrap_or_else(|_| TempForecast {
+        reference_time: 0,
+        steps: Vec::new(),
+    });
+    let wind_fc = WindForecast::read_from_file(&wind_bin_path).unwrap_or_else(|_| WindForecast {
+        reference_time: 0,
+        steps: Vec::new(),
+    });
+    let solar_fc =
+        SolarForecast::read_from_file(&solar_bin_path).unwrap_or_else(|_| SolarForecast {
+            reference_time: 0,
+            steps: Vec::new(),
+        });
+    let rain_fc = RainForecast::read_from_file(&rain_bin_path).unwrap_or_else(|_| RainForecast {
+        reference_time: 0,
+        steps: Vec::new(),
+    });
+
+    (temp_fc, wind_fc, solar_fc, rain_fc)
 }
 
 pub async fn cleanup_tar_files() {
@@ -645,15 +677,19 @@ pub async fn precalculate_temp_data_into(
         let lut_clone = lut_arc.clone();
 
         let handle = tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
+            let Ok(_permit) = sem.acquire().await else {
+                eprintln!("Failed to acquire semaphore for temperature precalculation");
+                return None;
+            };
+            match tokio::task::spawn_blocking(move || render_temp_webp_bytes(&values, &lut_clone))
                 .await
-                .expect("Failed to acquire semaphore for temperature precalculation");
-            let webp_bytes =
-                tokio::task::spawn_blocking(move || render_temp_webp_bytes(&values, &lut_clone))
-                    .await
-                    .expect("Failed to join temperature rendering task");
-            (time_key, webp_bytes)
+            {
+                Ok(webp_bytes) => Some((time_key, webp_bytes)),
+                Err(e) => {
+                    eprintln!("Failed to join temperature rendering task: {:?}", e);
+                    None
+                }
+            }
         });
         handles.push(handle);
 
@@ -668,7 +704,7 @@ pub async fn precalculate_temp_data_into(
     }
 
     for handle in handles {
-        if let Ok((time_key, webp_bytes)) = handle.await {
+        if let Ok(Some((time_key, webp_bytes))) = handle.await {
             cache.insert(time_key, webp_bytes);
         }
     }
@@ -735,16 +771,21 @@ pub async fn precalculate_wind_data_into(
         let lut_clone = lut_arc.clone();
 
         let handle = tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .expect("Failed to acquire semaphore for wind precalculation");
-            let webp_bytes = tokio::task::spawn_blocking(move || {
+            let Ok(_permit) = sem.acquire().await else {
+                eprintln!("Failed to acquire semaphore for wind precalculation");
+                return None;
+            };
+            match tokio::task::spawn_blocking(move || {
                 render_wind_webp_bytes(&u_vals, &v_vals, &lut_clone)
             })
             .await
-            .expect("Failed to join wind rendering task");
-            (height_level, time_key, webp_bytes)
+            {
+                Ok(webp_bytes) => Some((height_level, time_key, webp_bytes)),
+                Err(e) => {
+                    eprintln!("Failed to join wind rendering task: {:?}", e);
+                    None
+                }
+            }
         });
         handles.push(handle);
 
@@ -759,7 +800,7 @@ pub async fn precalculate_wind_data_into(
     }
 
     for handle in handles {
-        if let Ok((height_level, time_key, webp_bytes)) = handle.await {
+        if let Ok(Some((height_level, time_key, webp_bytes))) = handle.await {
             cache.insert((height_level, time_key), webp_bytes);
         }
     }
@@ -821,15 +862,19 @@ pub async fn precalculate_solar_data_into(
         let lut_clone = lut_arc.clone();
 
         let handle = tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
+            let Ok(_permit) = sem.acquire().await else {
+                eprintln!("Failed to acquire semaphore for solar precalculation");
+                return None;
+            };
+            match tokio::task::spawn_blocking(move || render_solar_webp_bytes(&values, &lut_clone))
                 .await
-                .expect("Failed to acquire semaphore for solar precalculation");
-            let webp_bytes =
-                tokio::task::spawn_blocking(move || render_solar_webp_bytes(&values, &lut_clone))
-                    .await
-                    .expect("Failed to join solar rendering task");
-            (time_key, webp_bytes)
+            {
+                Ok(webp_bytes) => Some((time_key, webp_bytes)),
+                Err(e) => {
+                    eprintln!("Failed to join solar rendering task: {:?}", e);
+                    None
+                }
+            }
         });
         handles.push(handle);
 
@@ -844,7 +889,7 @@ pub async fn precalculate_solar_data_into(
     }
 
     for handle in handles {
-        if let Ok((time_key, webp_bytes)) = handle.await {
+        if let Ok(Some((time_key, webp_bytes))) = handle.await {
             cache.insert(time_key, webp_bytes);
         }
     }
@@ -933,15 +978,19 @@ pub async fn precalculate_rain_data_into(
         let lut_clone = lut_arc.clone();
 
         let handle = tokio::spawn(async move {
-            let _permit = sem
-                .acquire()
+            let Ok(_permit) = sem.acquire().await else {
+                eprintln!("Failed to acquire semaphore for rain precalculation");
+                return None;
+            };
+            match tokio::task::spawn_blocking(move || render_data_webp_bytes(&values, &lut_clone))
                 .await
-                .expect("Failed to acquire semaphore for rain precalculation");
-            let webp_bytes =
-                tokio::task::spawn_blocking(move || render_data_webp_bytes(&values, &lut_clone))
-                    .await
-                    .expect("Failed to join rain rendering task");
-            (time_key, webp_bytes)
+            {
+                Ok(webp_bytes) => Some((time_key, webp_bytes)),
+                Err(e) => {
+                    eprintln!("Failed to join rain rendering task: {:?}", e);
+                    None
+                }
+            }
         });
         handles.push(handle);
 
@@ -956,7 +1005,7 @@ pub async fn precalculate_rain_data_into(
     }
 
     for handle in handles {
-        if let Ok((time_key, webp_bytes)) = handle.await {
+        if let Ok(Some((time_key, webp_bytes))) = handle.await {
             cache.insert(time_key, webp_bytes);
         }
     }
@@ -1078,5 +1127,15 @@ mod tests {
         assert_eq!(parse_reference_time("2023-10-27 12:00:00"), None);
         assert_eq!(parse_reference_time("since 2023-10-27 12:00"), None); // Missing seconds
         assert_eq!(parse_reference_time("since 2023-13-27 12:00:00"), None); // Month 13
+    }
+
+    #[tokio::test]
+    async fn test_load_or_fetch_combined_forecast_graceful_fallback() {
+        let (temp_fc, wind_fc, solar_fc, rain_fc) =
+            load_or_fetch_combined_forecast("dummy_key").await;
+        assert!(temp_fc.reference_time >= 0);
+        assert!(wind_fc.reference_time >= 0);
+        assert!(solar_fc.reference_time >= 0);
+        assert!(rain_fc.reference_time >= 0);
     }
 }

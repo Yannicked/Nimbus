@@ -66,6 +66,87 @@ body {
     display: none !important;
 }
 
+/* Network Loading Progress Bar */
+.network-progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc, #38bdf8);
+    background-size: 200% 100%;
+    animation: networkProgressAnim 1.5s infinite linear;
+    z-index: 10000;
+}
+
+@keyframes networkProgressAnim {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+}
+
+/* Header Animated Spinner */
+.header-spinner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #38bdf8;
+    font-size: 0.9rem;
+    transition: opacity 0.2s ease;
+}
+
+/* Global Error Banner */
+.error-banner {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 32px);
+    width: 480px;
+    padding: 10px 16px;
+    background: rgba(30, 10, 15, 0.9);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7), 0 0 16px rgba(239, 68, 68, 0.2);
+    color: #fecaca;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 10001;
+    font-size: 0.85rem;
+    border-radius: 12px;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.error-banner .error-icon {
+    color: #ef4444;
+    font-size: 1.15rem;
+    flex-shrink: 0;
+}
+
+.error-banner .error-text {
+    flex: 1;
+    line-height: 1.35;
+    font-weight: 500;
+}
+
+.error-banner .error-close-btn {
+    background: transparent;
+    border: none;
+    color: #fca5a5;
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 4px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.error-banner .error-close-btn:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.15);
+}
+
 /* Hover Value Panel (Top Center) */
 #hover-panel {
     position: absolute;
@@ -843,6 +924,64 @@ header .ref-time .value {
     height: 180px;
 }
 
+.chart-loading {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    background: rgba(18, 18, 22, 0.65);
+    border-radius: 8px;
+    z-index: 5;
+}
+
+.chart-loading .chart-spinner {
+    font-size: 1.4rem;
+    color: #38bdf8;
+}
+
+.chart-empty-state {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+}
+
+.chart-empty-state i {
+    font-size: 1.3rem;
+    color: #94a3b8;
+}
+
+.bottom-sheet-drag-handle {
+    display: none;
+    width: 36px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 2px;
+    margin: 0 auto 6px auto;
+}
+
 /* Statistics Grid */
 .chart-stats {
     display: grid;
@@ -902,8 +1041,12 @@ header .ref-time .value {
 
 /* Responsive Mobile Layout Overrides */
 @media (max-width: 768px) {
+    .bottom-sheet-drag-handle {
+        display: block;
+    }
+
     #control-panel {
-        bottom: 12px;
+        bottom: max(12px, env(safe-area-inset-bottom));
         width: calc(100% - 24px);
         padding: 10px 14px;
         gap: 8px;
@@ -947,21 +1090,21 @@ header .ref-time .value {
     }
 
     .player-controls button {
-        width: 30px;
-        height: 30px;
+        width: 32px;
+        height: 32px;
         font-size: 0.8rem;
     }
 
     .player-controls button.btn-primary {
-        width: 34px;
-        height: 34px;
-        font-size: 0.9rem;
+        width: 36px;
+        height: 36px;
+        font-size: 0.95rem;
     }
 
     /* Chart Panel Bottom-Sheet Styling */
     #chart-panel {
         top: auto !important;
-        bottom: 12px !important;
+        bottom: max(12px, env(safe-area-inset-bottom)) !important;
         left: 12px !important;
         right: 12px !important;
         width: auto !important;
@@ -1015,6 +1158,39 @@ header .ref-time .value {
         align-items: stretch;
         gap: 8px;
         margin-top: 10px;
+    }
+
+    .layer-selector {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        width: 100%;
+    }
+
+    .layer-btn {
+        padding: 8px 4px;
+        font-size: 0.75rem;
+    }
+
+    .view-selector {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        width: 100%;
+    }
+
+    .view-btn {
+        padding: 6px 2px;
+        font-size: 0.75rem;
+    }
+
+    .height-selector {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        width: 100%;
+    }
+
+    .height-btn {
+        padding: 6px 2px;
+        font-size: 0.75rem;
     }
 
     .player-controls {

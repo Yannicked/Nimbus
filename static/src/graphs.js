@@ -26,11 +26,12 @@ const chartInstances = {
 
 // Formatting helpers
 function formatAbsoluteTime(refTimeStr, secondsOffset) {
+    if (!refTimeStr) return `+${Math.round((secondsOffset || 0) / 60)}m`;
     const match = refTimeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
-    if (!match) return `+${Math.round(secondsOffset / 60)}m`;
+    if (!match) return `+${Math.round((secondsOffset || 0) / 60)}m`;
     
     const refDate = new Date(`${match[1]}T${match[2]}Z`); // UTC parsed
-    const targetDate = new Date(refDate.getTime() + secondsOffset * 1000);
+    const targetDate = new Date(refDate.getTime() + (secondsOffset || 0) * 1000);
     
     return targetDate.toLocaleString('en-GB', {
         timeZone: 'Europe/Amsterdam',
@@ -43,7 +44,7 @@ function formatAbsoluteTime(refTimeStr, secondsOffset) {
 }
 
 function formatRelativeTime(secondsOffset) {
-    const mins = Math.round(secondsOffset / 60);
+    const mins = Math.round((secondsOffset || 0) / 60);
     if (mins < 60) {
         return `${mins}m`;
     }
@@ -53,7 +54,7 @@ function formatRelativeTime(secondsOffset) {
 }
 
 function mpsToBeaufort(mps) {
-    if (mps < 0.3) return 0;
+    if (typeof mps !== 'number' || isNaN(mps) || mps < 0.3) return 0;
     if (mps < 1.6) return 1;
     if (mps < 3.4) return 2;
     if (mps < 5.5) return 3;
@@ -69,13 +70,15 @@ function mpsToBeaufort(mps) {
 }
 
 function degreesToCardinal(deg) {
+    if (typeof deg !== 'number' || isNaN(deg)) return "--";
     const index = Math.round(deg / 45) % 8;
     const cardinals = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    return cardinals[index];
+    return cardinals[index] || "--";
 }
 
 // Generate labels array for charts
 function getLabels(times, refTimeStr, isShort = false) {
+    if (!Array.isArray(times)) return [];
     return times.map(secs => {
         const timeStr = formatAbsoluteTime(refTimeStr, secs);
         if (isShort) {
@@ -83,7 +86,7 @@ function getLabels(times, refTimeStr, isShort = false) {
             return match ? match[1] : `+${Math.round(secs/60)}m`;
         } else {
             const match = timeStr.match(/(\d{2})\s+(\w+).*?(\d{2}:\d{2})/);
-            if (match) {
+            if (match && refTimeStr) {
                 const refMatch = refTimeStr.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
                 if (refMatch) {
                     const refDate = new Date(`${refMatch[1]}T${refMatch[2]}Z`);
@@ -99,20 +102,55 @@ function getLabels(times, refTimeStr, isShort = false) {
     });
 }
 
+function showCardLoading(cardName) {
+    const loadingEl = document.getElementById(`loading-${cardName}`);
+    const emptyEl = document.getElementById(`empty-${cardName}`);
+    const canvas = document.getElementById(`chart-${cardName}`);
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (canvas) canvas.style.opacity = '0.3';
+}
+
+function hideCardLoading(cardName) {
+    const loadingEl = document.getElementById(`loading-${cardName}`);
+    const canvas = document.getElementById(`chart-${cardName}`);
+    if (loadingEl) loadingEl.classList.add('hidden');
+    if (canvas) canvas.style.opacity = '1';
+}
+
+function showCardEmpty(cardName, message) {
+    const emptyEl = document.getElementById(`empty-${cardName}`);
+    const canvas = document.getElementById(`chart-${cardName}`);
+    if (emptyEl) {
+        if (message) {
+            const span = emptyEl.querySelector('span');
+            if (span) span.textContent = message;
+        }
+        emptyEl.classList.remove('hidden');
+    }
+    if (canvas) canvas.style.display = 'none';
+    if (chartInstances[cardName]) {
+        chartInstances[cardName].destroy();
+        chartInstances[cardName] = null;
+    }
+}
+
+function hideCardEmpty(cardName) {
+    const emptyEl = document.getElementById(`empty-${cardName}`);
+    const canvas = document.getElementById(`chart-${cardName}`);
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (canvas) canvas.style.display = 'block';
+}
+
 /**
  * Common configuration builder for Chart.js line charts used in the dashboard.
- * @param {Array} labels - X-axis labels.
- * @param {Array} datasets - Array of dataset objects.
- * @param {string} yAxisTitle - Label for the Y-axis.
- * @param {Object} options - Optional overrides (showLegend, yMin, tooltipCallbacks).
- * @returns {Object} Chart.js configuration object.
  */
 function createChartConfig(labels, datasets, yAxisTitle, options = {}) {
     return {
         type: 'line',
         data: {
             labels: labels,
-            datasets: datasets
+            datasets: datasets.map(d => ({ ...d, spanGaps: true }))
         },
         options: {
             responsive: true,
@@ -158,14 +196,41 @@ function createChartConfig(labels, datasets, yAxisTitle, options = {}) {
     };
 }
 
+let toastTimeout = null;
+
 // Show temporary toast notification
-function showToast(message) {
+function showToast(message, type = 'success') {
     const toast = document.getElementById('toast');
-    toast.textContent = message;
+    const toastMsg = document.getElementById('toast-msg');
+    const toastIcon = document.getElementById('toast-icon');
+
+    if (!toast) return;
+
+    if (toastMsg) toastMsg.textContent = message;
+    else toast.textContent = message;
+
+    if (toastIcon) {
+        if (type === 'error') {
+            toastIcon.className = 'fa-solid fa-circle-exclamation';
+            toast.style.background = 'rgba(239, 68, 68, 0.9)';
+        } else if (type === 'info') {
+            toastIcon.className = 'fa-solid fa-circle-info';
+            toast.style.background = 'rgba(56, 189, 248, 0.9)';
+        } else {
+            toastIcon.className = 'fa-solid fa-circle-check';
+            toast.style.background = 'rgba(16, 185, 129, 0.9)';
+        }
+    }
+
     toast.classList.remove('hidden');
-    setTimeout(() => {
+
+    if (toastTimeout) {
+        clearTimeout(toastTimeout);
+    }
+    toastTimeout = setTimeout(() => {
         toast.classList.add('hidden');
-    }, 3000);
+        toastTimeout = null;
+    }, 3500);
 }
 
 // Read alert preferences from local storage and update form
@@ -175,18 +240,25 @@ function loadNotificationPrefs() {
     const pushNotify = localStorage.getItem('nimbus_notify_push') === 'true';
     const threshold = localStorage.getItem('nimbus_rain_threshold') || '1.0';
     
-    document.getElementById('notify-email').checked = emailNotify;
-    document.getElementById('input-email').value = emailAddr;
-    document.getElementById('notify-push').checked = pushNotify;
-    document.getElementById('alert-threshold').value = threshold;
+    const notifyEmailEl = document.getElementById('notify-email');
+    const inputEmailEl = document.getElementById('input-email');
+    const notifyPushEl = document.getElementById('notify-push');
+    const thresholdEl = document.getElementById('alert-threshold');
+
+    if (notifyEmailEl) notifyEmailEl.checked = emailNotify;
+    if (inputEmailEl) inputEmailEl.value = emailAddr;
+    if (notifyPushEl) notifyPushEl.checked = pushNotify;
+    if (thresholdEl) thresholdEl.value = threshold;
     
     const emailGroup = document.getElementById('group-email');
-    if (emailNotify) {
-        emailGroup.classList.remove('hidden');
-        document.getElementById('input-email').required = true;
-    } else {
-        emailGroup.classList.add('hidden');
-        document.getElementById('input-email').required = false;
+    if (emailGroup && inputEmailEl) {
+        if (emailNotify) {
+            emailGroup.classList.remove('hidden');
+            inputEmailEl.required = true;
+        } else {
+            emailGroup.classList.add('hidden');
+            inputEmailEl.required = false;
+        }
     }
 }
 
@@ -196,26 +268,32 @@ function updateRainAlertBox() {
     const statusTitle = document.getElementById('rain-status-title');
     const statusDesc = document.getElementById('rain-status-desc');
     
-    const threshold = parseFloat(document.getElementById('alert-threshold').value);
-    const emailEnabled = document.getElementById('notify-email').checked;
-    const pushEnabled = document.getElementById('notify-push').checked;
+    const threshold = parseFloat(document.getElementById('alert-threshold')?.value || '1.0');
+    const emailEnabled = document.getElementById('notify-email')?.checked || false;
+    const pushEnabled = document.getElementById('notify-push')?.checked || false;
     
+    if (!statusBox || !statusTitle || !statusDesc) return;
+
     // Clear styling classes
     statusBox.className = 'alert-status-box';
     
-    if (!currentData.rainPmm || currentData.rainPmm.status === 'out_of_bounds' || !currentData.rainPmm.values.length) {
+    const rawValues = currentData.rainPmm?.values || [];
+    const validPmm = rawValues.filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+    if (!currentData.rainPmm || currentData.rainPmm.status === 'out_of_bounds' || rawValues.length === 0 || validPmm.length === 0) {
         statusBox.classList.add('info');
-        statusTitle.textContent = "Out of Bounds";
-        statusDesc.textContent = "Coordinates are outside the weather radar coverage area.";
+        statusTitle.textContent = "Out of Radar Bounds";
+        statusDesc.textContent = "Coordinates are outside the weather radar coverage area. Rain alerts are unavailable for this location.";
         return;
     }
     
-    const times = currentData.rainPmm.times;
-    const pmmVals = currentData.rainPmm.values;
+    const times = currentData.rainPmm.times || [];
+    const pmmVals = rawValues;
     
     let rainStartIndex = -1;
     for (let i = 0; i < pmmVals.length; i++) {
-        if (pmmVals[i] >= threshold) {
+        const val = typeof pmmVals[i] === 'number' ? pmmVals[i] : 0;
+        if (val >= threshold) {
             rainStartIndex = i;
             break;
         }
@@ -225,13 +303,15 @@ function updateRainAlertBox() {
         // Find duration of rain event
         let rainEndIndex = rainStartIndex;
         for (let j = rainStartIndex; j < pmmVals.length; j++) {
-            if (pmmVals[j] >= threshold) {
+            const val = typeof pmmVals[j] === 'number' ? pmmVals[j] : 0;
+            if (val >= threshold) {
                 rainEndIndex = j;
             } else {
                 // Allow brief dips of up to 10 minutes (2 indices) before declaring event ended
                 let stillRaining = false;
                 for (let k = j; k < Math.min(j + 3, pmmVals.length); k++) {
-                    if (pmmVals[k] >= threshold) {
+                    const nextVal = typeof pmmVals[k] === 'number' ? pmmVals[k] : 0;
+                    if (nextVal >= threshold) {
                         stillRaining = true;
                         break;
                     }
@@ -242,14 +322,16 @@ function updateRainAlertBox() {
             }
         }
         
-        const startSecs = times[rainStartIndex];
-        const endSecs = times[rainEndIndex] + 300; // include the full step
+        const startSecs = times[rainStartIndex] !== undefined ? times[rainStartIndex] : 0;
+        const endSecs = (times[rainEndIndex] !== undefined ? times[rainEndIndex] : startSecs) + 300; // full step
         const durationSecs = endSecs - startSecs;
-        const durationMins = Math.round(durationSecs / 60);
+        const durationMins = Math.max(5, Math.round(durationSecs / 60));
         
-        const peak = Math.max(...pmmVals.slice(rainStartIndex, rainEndIndex + 1));
+        const validSub = pmmVals.slice(rainStartIndex, rainEndIndex + 1).filter(v => typeof v === 'number' && !isNaN(v));
+        const peak = validSub.length > 0 ? Math.max(...validSub) : threshold;
         const startRel = formatRelativeTime(startSecs);
-        const startAbs = formatAbsoluteTime(currentData.rainMetadata.reference_time_str, startSecs);
+        const refTime = currentData.rainMetadata?.reference_time_str || '';
+        const startAbs = formatAbsoluteTime(refTime, startSecs);
         
         // Alert styling based on threshold severity
         if (threshold >= 5.0) {
@@ -306,22 +388,30 @@ function updateRainAlertBox() {
 function renderRainChart(tsPmm, tsMed, tsMax, metadata) {
     if (chartInstances.rain) {
         chartInstances.rain.destroy();
+        chartInstances.rain = null;
     }
     
-    if (tsPmm.status === 'out_of_bounds' || !tsPmm.values.length) {
+    const pmmVals = (tsPmm?.values || []).filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+    const maxVals = (tsMax?.values || []).filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+    if (tsPmm?.status === 'out_of_bounds' || !tsPmm?.values || tsPmm.values.length === 0 || pmmVals.length === 0) {
         document.getElementById('stat-rain-peak').textContent = '--';
         document.getElementById('stat-rain-total').textContent = '--';
+        showCardEmpty('rain', 'Selected point is outside radar coverage area');
         return;
     }
+
+    hideCardEmpty('rain');
     
-    const pPeak = Math.max(...tsPmm.values);
-    const mPeak = Math.max(...tsMax.values);
-    const accumulation = tsPmm.values.reduce((a, b) => a + b, 0) / 12.0; // PMM accumulation
+    const pPeak = pmmVals.length > 0 ? Math.max(...pmmVals) : 0;
+    const mPeak = maxVals.length > 0 ? Math.max(...maxVals) : 0;
+    const accumulation = pmmVals.length > 0 ? pmmVals.reduce((a, b) => a + b, 0) / 12.0 : 0; // PMM accumulation
     
     document.getElementById('stat-rain-peak').textContent = `${pPeak.toFixed(2)} / ${mPeak.toFixed(2)} mm/h`;
     document.getElementById('stat-rain-total').textContent = `${accumulation.toFixed(1)} mm`;
     
-    const labels = getLabels(tsPmm.times, metadata.reference_time_str, true);
+    const times = tsPmm.times || [];
+    const labels = getLabels(times, metadata?.reference_time_str, true);
     
     const datasets = [
         {
@@ -333,11 +423,12 @@ function renderRainChart(tsPmm, tsMed, tsMax, metadata) {
             fill: true,
             tension: 0.3,
             pointRadius: 0,
-            pointHoverRadius: 4
+            pointHoverRadius: 4,
+            spanGaps: true
         },
         {
             label: 'Median',
-            data: tsMed.values,
+            data: tsMed?.values || [],
             borderColor: '#a855f7',
             backgroundColor: 'transparent',
             borderWidth: 1.5,
@@ -345,25 +436,34 @@ function renderRainChart(tsPmm, tsMed, tsMax, metadata) {
             fill: false,
             tension: 0.3,
             pointRadius: 0,
-            pointHoverRadius: 3
+            pointHoverRadius: 3,
+            spanGaps: true
         },
         {
             label: 'Maximum',
-            data: tsMax.values,
+            data: tsMax?.values || [],
             borderColor: '#f59e0b',
             backgroundColor: 'transparent',
             borderWidth: 1.5,
             fill: false,
             tension: 0.3,
             pointRadius: 0,
-            pointHoverRadius: 3
+            pointHoverRadius: 3,
+            spanGaps: true
         }
     ];
 
     const ctx = document.getElementById('chart-rain').getContext('2d');
     chartInstances.rain = new Chart(ctx, createChartConfig(labels, datasets, 'Rainfall Rate (mm/h)', {
         showLegend: true,
-        yMin: 0
+        yMin: 0,
+        tooltipCallbacks: {
+            label: function(context) {
+                const y = context.parsed ? context.parsed.y : null;
+                if (y === null || y === undefined || isNaN(y)) return ` ${context.dataset.label}: No Data`;
+                return ` ${context.dataset.label}: ${y.toFixed(2)} mm/h`;
+            }
+        }
     }));
 }
 
@@ -371,21 +471,28 @@ function renderRainChart(tsPmm, tsMed, tsMax, metadata) {
 function renderTempChart(tsTemp, metadata) {
     if (chartInstances.temp) {
         chartInstances.temp.destroy();
+        chartInstances.temp = null;
     }
     
-    if (tsTemp.status === 'out_of_bounds' || !tsTemp.values.length) {
+    const tempVals = (tsTemp?.values || []).filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+    if (tsTemp?.status === 'out_of_bounds' || !tsTemp?.values || tsTemp.values.length === 0 || tempVals.length === 0) {
         document.getElementById('stat-temp-max').textContent = '--';
         document.getElementById('stat-temp-min').textContent = '--';
+        showCardEmpty('temp', 'Selected point is outside temperature coverage area');
         return;
     }
+
+    hideCardEmpty('temp');
     
-    const maxVal = Math.max(...tsTemp.values);
-    const minVal = Math.min(...tsTemp.values);
+    const maxVal = Math.max(...tempVals);
+    const minVal = Math.min(...tempVals);
     
     document.getElementById('stat-temp-max').textContent = `${maxVal.toFixed(1)} °C`;
     document.getElementById('stat-temp-min').textContent = `${minVal.toFixed(1)} °C`;
     
-    const labels = getLabels(tsTemp.times, metadata.reference_time_str, false);
+    const times = tsTemp.times || [];
+    const labels = getLabels(times, metadata?.reference_time_str, false);
     
     const datasets = [{
         label: '2m Temperature',
@@ -396,14 +503,17 @@ function renderTempChart(tsTemp, metadata) {
         fill: true,
         tension: 0.3,
         pointRadius: 0,
-        pointHoverRadius: 4
+        pointHoverRadius: 4,
+        spanGaps: true
     }];
 
     const ctx = document.getElementById('chart-temp').getContext('2d');
     chartInstances.temp = new Chart(ctx, createChartConfig(labels, datasets, 'Temperature (°C)', {
         tooltipCallbacks: {
             label: function(context) {
-                return ` Temp: ${context.parsed.y.toFixed(1)} °C`;
+                const y = context.parsed ? context.parsed.y : null;
+                if (y === null || y === undefined || isNaN(y)) return ' Temp: No Data';
+                return ` Temp: ${y.toFixed(1)} °C`;
             }
         }
     }));
@@ -413,21 +523,28 @@ function renderTempChart(tsTemp, metadata) {
 function renderWindChart(tsWind, metadata) {
     if (chartInstances.wind) {
         chartInstances.wind.destroy();
+        chartInstances.wind = null;
     }
     
-    if (tsWind.status === 'out_of_bounds' || !tsWind.speeds.length) {
+    const speeds = (tsWind?.speeds || []).filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+    if (tsWind?.status === 'out_of_bounds' || !tsWind?.speeds || tsWind.speeds.length === 0 || speeds.length === 0) {
         document.getElementById('stat-wind-peak').textContent = '--';
         document.getElementById('stat-wind-avg').textContent = '--';
+        showCardEmpty('wind', 'Selected point is outside wind coverage area');
         return;
     }
+
+    hideCardEmpty('wind');
     
-    const peakVal = Math.max(...tsWind.speeds);
-    const avgVal = tsWind.speeds.reduce((a, b) => a + b, 0) / tsWind.speeds.length;
+    const peakVal = Math.max(...speeds);
+    const avgVal = speeds.reduce((a, b) => a + b, 0) / speeds.length;
     
     document.getElementById('stat-wind-peak').textContent = `${peakVal.toFixed(1)} m/s`;
     document.getElementById('stat-wind-avg').textContent = `${avgVal.toFixed(1)} m/s`;
     
-    const labels = getLabels(tsWind.times, metadata.reference_time_str, false);
+    const times = tsWind.times || [];
+    const labels = getLabels(times, metadata?.reference_time_str, false);
     
     const datasets = [{
         label: 'Wind Speed',
@@ -438,7 +555,8 @@ function renderWindChart(tsWind, metadata) {
         fill: true,
         tension: 0.3,
         pointRadius: 0,
-        pointHoverRadius: 4
+        pointHoverRadius: 4,
+        spanGaps: true
     }];
 
     const ctx = document.getElementById('chart-wind').getContext('2d');
@@ -447,10 +565,13 @@ function renderWindChart(tsWind, metadata) {
         tooltipCallbacks: {
             label: function(context) {
                 const index = context.dataIndex;
-                const speed = context.parsed.y;
-                const dir = tsWind.directions[index];
-                const cardinal = degreesToCardinal(dir);
-                return ` Wind: ${speed.toFixed(1)} m/s (${mpsToBeaufort(speed)} Bft) | Dir: ${dir.toFixed(0)}° (${cardinal})`;
+                const speed = context.parsed ? context.parsed.y : null;
+                if (speed === null || speed === undefined || isNaN(speed)) return ' Wind: No Data';
+
+                const dir = (tsWind.directions && typeof tsWind.directions[index] === 'number') ? tsWind.directions[index] : null;
+                const cardinal = dir !== null ? degreesToCardinal(dir) : '--';
+                const dirText = dir !== null ? ` | Dir: ${dir.toFixed(0)}° (${cardinal})` : '';
+                return ` Wind: ${speed.toFixed(1)} m/s (${mpsToBeaufort(speed)} Bft)${dirText}`;
             }
         }
     }));
@@ -460,21 +581,28 @@ function renderWindChart(tsWind, metadata) {
 function renderSolarChart(tsSolar, metadata) {
     if (chartInstances.solar) {
         chartInstances.solar.destroy();
+        chartInstances.solar = null;
     }
     
-    if (tsSolar.status === 'out_of_bounds' || !tsSolar.values.length) {
+    const solarVals = (tsSolar?.values || []).filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+    if (tsSolar?.status === 'out_of_bounds' || !tsSolar?.values || tsSolar.values.length === 0 || solarVals.length === 0) {
         document.getElementById('stat-solar-peak').textContent = '--';
         document.getElementById('stat-solar-avg').textContent = '--';
+        showCardEmpty('solar', 'Selected point is outside solar radiation coverage area');
         return;
     }
+
+    hideCardEmpty('solar');
     
-    const peakVal = Math.max(...tsSolar.values);
-    const avgVal = tsSolar.values.reduce((a, b) => a + b, 0) / tsSolar.values.length;
+    const peakVal = Math.max(...solarVals);
+    const avgVal = solarVals.reduce((a, b) => a + b, 0) / solarVals.length;
     
     document.getElementById('stat-solar-peak').textContent = `${Math.round(peakVal)} W/m²`;
     document.getElementById('stat-solar-avg').textContent = `${Math.round(avgVal)} W/m²`;
     
-    const labels = getLabels(tsSolar.times, metadata.reference_time_str, false);
+    const times = tsSolar.times || [];
+    const labels = getLabels(times, metadata?.reference_time_str, false);
     
     const datasets = [{
         label: 'Solar Radiation',
@@ -485,7 +613,8 @@ function renderSolarChart(tsSolar, metadata) {
         fill: true,
         tension: 0.3,
         pointRadius: 0,
-        pointHoverRadius: 4
+        pointHoverRadius: 4,
+        spanGaps: true
     }];
 
     const ctx = document.getElementById('chart-solar').getContext('2d');
@@ -493,7 +622,9 @@ function renderSolarChart(tsSolar, metadata) {
         yMin: 0,
         tooltipCallbacks: {
             label: function(context) {
-                return ` Solar: ${Math.round(context.parsed.y)} W/m²`;
+                const y = context.parsed ? context.parsed.y : null;
+                if (y === null || y === undefined || isNaN(y)) return ' Solar: No Data';
+                return ` Solar: ${Math.round(y)} W/m²`;
             }
         }
     }));
@@ -511,12 +642,18 @@ function updateBackToMapLink(lat, lon) {
 async function refreshData(lat, lon) {
     updateBackToMapLink(lat, lon);
     
-    // Show loading text in badges
+    // Show loading text in badges and card overlays
     const loadLabels = ['stat-rain-peak', 'stat-rain-total', 'stat-temp-max', 'stat-temp-min', 'stat-wind-peak', 'stat-wind-avg', 'stat-solar-peak', 'stat-solar-avg'];
     loadLabels.forEach(id => {
-        document.getElementById(id).textContent = 'Loading...';
+        const el = document.getElementById(id);
+        if (el) el.textContent = 'Loading...';
     });
     
+    showCardLoading('rain');
+    showCardLoading('temp');
+    showCardLoading('wind');
+    showCardLoading('solar');
+
     try {
         // Fetch metadatas in parallel
         const [rainMeta, tempMeta, windMeta, solarMeta] = await Promise.all([
@@ -532,7 +669,10 @@ async function refreshData(lat, lon) {
         currentData.solarMetadata = solarMeta;
         
         // Update header time
-        document.getElementById('ref-time-value').textContent = formatAbsoluteTime(rainMeta.reference_time_str, 0);
+        const refTimeEl = document.getElementById('ref-time-value');
+        if (refTimeEl) {
+            refTimeEl.textContent = formatAbsoluteTime(rainMeta.reference_time_str, 0);
+        }
         
         // Fetch all timeseries in parallel
         const [tsRainPmm, tsRainMed, tsRainMax, tsTemp, tsWind, tsSolar] = await Promise.all([
@@ -565,28 +705,36 @@ async function refreshData(lat, lon) {
         
     } catch (e) {
         console.error("Failed to load forecast data:", e);
-        showToast("Error loading weather forecast!");
+        showToast("Error loading weather forecast. Check network connection.", "error");
         loadLabels.forEach(id => {
-            document.getElementById(id).textContent = 'Error';
+            const el = document.getElementById(id);
+            if (el) el.textContent = 'Error';
         });
+    } finally {
+        hideCardLoading('rain');
+        hideCardLoading('temp');
+        hideCardLoading('wind');
+        hideCardLoading('solar');
     }
 }
 
 // Set up event listeners
 function setupListeners() {
     // Coords update form
-    document.getElementById('coords-form').addEventListener('submit', (e) => {
+    document.getElementById('coords-form')?.addEventListener('submit', (e) => {
         e.preventDefault();
-        const lat = parseFloat(document.getElementById('input-lat').value);
-        const lon = parseFloat(document.getElementById('input-lon').value);
+        const lat = parseFloat(document.getElementById('input-lat')?.value || '52.1');
+        const lon = parseFloat(document.getElementById('input-lon')?.value || '5.2');
         
         if (isNaN(lat) || lat < 49.0 || lat > 56.0 || isNaN(lon) || lon < 2.0 || lon > 8.0) {
-            showToast("Coordinates are outside valid coverage (Netherlands bounds: Lat 49-56, Lon 2-8)");
+            showToast("Coordinates are outside valid coverage (Netherlands bounds: Lat 49-56, Lon 2-8)", "info");
             return;
         }
         
-        document.getElementById('display-lat').textContent = lat.toFixed(4);
-        document.getElementById('display-lon').textContent = lon.toFixed(4);
+        const dispLat = document.getElementById('display-lat');
+        const dispLon = document.getElementById('display-lon');
+        if (dispLat) dispLat.textContent = lat.toFixed(4);
+        if (dispLon) dispLon.textContent = lon.toFixed(4);
         
         // Sync URL query params without full page reload
         const url = new URL(window.location.href);
@@ -598,22 +746,27 @@ function setupListeners() {
     });
     
     // GPS Geolocation button
-    document.getElementById('btn-geolocation').addEventListener('click', () => {
+    document.getElementById('btn-geolocation')?.addEventListener('click', () => {
         if (!navigator.geolocation) {
-            showToast("Geolocation is not supported by your browser");
+            showToast("Geolocation is not supported by your browser", "error");
             return;
         }
         
-        showToast("Retrieving GPS location...");
+        showToast("Retrieving GPS location...", "info");
         navigator.geolocation.getCurrentPosition(
             (pos) => {
                 const lat = pos.coords.latitude;
                 const lon = pos.coords.longitude;
                 
-                document.getElementById('input-lat').value = lat.toFixed(4);
-                document.getElementById('input-lon').value = lon.toFixed(4);
-                document.getElementById('display-lat').textContent = lat.toFixed(4);
-                document.getElementById('display-lon').textContent = lon.toFixed(4);
+                const inLat = document.getElementById('input-lat');
+                const inLon = document.getElementById('input-lon');
+                const dispLat = document.getElementById('display-lat');
+                const dispLon = document.getElementById('display-lon');
+
+                if (inLat) inLat.value = lat.toFixed(4);
+                if (inLon) inLon.value = lon.toFixed(4);
+                if (dispLat) dispLat.textContent = lat.toFixed(4);
+                if (dispLon) dispLon.textContent = lon.toFixed(4);
                 
                 // Sync URL query params
                 const url = new URL(window.location.href);
@@ -622,34 +775,37 @@ function setupListeners() {
                 window.history.pushState({}, '', url.pathname + url.search);
                 
                 refreshData(lat, lon);
-                showToast("Location updated successfully!");
+                showToast("Location updated successfully!", "success");
             },
             (err) => {
                 console.error("GPS Error:", err);
-                showToast(`Unable to retrieve location: ${err.message}`);
+                showToast(`Unable to retrieve location: ${err.message}`, "error");
             }
         );
     });
     
     // Alert configuration form toggle
-    document.getElementById('notify-email').addEventListener('change', (e) => {
+    document.getElementById('notify-email')?.addEventListener('change', (e) => {
         const emailGroup = document.getElementById('group-email');
-        if (e.target.checked) {
-            emailGroup.classList.remove('hidden');
-            document.getElementById('input-email').required = true;
-        } else {
-            emailGroup.classList.add('hidden');
-            document.getElementById('input-email').required = false;
+        const emailInput = document.getElementById('input-email');
+        if (emailGroup && emailInput) {
+            if (e.target.checked) {
+                emailGroup.classList.remove('hidden');
+                emailInput.required = true;
+            } else {
+                emailGroup.classList.add('hidden');
+                emailInput.required = false;
+            }
         }
     });
     
     // Alert form submit
-    document.getElementById('notification-form').addEventListener('submit', async (e) => {
+    document.getElementById('notification-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const emailNotify = document.getElementById('notify-email').checked;
-        const emailAddr = document.getElementById('input-email').value;
-        let pushNotify = document.getElementById('notify-push').checked;
-        const threshold = parseFloat(document.getElementById('alert-threshold').value);
+        const emailNotify = document.getElementById('notify-email')?.checked || false;
+        const emailAddr = document.getElementById('input-email')?.value || '';
+        let pushNotify = document.getElementById('notify-push')?.checked || false;
+        const threshold = parseFloat(document.getElementById('alert-threshold')?.value || '1.0');
         
         const params = new URLSearchParams(window.location.search);
         let lat = parseFloat(params.get('lat')) || 52.1;
@@ -658,15 +814,15 @@ function setupListeners() {
         if (pushNotify) {
             const granted = await requestNotificationPermission();
             if (!granted) {
-                showToast("Notification permission denied by browser. Please enable notifications in your settings.");
+                showToast("Notification permission denied by browser. Please enable notifications in your browser settings.", "error");
                 pushNotify = false;
-                document.getElementById('notify-push').checked = false;
+                const pushCheckbox = document.getElementById('notify-push');
+                if (pushCheckbox) pushCheckbox.checked = false;
             }
         }
         
         saveNotificationPrefs(lat.toFixed(4), lon.toFixed(4), threshold, emailNotify, emailAddr, pushNotify);
-        
-        showToast("Alert preferences saved successfully!");
+        showToast("Alert preferences saved successfully!", "success");
         
         // Re-analyze forecast using new parameters
         updateRainAlertBox();
@@ -678,7 +834,7 @@ function setupListeners() {
     });
     
     // Wind height selector
-    document.getElementById('wind-height-select').addEventListener('change', async (e) => {
+    document.getElementById('wind-height-select')?.addEventListener('change', async (e) => {
         const height = parseInt(e.target.value);
         state.selectedWindHeight = height;
         
@@ -686,16 +842,21 @@ function setupListeners() {
         let lat = parseFloat(params.get('lat')) || 52.1;
         let lon = parseFloat(params.get('lon')) || 5.2;
         
-        document.getElementById('stat-wind-peak').textContent = 'Loading...';
-        document.getElementById('stat-wind-avg').textContent = 'Loading...';
+        const peakEl = document.getElementById('stat-wind-peak');
+        const avgEl = document.getElementById('stat-wind-avg');
+        if (peakEl) peakEl.textContent = 'Loading...';
+        if (avgEl) avgEl.textContent = 'Loading...';
         
+        showCardLoading('wind');
         try {
             const tsWind = await fetchTimeseries('wind', 'med', lat, lon);
             currentData.wind = tsWind;
             renderWindChart(tsWind, currentData.windMetadata);
         } catch (err) {
             console.error("Failed to load new wind height timeseries:", err);
-            showToast("Error updating wind forecast height!");
+            showToast("Error updating wind forecast height!", "error");
+        } finally {
+            hideCardLoading('wind');
         }
     });
     
@@ -705,10 +866,15 @@ function setupListeners() {
         let lat = parseFloat(params.get('lat')) || 52.1;
         let lon = parseFloat(params.get('lon')) || 5.2;
         
-        document.getElementById('input-lat').value = lat.toFixed(4);
-        document.getElementById('input-lon').value = lon.toFixed(4);
-        document.getElementById('display-lat').textContent = lat.toFixed(4);
-        document.getElementById('display-lon').textContent = lon.toFixed(4);
+        const inLat = document.getElementById('input-lat');
+        const inLon = document.getElementById('input-lon');
+        const dispLat = document.getElementById('display-lat');
+        const dispLon = document.getElementById('display-lon');
+
+        if (inLat) inLat.value = lat.toFixed(4);
+        if (inLon) inLon.value = lon.toFixed(4);
+        if (dispLat) dispLat.textContent = lat.toFixed(4);
+        if (dispLon) dispLon.textContent = lon.toFixed(4);
         
         refreshData(lat, lon);
     });
@@ -750,10 +916,15 @@ function bootstrap() {
     if (isNaN(lat) || lat < 49.0 || lat > 56.0) lat = 52.1;
     if (isNaN(lon) || lon < 2.0 || lon > 8.0) lon = 5.2;
     
-    document.getElementById('input-lat').value = lat.toFixed(4);
-    document.getElementById('input-lon').value = lon.toFixed(4);
-    document.getElementById('display-lat').textContent = lat.toFixed(4);
-    document.getElementById('display-lon').textContent = lon.toFixed(4);
+    const inLat = document.getElementById('input-lat');
+    const inLon = document.getElementById('input-lon');
+    const dispLat = document.getElementById('display-lat');
+    const dispLon = document.getElementById('display-lon');
+
+    if (inLat) inLat.value = lat.toFixed(4);
+    if (inLon) inLon.value = lon.toFixed(4);
+    if (dispLat) dispLat.textContent = lat.toFixed(4);
+    if (dispLon) dispLon.textContent = lon.toFixed(4);
     
     loadNotificationPrefs();
     setupListeners();
@@ -762,3 +933,4 @@ function bootstrap() {
 }
 
 document.addEventListener('DOMContentLoaded', bootstrap);
+

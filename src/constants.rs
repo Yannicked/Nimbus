@@ -61,3 +61,6 @@ pub const GRIB_CELL_COUNT: usize = GRIB_WIDTH * GRIB_HEIGHT;
 
 /// Directory where all cached/downloaded files are stored.
 pub const CACHE_DIR: &str = "./cache";
+
+/// Maximum allowed forecast steps in binary cache files to prevent unbounded allocation on corruption.
+pub const MAX_BINARY_CACHE_STEPS: usize = 1000;

@@ -120,7 +120,7 @@
             <!-- Standalone Graphs Grid -->
             <div class="graphs-grid">
                 <!-- Rainfall Chart Card -->
-                <section class="glass-panel graph-card">
+                <section class="glass-panel graph-card" id="card-rain">
                     <header class="graph-card-header">
                         <div class="graph-card-title">
                             <i class="fa-solid fa-cloud-showers-heavy icon-accent"></i>
@@ -132,12 +132,14 @@
                         </div>
                     </header>
                     <div class="graph-canvas-container">
+                        <div id="loading-rain" class="card-loading hidden"><i class="fa-solid fa-circle-notch fa-spin"></i> <span>Loading rain trend...</span></div>
+                        <div id="empty-rain" class="card-empty-state hidden"><i class="fa-solid fa-circle-info"></i> <span>Out of radar coverage area</span></div>
                         <canvas id="chart-rain"></canvas>
                     </div>
                 </section>
 
                 <!-- Temperature Chart Card -->
-                <section class="glass-panel graph-card">
+                <section class="glass-panel graph-card" id="card-temp">
                     <header class="graph-card-header">
                         <div class="graph-card-title">
                             <i class="fa-solid fa-temperature-half icon-accent"></i>
@@ -149,12 +151,14 @@
                         </div>
                     </header>
                     <div class="graph-canvas-container">
+                        <div id="loading-temp" class="card-loading hidden"><i class="fa-solid fa-circle-notch fa-spin"></i> <span>Loading temperature trend...</span></div>
+                        <div id="empty-temp" class="card-empty-state hidden"><i class="fa-solid fa-circle-info"></i> <span>Out of temperature coverage area</span></div>
                         <canvas id="chart-temp"></canvas>
                     </div>
                 </section>
 
                 <!-- Wind Speed & Direction Chart Card -->
-                <section class="glass-panel graph-card">
+                <section class="glass-panel graph-card" id="card-wind">
                     <header class="graph-card-header">
                         <div class="graph-card-title">
                             <i class="fa-solid fa-wind icon-accent"></i>
@@ -175,12 +179,14 @@
                         </div>
                     </header>
                     <div class="graph-canvas-container">
+                        <div id="loading-wind" class="card-loading hidden"><i class="fa-solid fa-circle-notch fa-spin"></i> <span>Loading wind trend...</span></div>
+                        <div id="empty-wind" class="card-empty-state hidden"><i class="fa-solid fa-circle-info"></i> <span>Out of wind coverage area</span></div>
                         <canvas id="chart-wind"></canvas>
                     </div>
                 </section>
 
                 <!-- Solar Radiation Chart Card -->
-                <section class="glass-panel graph-card">
+                <section class="glass-panel graph-card" id="card-solar">
                     <header class="graph-card-header">
                         <div class="graph-card-title">
                             <i class="fa-solid fa-sun icon-accent"></i>
@@ -192,6 +198,8 @@
                         </div>
                     </header>
                     <div class="graph-canvas-container">
+                        <div id="loading-solar" class="card-loading hidden"><i class="fa-solid fa-circle-notch fa-spin"></i> <span>Loading solar trend...</span></div>
+                        <div id="empty-solar" class="card-empty-state hidden"><i class="fa-solid fa-circle-info"></i> <span>Out of solar coverage area</span></div>
                         <canvas id="chart-solar"></canvas>
                     </div>
                 </section>
@@ -200,7 +208,10 @@
     </div>
 
     <!-- Notification Toast -->
-    <div id="toast" class="toast hidden">Alert preferences saved successfully!</div>
+    <div id="toast" class="toast hidden">
+        <i class="fa-solid fa-circle-check" id="toast-icon"></i>
+        <span id="toast-msg">Alert preferences saved successfully!</span>
+    </div>
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>

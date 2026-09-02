@@ -1,12 +1,12 @@
 import { CONFIG } from '../config.js';
 import { state, syncStateToURL } from '../state.js';
 import { DOM } from './dom.js';
-import { fetchTimeseries } from '../api.js';
+import { fetchTimeseries, registerAbortController, unregisterAbortController, showErrorBanner } from '../api.js';
 import { formatAbsoluteTime } from './controls.js';
 
 // Convert wind speed to Beaufort scale
 export function mpsToBeaufort(mps) {
-    if (mps < 0.3) return 0;
+    if (typeof mps !== 'number' || isNaN(mps) || mps < 0.3) return 0;
     if (mps < 1.6) return 1;
     if (mps < 3.4) return 2;
     if (mps < 5.5) return 3;
@@ -23,12 +23,14 @@ export function mpsToBeaufort(mps) {
 
 // Convert wind direction in degrees to cardinal direction
 export function degreesToCardinal(deg) {
+    if (typeof deg !== 'number' || isNaN(deg)) return "--";
     const index = Math.round(deg / 45) % 8;
     const cardinals = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    return cardinals[index];
+    return cardinals[index] || "--";
 }
 
 function setChartHeaderTitle(iconClass, text) {
+    if (!DOM.chartHeaderTitle) return;
     const icon = document.createElement('i');
     icon.className = `fa-solid ${iconClass} chart-header-icon`;
     DOM.chartHeaderTitle.replaceChildren(icon, document.createTextNode(text));
@@ -36,47 +38,105 @@ function setChartHeaderTitle(iconClass, text) {
 
 let timeseriesAbortController = null;
 
+export function abortTimeseriesRequest() {
+    if (timeseriesAbortController) {
+        timeseriesAbortController.abort();
+        unregisterAbortController(timeseriesAbortController);
+        timeseriesAbortController = null;
+    }
+}
+
+function showChartLoading() {
+    const loadingEl = document.getElementById('chart-loading');
+    const emptyEl = document.getElementById('chart-empty-state');
+    const canvas = DOM.rainfallChart;
+
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (canvas) canvas.style.opacity = '0.3';
+}
+
+function hideChartLoading() {
+    const loadingEl = document.getElementById('chart-loading');
+    const canvas = DOM.rainfallChart;
+
+    if (loadingEl) loadingEl.classList.add('hidden');
+    if (canvas) canvas.style.opacity = '1';
+}
+
+function showChartEmptyState(message) {
+    const emptyEl = document.getElementById('chart-empty-state');
+    const emptyText = document.getElementById('chart-empty-text');
+    const canvas = DOM.rainfallChart;
+
+    if (emptyText) emptyText.textContent = message || "No forecast data available for this location";
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    if (canvas) canvas.style.display = 'none';
+
+    if (state.chartInstance) {
+        state.chartInstance.destroy();
+        state.chartInstance = null;
+    }
+
+    if (DOM.chartStatPeak) DOM.chartStatPeak.textContent = "--";
+    if (DOM.chartStatTotal) DOM.chartStatTotal.textContent = "--";
+}
+
+function hideChartEmptyState() {
+    const emptyEl = document.getElementById('chart-empty-state');
+    const canvas = DOM.rainfallChart;
+
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (canvas) canvas.style.display = 'block';
+}
+
 // Renders the interactive timeseries chart using Chart.js
 export async function showTimeseriesChart(lat, lon) {
     if (!state.metadata) return;
     state.activeCoords = { lat, lon };
     syncStateToURL();
 
-    if (timeseriesAbortController) {
-        timeseriesAbortController.abort();
-    }
+    abortTimeseriesRequest();
     timeseriesAbortController = new AbortController();
+    registerAbortController(timeseriesAbortController);
     const signal = timeseriesAbortController.signal;
     
     // Show the panel
     DOM.chartPanel.classList.remove('hidden');
     DOM.chartCoords.textContent = `lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`;
     if (DOM.btnStandaloneLink) {
-        DOM.btnStandaloneLink.href = `/graphs.html?lat=${lat}&lon=${lon}`;
+        DOM.btnStandaloneLink.href = `/graphs.html?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
     }
     
+    showChartLoading();
+
     try {
         const data = await fetchTimeseries(state.currentLayerMode, state.currentEns, lat, lon, signal);
+        hideChartLoading();
         
-        const chartValues = state.currentLayerMode === 'wind' ? data.speeds : data.values;
-        if (data.status === "out_of_bounds" || chartValues.length === 0) {
-            DOM.chartCoords.textContent = state.currentLayerMode === 'temp'
-                ? "Selected point is out of bounds"
-                : (state.currentLayerMode === 'wind' ? "Selected point is out of wind bounds" : "Selected point is out of radar bounds");
-            if (state.chartInstance) {
-                state.chartInstance.destroy();
-                state.chartInstance = null;
-            }
-            DOM.chartStatPeak.textContent = "--";
-            DOM.chartStatTotal.textContent = "--";
+        const rawValues = state.currentLayerMode === 'wind' ? (data.speeds || []) : (data.values || []);
+        const validValues = rawValues.filter(v => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+        if (data.status === "out_of_bounds" || rawValues.length === 0 || validValues.length === 0) {
+            const outOfBoundsMsg = state.currentLayerMode === 'temp'
+                ? "Coordinates are outside temperature coverage grid"
+                : (state.currentLayerMode === 'wind' 
+                    ? "Coordinates are outside wind coverage grid" 
+                    : (state.currentLayerMode === 'solar'
+                        ? "Coordinates are outside solar coverage grid"
+                        : "Coordinates are outside radar coverage grid"));
+            DOM.chartCoords.textContent = `lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)} (Out of Grid)`;
+            showChartEmptyState(outOfBoundsMsg);
             return;
         }
+
+        hideChartEmptyState();
         
-        const peakVal = Math.max(...chartValues);
+        const peakVal = Math.max(...validValues);
         let totalVal = 0.0;
         
         if (state.currentLayerMode === 'temp') {
-            const minVal = Math.min(...chartValues);
+            const minVal = Math.min(...validValues);
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(1)} °C`;
             DOM.chartStatTotal.textContent = `${minVal.toFixed(1)} °C`;
             
@@ -84,7 +144,7 @@ export async function showTimeseriesChart(lat, lon) {
             DOM.statBox2Label.textContent = "Min Temp";
             setChartHeaderTitle('fa-temperature-half', ' Temperature Forecast Trend');
         } else if (state.currentLayerMode === 'solar') {
-            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            const avgVal = validValues.reduce((a, b) => a + b, 0) / validValues.length;
             DOM.chartStatPeak.textContent = `${Math.round(peakVal)} W/m²`;
             DOM.chartStatTotal.textContent = `${Math.round(avgVal)} W/m² (avg)`;
             
@@ -92,7 +152,7 @@ export async function showTimeseriesChart(lat, lon) {
             DOM.statBox2Label.textContent = "Avg Radiation";
             setChartHeaderTitle('fa-sun', ' Solar Forecast Trend');
         } else if (state.currentLayerMode === 'wind') {
-            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            const avgVal = validValues.reduce((a, b) => a + b, 0) / validValues.length;
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(1)} m/s`;
             DOM.chartStatTotal.textContent = `${avgVal.toFixed(1)} m/s`;
             
@@ -101,14 +161,14 @@ export async function showTimeseriesChart(lat, lon) {
             setChartHeaderTitle('fa-wind', ' Wind Speed Forecast Trend');
         } else if (state.currentEns === 'prob') {
             DOM.chartStatPeak.textContent = `${Math.round(peakVal)}%`;
-            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            const avgVal = validValues.reduce((a, b) => a + b, 0) / validValues.length;
             DOM.chartStatTotal.textContent = `${Math.round(avgVal)}% (avg)`;
             
             DOM.statBox1Label.textContent = "Peak Probability";
             DOM.statBox2Label.textContent = "Avg Probability";
             setChartHeaderTitle('fa-chart-line', ' Rainfall Forecast Trend');
         } else if (state.currentEns === 'spread') {
-            const avgVal = chartValues.reduce((a, b) => a + b, 0) / chartValues.length;
+            const avgVal = validValues.reduce((a, b) => a + b, 0) / validValues.length;
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(2)} mm/h`;
             DOM.chartStatTotal.textContent = `${avgVal.toFixed(2)} mm/h (avg)`;
             
@@ -117,7 +177,7 @@ export async function showTimeseriesChart(lat, lon) {
             setChartHeaderTitle('fa-chart-line', ' Forecast Uncertainty Trend');
         } else {
             // total_mm = sum(rates) / 12 (5 mins intervals)
-            totalVal = chartValues.reduce((a, b) => a + b, 0) / 12.0;
+            totalVal = validValues.reduce((a, b) => a + b, 0) / 12.0;
             DOM.chartStatPeak.textContent = `${peakVal.toFixed(2)} mm/h`;
             DOM.chartStatTotal.textContent = `${totalVal.toFixed(2)} mm`;
             
@@ -126,7 +186,8 @@ export async function showTimeseriesChart(lat, lon) {
             setChartHeaderTitle('fa-chart-line', ' Rainfall Forecast Trend');
         }
         
-        const labels = data.times.map(secs => {
+        const times = data.times || [];
+        const labels = times.map(secs => {
             const timeStr = formatAbsoluteTime(state.metadata.reference_time_str, secs);
             if (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind' || state.currentLayerMode === 'solar') {
                 // Include day for multi-day forecasts, e.g. "Mon 08:00"
@@ -178,9 +239,10 @@ export async function showTimeseriesChart(lat, lon) {
         if (state.chartInstance) {
             state.chartInstance.data.labels = labels;
             state.chartInstance.data.datasets[0].label = labelText;
-            state.chartInstance.data.datasets[0].data = chartValues;
+            state.chartInstance.data.datasets[0].data = rawValues;
             state.chartInstance.data.datasets[0].borderColor = borderColor;
             state.chartInstance.data.datasets[0].backgroundColor = backgroundColor;
+            state.chartInstance.data.datasets[0].spanGaps = true;
             state.chartInstance.options.scales.y.title.text = labelText;
             state.chartInstance.options.scales.y.max = (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind' || state.currentLayerMode === 'solar') ? undefined : (isProb ? 100 : undefined);
             state.chartInstance.options.scales.y.min = (state.currentLayerMode === 'temp' || state.currentLayerMode === 'wind' || state.currentLayerMode === 'solar') ? undefined : 0;
@@ -192,14 +254,15 @@ export async function showTimeseriesChart(lat, lon) {
                     labels: labels,
                     datasets: [{
                         label: labelText,
-                        data: chartValues,
+                        data: rawValues,
                         borderColor: borderColor,
                         backgroundColor: backgroundColor,
                         borderWidth: CONFIG.chart.borderWidth,
                         fill: true,
                         tension: CONFIG.chart.tension,
                         pointRadius: CONFIG.chart.pointRadius,
-                        pointHoverRadius: CONFIG.chart.pointHoverRadius
+                        pointHoverRadius: CONFIG.chart.pointHoverRadius,
+                        spanGaps: true
                     }]
                 },
                 options: {
@@ -219,16 +282,21 @@ export async function showTimeseriesChart(lat, lon) {
                             borderWidth: 1,
                             callbacks: {
                                 label: function(context) {
-                                    if (state.currentLayerMode === 'temp') {
-                                        return ` ${context.parsed.y.toFixed(1)} °C`;
-                                    } else if (state.currentLayerMode === 'solar') {
-                                        return ` ${Math.round(context.parsed.y)} W/m²`;
-                                    } else if (state.currentLayerMode === 'wind') {
-                                        return ` ${context.parsed.y.toFixed(1)} m/s (${mpsToBeaufort(context.parsed.y)} Bft)`;
-                                    } else if (state.currentEns === 'spread') {
-                                        return ` ±${context.parsed.y.toFixed(2)} mm/h`;
+                                    const y = context.parsed ? context.parsed.y : null;
+                                    if (y === null || y === undefined || isNaN(y)) {
+                                        return ' No Data';
                                     }
-                                    return ` ${context.parsed.y.toFixed(2)}${isProb ? '%' : ' mm/h'}`;
+                                    if (state.currentLayerMode === 'temp') {
+                                        return ` ${y.toFixed(1)} °C`;
+                                    } else if (state.currentLayerMode === 'solar') {
+                                        return ` ${Math.round(y)} W/m²`;
+                                    } else if (state.currentLayerMode === 'wind') {
+                                        const bft = mpsToBeaufort(y);
+                                        return ` ${y.toFixed(1)} m/s (${bft} Bft)`;
+                                    } else if (state.currentEns === 'spread') {
+                                        return ` ±${y.toFixed(2)} mm/h`;
+                                    }
+                                    return ` ${y.toFixed(2)}${isProb ? '%' : ' mm/h'}`;
                                 }
                             }
                         }
@@ -274,17 +342,17 @@ export async function showTimeseriesChart(lat, lon) {
         }
     } catch (e) {
         if (e.name === 'AbortError') return;
+        hideChartLoading();
         console.error("Timeseries error:", e);
-        DOM.chartCoords.textContent = "Error loading trend chart";
+        DOM.chartCoords.textContent = `lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)} (Error)`;
+        showChartEmptyState("Failed to load forecast trend for this location");
+        showErrorBanner("Could not load location forecast timeseries. Please check your connection.");
     }
 }
 
 // Close chart, destroy chart instance and remove MapLibre pin marker
 export function closeTimeseriesChart() {
-    if (timeseriesAbortController) {
-        timeseriesAbortController.abort();
-        timeseriesAbortController = null;
-    }
+    abortTimeseriesRequest();
     DOM.chartPanel.classList.add('hidden');
     state.activeCoords = null;
     syncStateToURL();
@@ -299,3 +367,4 @@ export function closeTimeseriesChart() {
         state.chartInstance = null;
     }
 }
+
