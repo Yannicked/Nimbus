@@ -344,10 +344,22 @@ mod tests {
         // Non-finite and extreme coordinates
         assert_eq!(interpolate_bilinear(f64::NAN, 0.0, w, h, &grid), NODATA);
         assert_eq!(interpolate_bilinear(0.0, f64::NAN, w, h, &grid), NODATA);
-        assert_eq!(interpolate_bilinear(f64::INFINITY, 0.0, w, h, &grid), NODATA);
-        assert_eq!(interpolate_bilinear(0.0, f64::INFINITY, w, h, &grid), NODATA);
-        assert_eq!(interpolate_bilinear(f64::NEG_INFINITY, 0.0, w, h, &grid), NODATA);
-        assert_eq!(interpolate_bilinear(0.0, f64::NEG_INFINITY, w, h, &grid), NODATA);
+        assert_eq!(
+            interpolate_bilinear(f64::INFINITY, 0.0, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(
+            interpolate_bilinear(0.0, f64::INFINITY, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(
+            interpolate_bilinear(f64::NEG_INFINITY, 0.0, w, h, &grid),
+            NODATA
+        );
+        assert_eq!(
+            interpolate_bilinear(0.0, f64::NEG_INFINITY, w, h, &grid),
+            NODATA
+        );
         assert_eq!(interpolate_bilinear(1e30, 0.0, w, h, &grid), NODATA);
         assert_eq!(interpolate_bilinear(-1e30, 0.0, w, h, &grid), NODATA);
     }

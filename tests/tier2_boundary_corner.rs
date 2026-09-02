@@ -2,24 +2,24 @@
 
 #[path = "../src/constants.rs"]
 mod constants;
-#[path = "../src/models.rs"]
-mod models;
-#[path = "../src/state.rs"]
-mod state;
-#[path = "../src/projection.rs"]
-mod projection;
-#[path = "../src/interpolation.rs"]
-mod interpolation;
-#[path = "../src/rendering.rs"]
-mod rendering;
-#[path = "../src/radar.rs"]
-mod radar;
-#[path = "../src/rtcor.rs"]
-mod rtcor;
-#[path = "../src/harmonie.rs"]
-mod harmonie;
 #[path = "../src/handlers.rs"]
 mod handlers;
+#[path = "../src/harmonie.rs"]
+mod harmonie;
+#[path = "../src/interpolation.rs"]
+mod interpolation;
+#[path = "../src/models.rs"]
+mod models;
+#[path = "../src/projection.rs"]
+mod projection;
+#[path = "../src/radar.rs"]
+mod radar;
+#[path = "../src/rendering.rs"]
+mod rendering;
+#[path = "../src/rtcor.rs"]
+mod rtcor;
+#[path = "../src/state.rs"]
+mod state;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -96,13 +96,25 @@ fn create_mock_app_state() -> Arc<AppState> {
     for &t in &times {
         for e in 0..2 {
             let grid = vec![0u16; fc_len];
-            radar_data.grid_cache.insert((e.to_string(), t), Arc::new(grid));
+            radar_data
+                .grid_cache
+                .insert((e.to_string(), t), Arc::new(grid));
         }
-        radar_data.grid_cache.insert(("med".to_string(), t), Arc::new(vec![100u16; fc_len]));
-        radar_data.grid_cache.insert(("max".to_string(), t), Arc::new(vec![200u16; fc_len]));
-        radar_data.grid_cache.insert(("prob".to_string(), t), Arc::new(vec![50u16; fc_len]));
-        radar_data.grid_cache.insert(("spread".to_string(), t), Arc::new(vec![10u16; fc_len]));
-        radar_data.grid_cache.insert(("pmm".to_string(), t), Arc::new(vec![120u16; fc_len]));
+        radar_data
+            .grid_cache
+            .insert(("med".to_string(), t), Arc::new(vec![100u16; fc_len]));
+        radar_data
+            .grid_cache
+            .insert(("max".to_string(), t), Arc::new(vec![200u16; fc_len]));
+        radar_data
+            .grid_cache
+            .insert(("prob".to_string(), t), Arc::new(vec![50u16; fc_len]));
+        radar_data
+            .grid_cache
+            .insert(("spread".to_string(), t), Arc::new(vec![10u16; fc_len]));
+        radar_data
+            .grid_cache
+            .insert(("pmm".to_string(), t), Arc::new(vec![120u16; fc_len]));
     }
 
     let temp_fc = TempForecast {
@@ -197,7 +209,10 @@ fn test_t2_f01_all_nodata_interspersed() {
     assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals), NODATA);
     assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals), NODATA);
     assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut vals), NODATA);
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals), NODATA);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut vals),
+        NODATA
+    );
 }
 
 #[test]
@@ -212,10 +227,16 @@ fn test_t2_f01_max_u16_saturation() {
 fn test_t2_f01_probability_threshold_boundary() {
     // Exact threshold boundary: 10 vs 9
     let mut vals_below = [RAIN_THRESHOLD - 1; 10];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals_below), 0);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut vals_below),
+        0
+    );
 
     let mut vals_exact = [RAIN_THRESHOLD; 10];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals_exact), 100);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut vals_exact),
+        100
+    );
 }
 
 #[test]
@@ -377,7 +398,10 @@ fn test_t2_f03_rtcor_idempotent_overwrite() {
 #[test]
 fn test_t2_f04_oversized_steps_len_rejection() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_t2_oversized_steps.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_t2_oversized_steps.bin")
+        .to_string_lossy()
+        .to_string();
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"HRMT"); // Magic
@@ -396,14 +420,17 @@ fn test_t2_f04_oversized_steps_len_rejection() {
 #[test]
 fn test_t2_f04_truncated_payload_unexpected_eof() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_t2_truncated.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_t2_truncated.bin")
+        .to_string_lossy()
+        .to_string();
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"HRW2");
     buf.extend_from_slice(&1700000000i64.to_le_bytes());
     buf.extend_from_slice(&2u32.to_le_bytes()); // claims 2 steps
     buf.extend_from_slice(&1i32.to_le_bytes()); // hour
-    // cut off here
+                                                // cut off here
 
     std::fs::write(&file_path, buf).expect("Write failed");
 
@@ -416,7 +443,10 @@ fn test_t2_f04_truncated_payload_unexpected_eof() {
 #[test]
 fn test_t2_f04_invalid_grid_dimensions_header() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_t2_bad_dims.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_t2_bad_dims.bin")
+        .to_string_lossy()
+        .to_string();
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"HRMS");
@@ -437,7 +467,10 @@ fn test_t2_f04_invalid_grid_dimensions_header() {
 #[test]
 fn test_t2_f04_zero_steps_len_forecast() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_t2_zero_steps.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_t2_zero_steps.bin")
+        .to_string_lossy()
+        .to_string();
 
     let fc = RainForecast {
         reference_time: 1700000000,
@@ -496,10 +529,22 @@ async fn test_t2_f05_rapid_consecutive_dataset_swaps() {
 #[test]
 fn test_t2_f06_extreme_float_interpolation_safety() {
     let vals = vec![100u16; 100];
-    assert_eq!(interpolate_bilinear(-1_000_000.0, 5.0, 10, 10, &vals), NODATA);
-    assert_eq!(interpolate_bilinear(5.0, -1_000_000.0, 10, 10, &vals), NODATA);
-    assert_eq!(interpolate_bilinear(1_000_000.0, 5.0, 10, 10, &vals), NODATA);
-    assert_eq!(interpolate_bilinear(5.0, 1_000_000.0, 10, 10, &vals), NODATA);
+    assert_eq!(
+        interpolate_bilinear(-1_000_000.0, 5.0, 10, 10, &vals),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(5.0, -1_000_000.0, 10, 10, &vals),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(1_000_000.0, 5.0, 10, 10, &vals),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(5.0, 1_000_000.0, 10, 10, &vals),
+        NODATA
+    );
 }
 
 #[test]
@@ -547,7 +592,9 @@ async fn test_t2_f07_api_value_out_of_grid_returns_200_out_of_bounds() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let val_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(val_res["status"], "out_of_bounds");
     assert!(val_res["value"].is_null());
@@ -566,7 +613,9 @@ async fn test_t2_f07_api_timeseries_out_of_grid_returns_empty_series() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let ts_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(ts_res["status"], "out_of_bounds");
     assert_eq!(ts_res["values"].as_array().unwrap().len(), 0);
@@ -585,7 +634,9 @@ async fn test_t2_f07_api_temp_value_out_of_grid() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let val_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(val_res["status"], "out_of_bounds");
     assert!(val_res["value"].is_null());
@@ -604,7 +655,9 @@ async fn test_t2_f07_api_wind_value_out_of_grid() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let val_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(val_res["status"], "out_of_bounds");
     assert!(val_res["u"].is_null());
@@ -623,7 +676,9 @@ async fn test_t2_f07_api_solar_value_out_of_grid() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let val_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(val_res["status"], "out_of_bounds");
     assert!(val_res["value"].is_null());

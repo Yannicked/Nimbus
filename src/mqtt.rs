@@ -95,10 +95,10 @@ pub async fn start_knmi_mqtt_listener(state: Arc<AppState>) {
                                     tokio::spawn(async move {
                                         if let Err(e) = download_and_update_nc_file(
                                             &name_clone,
-                                             url_opt.as_deref(),
-                                             &open_data_api_key_clone,
-                                             state_clone,
-                                             Some(tracker_clone),
+                                            url_opt.as_deref(),
+                                            &open_data_api_key_clone,
+                                            state_clone,
+                                            Some(tracker_clone),
                                         )
                                         .await
                                         {

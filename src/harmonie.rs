@@ -592,26 +592,23 @@ pub async fn load_or_fetch_combined_forecast(
     );
 
     // Fall back to existing cached forecasts if available, or empty forecasts
-    let temp_fc = TempForecast::read_from_file(&temp_bin_path)
-        .unwrap_or_else(|_| TempForecast {
+    let temp_fc = TempForecast::read_from_file(&temp_bin_path).unwrap_or_else(|_| TempForecast {
+        reference_time: 0,
+        steps: Vec::new(),
+    });
+    let wind_fc = WindForecast::read_from_file(&wind_bin_path).unwrap_or_else(|_| WindForecast {
+        reference_time: 0,
+        steps: Vec::new(),
+    });
+    let solar_fc =
+        SolarForecast::read_from_file(&solar_bin_path).unwrap_or_else(|_| SolarForecast {
             reference_time: 0,
             steps: Vec::new(),
         });
-    let wind_fc = WindForecast::read_from_file(&wind_bin_path)
-        .unwrap_or_else(|_| WindForecast {
-            reference_time: 0,
-            steps: Vec::new(),
-        });
-    let solar_fc = SolarForecast::read_from_file(&solar_bin_path)
-        .unwrap_or_else(|_| SolarForecast {
-            reference_time: 0,
-            steps: Vec::new(),
-        });
-    let rain_fc = RainForecast::read_from_file(&rain_bin_path)
-        .unwrap_or_else(|_| RainForecast {
-            reference_time: 0,
-            steps: Vec::new(),
-        });
+    let rain_fc = RainForecast::read_from_file(&rain_bin_path).unwrap_or_else(|_| RainForecast {
+        reference_time: 0,
+        steps: Vec::new(),
+    });
 
     (temp_fc, wind_fc, solar_fc, rain_fc)
 }
@@ -869,10 +866,8 @@ pub async fn precalculate_solar_data_into(
                 eprintln!("Failed to acquire semaphore for solar precalculation");
                 return None;
             };
-            match tokio::task::spawn_blocking(move || {
-                render_solar_webp_bytes(&values, &lut_clone)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || render_solar_webp_bytes(&values, &lut_clone))
+                .await
             {
                 Ok(webp_bytes) => Some((time_key, webp_bytes)),
                 Err(e) => {

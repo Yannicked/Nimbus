@@ -2,24 +2,24 @@
 
 #[path = "../src/constants.rs"]
 mod constants;
-#[path = "../src/models.rs"]
-mod models;
-#[path = "../src/state.rs"]
-mod state;
-#[path = "../src/projection.rs"]
-mod projection;
-#[path = "../src/interpolation.rs"]
-mod interpolation;
-#[path = "../src/rendering.rs"]
-mod rendering;
-#[path = "../src/radar.rs"]
-mod radar;
-#[path = "../src/rtcor.rs"]
-mod rtcor;
-#[path = "../src/harmonie.rs"]
-mod harmonie;
 #[path = "../src/handlers.rs"]
 mod handlers;
+#[path = "../src/harmonie.rs"]
+mod harmonie;
+#[path = "../src/interpolation.rs"]
+mod interpolation;
+#[path = "../src/models.rs"]
+mod models;
+#[path = "../src/projection.rs"]
+mod projection;
+#[path = "../src/radar.rs"]
+mod radar;
+#[path = "../src/rendering.rs"]
+mod rendering;
+#[path = "../src/rtcor.rs"]
+mod rtcor;
+#[path = "../src/state.rs"]
+mod state;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -99,7 +99,9 @@ fn create_mock_app_state() -> Arc<AppState> {
             for item in grid.iter_mut().skip(fc_len / 2).take(100) {
                 *item = 250 + (e as u16) * 50;
             }
-            radar_data.grid_cache.insert((e.to_string(), t), Arc::new(grid));
+            radar_data
+                .grid_cache
+                .insert((e.to_string(), t), Arc::new(grid));
         }
 
         let mut med_grid = vec![0u16; fc_len];
@@ -116,11 +118,21 @@ fn create_mock_app_state() -> Arc<AppState> {
             pmm_grid[idx] = 320;
         }
 
-        radar_data.grid_cache.insert(("med".to_string(), t), Arc::new(med_grid));
-        radar_data.grid_cache.insert(("max".to_string(), t), Arc::new(max_grid));
-        radar_data.grid_cache.insert(("prob".to_string(), t), Arc::new(prob_grid));
-        radar_data.grid_cache.insert(("spread".to_string(), t), Arc::new(spread_grid));
-        radar_data.grid_cache.insert(("pmm".to_string(), t), Arc::new(pmm_grid));
+        radar_data
+            .grid_cache
+            .insert(("med".to_string(), t), Arc::new(med_grid));
+        radar_data
+            .grid_cache
+            .insert(("max".to_string(), t), Arc::new(max_grid));
+        radar_data
+            .grid_cache
+            .insert(("prob".to_string(), t), Arc::new(prob_grid));
+        radar_data
+            .grid_cache
+            .insert(("spread".to_string(), t), Arc::new(spread_grid));
+        radar_data
+            .grid_cache
+            .insert(("pmm".to_string(), t), Arc::new(pmm_grid));
     }
 
     let temp_steps = (0..5)
@@ -322,7 +334,9 @@ async fn test_t3_04_radar_actuals_to_forecast_transition_crossing_zero() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let ts_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     let times = ts_res["times"].as_array().unwrap();
     assert!(times.iter().any(|t| t.as_i64().unwrap() < 0));
@@ -342,7 +356,9 @@ async fn test_t3_05_extended_harmonie_forecast_stitching_with_radar_ensemble() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let ts_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(ts_res["status"], "ok");
     assert!(!ts_res["values"].as_array().unwrap().is_empty());
@@ -355,10 +371,16 @@ fn test_t3_06_pmm_reduction_under_extreme_spatial_gradients() {
     let member3 = [0u16, 6000, 0];
 
     // Verify statistical sanity across gradient
-    let med_center = reduce_ensemble(&EnsembleStat::Median, &mut [member1[1], member2[1], member3[1]]);
+    let med_center = reduce_ensemble(
+        &EnsembleStat::Median,
+        &mut [member1[1], member2[1], member3[1]],
+    );
     assert_eq!(med_center, 5000);
 
-    let max_center = reduce_ensemble(&EnsembleStat::Maximum, &mut [member1[1], member2[1], member3[1]]);
+    let max_center = reduce_ensemble(
+        &EnsembleStat::Maximum,
+        &mut [member1[1], member2[1], member3[1]],
+    );
     assert_eq!(max_center, 6000);
 }
 
@@ -378,7 +400,10 @@ async fn test_t3_07_rtcor_backfill_interleaving_with_active_image_render() {
     }
 
     // Simultaneously fetch image
-    let req = Request::builder().uri("/api/data/med/-600").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/api/data/med/-600")
+        .body(Body::empty())
+        .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 }
@@ -390,13 +415,18 @@ async fn test_t3_08_wind_multi_height_and_direction_consistency() {
 
     for &h in &[10, 50, 100, 200, 300] {
         let req = Request::builder()
-            .uri(format!("/api/value/wind?time=0&lon=5.2&lat=52.1&height={}", h))
+            .uri(format!(
+                "/api/value/wind?time=0&lon=5.2&lat=52.1&height={}",
+                h
+            ))
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let wind_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(wind_res["status"], "ok");
         assert!(wind_res["speed"].as_f64().unwrap() >= 0.0);
@@ -410,7 +440,10 @@ async fn test_t3_09_timeseries_caching_and_invalidation_across_dataset_swaps() {
     let app = create_test_router(state.clone());
 
     // Initial query caches timeseries
-    let req1 = Request::builder().uri("/api/timeseries?ens=med&lon=5.2&lat=52.1").body(Body::empty()).unwrap();
+    let req1 = Request::builder()
+        .uri("/api/timeseries?ens=med&lon=5.2&lat=52.1")
+        .body(Body::empty())
+        .unwrap();
     let res1 = app.clone().oneshot(req1).await.unwrap();
     assert_eq!(res1.status(), StatusCode::OK);
 
@@ -422,9 +455,14 @@ async fn test_t3_09_timeseries_caching_and_invalidation_across_dataset_swaps() {
     *state.radar_data.write().await = Some(new_radar);
 
     // Subsequent query should read from new dataset state
-    let req2 = Request::builder().uri("/api/metadata").body(Body::empty()).unwrap();
+    let req2 = Request::builder()
+        .uri("/api/metadata")
+        .body(Body::empty())
+        .unwrap();
     let res2 = app.oneshot(req2).await.unwrap();
-    let body_bytes = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res2.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let meta: Metadata = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(meta.version, 99999);
 }
@@ -466,7 +504,9 @@ async fn test_t3_11_out_of_grid_inspection_across_all_layers() {
         let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["status"], "out_of_bounds");
     }
@@ -489,7 +529,10 @@ fn test_t3_12_bilinear_interpolation_near_polar_projection_edges() {
 #[test]
 fn test_t3_13_corrupted_binary_cache_fallback_resilience() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_t3_corrupted.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_t3_corrupted.bin")
+        .to_string_lossy()
+        .to_string();
 
     std::fs::write(&file_path, b"CORRUPTED_GARBAGE_PAYLOAD").expect("Write failed");
     assert!(TempForecast::read_from_file(&file_path).is_err());
@@ -519,11 +562,17 @@ async fn test_t3_15_extreme_storm_point_query_with_gale_wind() {
     let state = create_mock_app_state();
     let app = create_test_router(state);
 
-    let req_rain = Request::builder().uri("/api/value?ens=max&time=0&lon=5.2&lat=52.1").body(Body::empty()).unwrap();
+    let req_rain = Request::builder()
+        .uri("/api/value?ens=max&time=0&lon=5.2&lat=52.1")
+        .body(Body::empty())
+        .unwrap();
     let res_rain = app.clone().oneshot(req_rain).await.unwrap();
     assert_eq!(res_rain.status(), StatusCode::OK);
 
-    let req_wind = Request::builder().uri("/api/value/wind?time=0&lon=5.2&lat=52.1&height=10").body(Body::empty()).unwrap();
+    let req_wind = Request::builder()
+        .uri("/api/value/wind?time=0&lon=5.2&lat=52.1&height=10")
+        .body(Body::empty())
+        .unwrap();
     let res_wind = app.oneshot(req_wind).await.unwrap();
     assert_eq!(res_wind.status(), StatusCode::OK);
 }
@@ -533,11 +582,17 @@ async fn test_t3_16_solar_and_temperature_correlation_inspection() {
     let state = create_mock_app_state();
     let app = create_test_router(state);
 
-    let req_temp = Request::builder().uri("/api/timeseries/temp?lon=5.2&lat=52.1").body(Body::empty()).unwrap();
+    let req_temp = Request::builder()
+        .uri("/api/timeseries/temp?lon=5.2&lat=52.1")
+        .body(Body::empty())
+        .unwrap();
     let res_temp = app.clone().oneshot(req_temp).await.unwrap();
     assert_eq!(res_temp.status(), StatusCode::OK);
 
-    let req_solar = Request::builder().uri("/api/timeseries/solar?lon=5.2&lat=52.1").body(Body::empty()).unwrap();
+    let req_solar = Request::builder()
+        .uri("/api/timeseries/solar?lon=5.2&lat=52.1")
+        .body(Body::empty())
+        .unwrap();
     let res_solar = app.oneshot(req_solar).await.unwrap();
     assert_eq!(res_solar.status(), StatusCode::OK);
 }
@@ -548,20 +603,36 @@ async fn test_t3_17_multi_variable_metadata_geometry_alignment() {
     let app = create_test_router(state);
 
     // Radar metadata
-    let req_radar = Request::builder().uri("/api/metadata").body(Body::empty()).unwrap();
+    let req_radar = Request::builder()
+        .uri("/api/metadata")
+        .body(Body::empty())
+        .unwrap();
     let res_radar = app.clone().oneshot(req_radar).await.unwrap();
-    let bytes_radar = axum::body::to_bytes(res_radar.into_body(), usize::MAX).await.unwrap();
+    let bytes_radar = axum::body::to_bytes(res_radar.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let meta_radar: Metadata = serde_json::from_slice(&bytes_radar).unwrap();
 
     // Temp metadata
-    let req_temp = Request::builder().uri("/api/metadata/temp").body(Body::empty()).unwrap();
+    let req_temp = Request::builder()
+        .uri("/api/metadata/temp")
+        .body(Body::empty())
+        .unwrap();
     let res_temp = app.oneshot(req_temp).await.unwrap();
-    let bytes_temp = axum::body::to_bytes(res_temp.into_body(), usize::MAX).await.unwrap();
+    let bytes_temp = axum::body::to_bytes(res_temp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let meta_temp: serde_json::Value = serde_json::from_slice(&bytes_temp).unwrap();
 
     // Geometrical alignment checks
-    assert_eq!(meta_radar.width, meta_temp["width"].as_u64().unwrap() as u32);
-    assert_eq!(meta_radar.height, meta_temp["height"].as_u64().unwrap() as u32);
+    assert_eq!(
+        meta_radar.width,
+        meta_temp["width"].as_u64().unwrap() as u32
+    );
+    assert_eq!(
+        meta_radar.height,
+        meta_temp["height"].as_u64().unwrap() as u32
+    );
     assert_eq!(meta_radar.left, meta_temp["left"].as_f64().unwrap());
     assert_eq!(meta_radar.right, meta_temp["right"].as_f64().unwrap());
     assert_eq!(meta_radar.bottom, meta_temp["bottom"].as_f64().unwrap());
@@ -592,12 +663,18 @@ async fn test_t3_18_cold_boot_state_initialization_with_partial_layers() {
     let app = create_test_router(partial_state);
 
     // Favicon should still work
-    let req = Request::builder().uri("/favicon.ico").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/favicon.ico")
+        .body(Body::empty())
+        .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
     // Unloaded metadata should return 500 without crashing
-    let req_meta = Request::builder().uri("/api/metadata").body(Body::empty()).unwrap();
+    let req_meta = Request::builder()
+        .uri("/api/metadata")
+        .body(Body::empty())
+        .unwrap();
     let res_meta = app.oneshot(req_meta).await.unwrap();
     assert_eq!(res_meta.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

@@ -897,7 +897,10 @@ mod tests {
 
         let res = TempForecast::read_from_file(huge_steps_file.to_str().unwrap());
         assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("exceeds maximum limit"));
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds maximum limit"));
 
         let _ = std::fs::remove_file(huge_steps_file);
     }

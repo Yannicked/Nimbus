@@ -436,8 +436,8 @@ pub async fn precalculate_all_data(
         };
 
         // 2. Offload heavy CPU-bound (Rayon) work to prevent starving the Tokio runtime
-        let (arc_med, arc_max, arc_prob, arc_spread, arc_pmm, all_members_data) = match
-            tokio::task::spawn_blocking(move || {
+        let (arc_med, arc_max, arc_prob, arc_spread, arc_pmm, all_members_data) =
+            match tokio::task::spawn_blocking(move || {
                 // Fast, Cache-Friendly Parallel Transpose
                 let mut transposed = vec![0u16; grid_size * num_ensembles];
                 transposed
@@ -686,7 +686,10 @@ pub async fn precalculate_all_data(
                             .insert((ens_str, time_val), webp_bytes);
                     }
                     Err(e) => {
-                        eprintln!("Failed to join WebP rendering task for {}: {:?}", ens_str, e);
+                        eprintln!(
+                            "Failed to join WebP rendering task for {}: {:?}",
+                            ens_str, e
+                        );
                     }
                 }
 

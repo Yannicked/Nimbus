@@ -2,24 +2,24 @@
 
 #[path = "../src/constants.rs"]
 mod constants;
-#[path = "../src/models.rs"]
-mod models;
-#[path = "../src/state.rs"]
-mod state;
-#[path = "../src/projection.rs"]
-mod projection;
-#[path = "../src/interpolation.rs"]
-mod interpolation;
-#[path = "../src/rendering.rs"]
-mod rendering;
-#[path = "../src/radar.rs"]
-mod radar;
-#[path = "../src/rtcor.rs"]
-mod rtcor;
-#[path = "../src/harmonie.rs"]
-mod harmonie;
 #[path = "../src/handlers.rs"]
 mod handlers;
+#[path = "../src/harmonie.rs"]
+mod harmonie;
+#[path = "../src/interpolation.rs"]
+mod interpolation;
+#[path = "../src/models.rs"]
+mod models;
+#[path = "../src/projection.rs"]
+mod projection;
+#[path = "../src/radar.rs"]
+mod radar;
+#[path = "../src/rendering.rs"]
+mod rendering;
+#[path = "../src/rtcor.rs"]
+mod rtcor;
+#[path = "../src/state.rs"]
+mod state;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -95,14 +95,22 @@ fn create_scenario_app_state() -> Arc<AppState> {
     let fc_len = FORECAST_GRID_W * FORECAST_GRID_H;
     for &t in &times {
         // Storm peak at t = 900 (15m)
-        let intensity_mult = if t == 900 { 20 } else if t == 600 || t == 1200 { 10 } else { 2 };
+        let intensity_mult = if t == 900 {
+            20
+        } else if t == 600 || t == 1200 {
+            10
+        } else {
+            2
+        };
         for e in 0..5 {
             let mut grid = vec![0u16; fc_len];
             let storm_center = fc_len / 2 + 390;
             for item in grid.iter_mut().skip(storm_center - 50).take(100) {
                 *item = (250 * intensity_mult + (e as u16) * 50).min(65534);
             }
-            radar_data.grid_cache.insert((e.to_string(), t), Arc::new(grid));
+            radar_data
+                .grid_cache
+                .insert((e.to_string(), t), Arc::new(grid));
         }
 
         let mut med_grid = vec![0u16; fc_len];
@@ -114,9 +122,15 @@ fn create_scenario_app_state() -> Arc<AppState> {
             max_grid[idx] = (300 * intensity_mult).min(65534);
             pmm_grid[idx] = (280 * intensity_mult).min(65534);
         }
-        radar_data.grid_cache.insert(("med".to_string(), t), Arc::new(med_grid));
-        radar_data.grid_cache.insert(("max".to_string(), t), Arc::new(max_grid));
-        radar_data.grid_cache.insert(("pmm".to_string(), t), Arc::new(pmm_grid));
+        radar_data
+            .grid_cache
+            .insert(("med".to_string(), t), Arc::new(med_grid));
+        radar_data
+            .grid_cache
+            .insert(("max".to_string(), t), Arc::new(max_grid));
+        radar_data
+            .grid_cache
+            .insert(("pmm".to_string(), t), Arc::new(pmm_grid));
     }
 
     let temp_steps = (0..9)
@@ -163,7 +177,11 @@ fn create_scenario_app_state() -> Arc<AppState> {
     let solar_steps = (0..9)
         .map(|hour| {
             let grib_len = GRIB_WIDTH * GRIB_HEIGHT;
-            let solar_val = if (2..=6).contains(&hour) { 850u16 } else { 100u16 };
+            let solar_val = if (2..=6).contains(&hour) {
+                850u16
+            } else {
+                100u16
+            };
             SolarStep {
                 forecast_hour: hour,
                 width: GRIB_WIDTH,
@@ -235,7 +253,9 @@ async fn test_scenario_s1_extreme_convective_storm() {
     let res_ts = app.clone().oneshot(req_ts).await.unwrap();
     assert_eq!(res_ts.status(), StatusCode::OK);
 
-    let bytes_ts = axum::body::to_bytes(res_ts.into_body(), usize::MAX).await.unwrap();
+    let bytes_ts = axum::body::to_bytes(res_ts.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let ts_json: serde_json::Value = serde_json::from_slice(&bytes_ts).unwrap();
     let values = ts_json["values"].as_array().unwrap();
     assert!(!values.is_empty());
@@ -255,13 +275,18 @@ async fn test_scenario_s1_extreme_convective_storm() {
         .unwrap();
     let res_wind = app.clone().oneshot(req_wind).await.unwrap();
     assert_eq!(res_wind.status(), StatusCode::OK);
-    let bytes_wind = axum::body::to_bytes(res_wind.into_body(), usize::MAX).await.unwrap();
+    let bytes_wind = axum::body::to_bytes(res_wind.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let wind_json: serde_json::Value = serde_json::from_slice(&bytes_wind).unwrap();
     let wind_speed = wind_json["speed"].as_f64().unwrap();
     assert!(wind_speed > 20.0); // Severe gale > 20 m/s
 
     // 4. Fetch radar image at peak storm
-    let req_img = Request::builder().uri("/api/data/pmm/900").body(Body::empty()).unwrap();
+    let req_img = Request::builder()
+        .uri("/api/data/pmm/900")
+        .body(Body::empty())
+        .unwrap();
     let res_img = app.oneshot(req_img).await.unwrap();
     assert_eq!(res_img.status(), StatusCode::OK);
     assert_eq!(res_img.headers().get("Content-Type").unwrap(), "image/webp");
@@ -309,7 +334,9 @@ async fn test_scenario_s2_multi_model_run_transition_scrubbing() {
         let new_radar = Arc::new(RadarData::new("new_run.nc".to_string(), new_meta));
         let fc_len = FORECAST_GRID_W * FORECAST_GRID_H;
         for &t in &[0, 300, 600, 900, 1200] {
-            new_radar.grid_cache.insert(("med".to_string(), t), Arc::new(vec![150u16; fc_len]));
+            new_radar
+                .grid_cache
+                .insert(("med".to_string(), t), Arc::new(vec![150u16; fc_len]));
         }
         *state.radar_data.write().await = Some(new_radar);
     });
@@ -319,9 +346,14 @@ async fn test_scenario_s2_multi_model_run_transition_scrubbing() {
     assert!(r2.is_ok());
 
     // Verify metadata reflects the updated model run version
-    let req_meta = Request::builder().uri("/api/metadata").body(Body::empty()).unwrap();
+    let req_meta = Request::builder()
+        .uri("/api/metadata")
+        .body(Body::empty())
+        .unwrap();
     let res_meta = app.oneshot(req_meta).await.unwrap();
-    let bytes = axum::body::to_bytes(res_meta.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res_meta.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let meta: Metadata = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(meta.version, 1700003600);
 }
@@ -340,15 +372,24 @@ async fn test_scenario_s3_mobile_low_memory_exploration_and_compare() {
     for i in 0..50 {
         let t = (i % 8) * 300;
         // Left screen: Rain image
-        let req_l = Request::builder().uri(format!("/api/data/med/{}", t)).body(Body::empty()).unwrap();
+        let req_l = Request::builder()
+            .uri(format!("/api/data/med/{}", t))
+            .body(Body::empty())
+            .unwrap();
         let res_l = app.clone().oneshot(req_l).await.unwrap();
         assert_eq!(res_l.status(), StatusCode::OK);
 
         // Right screen: Temp or Wind image
         let req_r = if i % 2 == 0 {
-            Request::builder().uri(format!("/api/data/temp/{}", t)).body(Body::empty()).unwrap()
+            Request::builder()
+                .uri(format!("/api/data/temp/{}", t))
+                .body(Body::empty())
+                .unwrap()
         } else {
-            Request::builder().uri(format!("/api/data/wind/10/{}", t)).body(Body::empty()).unwrap()
+            Request::builder()
+                .uri(format!("/api/data/wind/10/{}", t))
+                .body(Body::empty())
+                .unwrap()
         };
         let res_r = app.clone().oneshot(req_r).await.unwrap();
         assert_eq!(res_r.status(), StatusCode::OK);
@@ -373,10 +414,15 @@ async fn test_scenario_s4_corrupted_data_interruption_and_recovery() {
     *state.temp_data.write().await = Some(Arc::new(TempData::new(corrupted_temp_fc)));
 
     // Requesting corrupted temp value returns graceful "no_data" rather than 500
-    let req_bad = Request::builder().uri("/api/value/temp?time=0&lon=5.2&lat=52.1").body(Body::empty()).unwrap();
+    let req_bad = Request::builder()
+        .uri("/api/value/temp?time=0&lon=5.2&lat=52.1")
+        .body(Body::empty())
+        .unwrap();
     let res_bad = app.clone().oneshot(req_bad).await.unwrap();
     assert_eq!(res_bad.status(), StatusCode::OK);
-    let bytes_bad = axum::body::to_bytes(res_bad.into_body(), usize::MAX).await.unwrap();
+    let bytes_bad = axum::body::to_bytes(res_bad.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json_bad: serde_json::Value = serde_json::from_slice(&bytes_bad).unwrap();
     assert_eq!(json_bad["status"], "no_data");
 
@@ -393,10 +439,15 @@ async fn test_scenario_s4_corrupted_data_interruption_and_recovery() {
     *state.temp_data.write().await = Some(Arc::new(TempData::new(valid_temp_fc)));
 
     // Query recovered temp endpoint
-    let req_ok = Request::builder().uri("/api/value/temp?time=0&lon=5.2&lat=52.1").body(Body::empty()).unwrap();
+    let req_ok = Request::builder()
+        .uri("/api/value/temp?time=0&lon=5.2&lat=52.1")
+        .body(Body::empty())
+        .unwrap();
     let res_ok = app.oneshot(req_ok).await.unwrap();
     assert_eq!(res_ok.status(), StatusCode::OK);
-    let bytes_ok = axum::body::to_bytes(res_ok.into_body(), usize::MAX).await.unwrap();
+    let bytes_ok = axum::body::to_bytes(res_ok.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json_ok: serde_json::Value = serde_json::from_slice(&bytes_ok).unwrap();
     assert_eq!(json_ok["status"], "ok");
     assert!(json_ok["value"].as_f64().is_some());
@@ -430,7 +481,9 @@ async fn test_scenario_s5_solar_and_temperature_spatial_inspection() {
         let res_temp = app.clone().oneshot(req_temp).await.unwrap();
         assert_eq!(res_temp.status(), StatusCode::OK, "Failed for {}", name);
 
-        let bytes_t = axum::body::to_bytes(res_temp.into_body(), usize::MAX).await.unwrap();
+        let bytes_t = axum::body::to_bytes(res_temp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_t: serde_json::Value = serde_json::from_slice(&bytes_t).unwrap();
         assert_eq!(json_t["status"], "ok");
         assert!(json_t["value"].as_f64().unwrap() > 10.0);
@@ -443,7 +496,9 @@ async fn test_scenario_s5_solar_and_temperature_spatial_inspection() {
         let res_solar = app.clone().oneshot(req_solar).await.unwrap();
         assert_eq!(res_solar.status(), StatusCode::OK, "Failed for {}", name);
 
-        let bytes_s = axum::body::to_bytes(res_solar.into_body(), usize::MAX).await.unwrap();
+        let bytes_s = axum::body::to_bytes(res_solar.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_s: serde_json::Value = serde_json::from_slice(&bytes_s).unwrap();
         assert_eq!(json_s["status"], "ok");
         assert!(json_s["value"].as_f64().is_some());

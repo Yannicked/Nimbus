@@ -2,24 +2,24 @@
 
 #[path = "../src/constants.rs"]
 mod constants;
-#[path = "../src/models.rs"]
-mod models;
-#[path = "../src/state.rs"]
-mod state;
-#[path = "../src/projection.rs"]
-mod projection;
-#[path = "../src/interpolation.rs"]
-mod interpolation;
-#[path = "../src/rendering.rs"]
-mod rendering;
-#[path = "../src/radar.rs"]
-mod radar;
-#[path = "../src/rtcor.rs"]
-mod rtcor;
-#[path = "../src/harmonie.rs"]
-mod harmonie;
 #[path = "../src/handlers.rs"]
 mod handlers;
+#[path = "../src/harmonie.rs"]
+mod harmonie;
+#[path = "../src/interpolation.rs"]
+mod interpolation;
+#[path = "../src/models.rs"]
+mod models;
+#[path = "../src/projection.rs"]
+mod projection;
+#[path = "../src/radar.rs"]
+mod radar;
+#[path = "../src/rendering.rs"]
+mod rendering;
+#[path = "../src/rtcor.rs"]
+mod rtcor;
+#[path = "../src/state.rs"]
+mod state;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -256,11 +256,26 @@ fn create_mock_app_state() -> Arc<AppState> {
 
 #[test]
 fn test_f01_01_ensemble_stat_from_str() {
-    assert!(matches!(EnsembleStat::from_str("med"), Some(EnsembleStat::Median)));
-    assert!(matches!(EnsembleStat::from_str("max"), Some(EnsembleStat::Maximum)));
-    assert!(matches!(EnsembleStat::from_str("prob"), Some(EnsembleStat::Probability)));
-    assert!(matches!(EnsembleStat::from_str("spread"), Some(EnsembleStat::Spread)));
-    assert!(matches!(EnsembleStat::from_str("pmm"), Some(EnsembleStat::Pmm)));
+    assert!(matches!(
+        EnsembleStat::from_str("med"),
+        Some(EnsembleStat::Median)
+    ));
+    assert!(matches!(
+        EnsembleStat::from_str("max"),
+        Some(EnsembleStat::Maximum)
+    ));
+    assert!(matches!(
+        EnsembleStat::from_str("prob"),
+        Some(EnsembleStat::Probability)
+    ));
+    assert!(matches!(
+        EnsembleStat::from_str("spread"),
+        Some(EnsembleStat::Spread)
+    ));
+    assert!(matches!(
+        EnsembleStat::from_str("pmm"),
+        Some(EnsembleStat::Pmm)
+    ));
     assert!(EnsembleStat::from_str("invalid_stat").is_none());
     assert!(EnsembleStat::from_str("").is_none());
 }
@@ -283,10 +298,16 @@ fn test_f01_03_ensemble_maximum_reduction() {
     assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals1), 80);
 
     let mut vals_with_nodata = [50, 120, NODATA, 30];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals_with_nodata), 120);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Maximum, &mut vals_with_nodata),
+        120
+    );
 
     let mut vals_all_zeros = [0, 0, 0];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals_all_zeros), 0);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Maximum, &mut vals_all_zeros),
+        0
+    );
 }
 
 #[test]
@@ -301,10 +322,16 @@ fn test_f01_04_ensemble_probability_reduction() {
     assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals), 60);
 
     let mut vals_none = [0, 1, 2, 3, 4];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals_none), 0);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut vals_none),
+        0
+    );
 
     let mut vals_all = [RAIN_THRESHOLD, RAIN_THRESHOLD + 10, RAIN_THRESHOLD + 20, 50];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals_all), 100);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut vals_all),
+        100
+    );
 }
 
 #[test]
@@ -313,7 +340,10 @@ fn test_f01_05_ensemble_spread_reduction() {
     assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut vals), 82);
 
     let mut vals_identical = [400, 400, 400, 400];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut vals_identical), 0);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Spread, &mut vals_identical),
+        0
+    );
 }
 
 #[test]
@@ -363,10 +393,22 @@ fn test_f02_01_parse_reference_time() {
 
 #[test]
 fn test_f02_02_parse_forecast_hour_from_name() {
-    assert_eq!(parse_forecast_hour_from_name("HA40_NWP_202311142200_00300_GB"), Some(3));
-    assert_eq!(parse_forecast_hour_from_name("HA40_NWP_202311142200_04800_GB"), Some(48));
-    assert_eq!(parse_forecast_hour_from_name("HA40_NWP_202311142200_00000_GB"), Some(0));
-    assert_eq!(parse_forecast_hour_from_name("unrecognized_filename_pattern"), None);
+    assert_eq!(
+        parse_forecast_hour_from_name("HA40_NWP_202311142200_00300_GB"),
+        Some(3)
+    );
+    assert_eq!(
+        parse_forecast_hour_from_name("HA40_NWP_202311142200_04800_GB"),
+        Some(48)
+    );
+    assert_eq!(
+        parse_forecast_hour_from_name("HA40_NWP_202311142200_00000_GB"),
+        Some(0)
+    );
+    assert_eq!(
+        parse_forecast_hour_from_name("unrecognized_filename_pattern"),
+        None
+    );
 }
 
 #[test]
@@ -444,7 +486,10 @@ fn test_f03_01_parse_rtcor_filename_timestamp() {
     let ts2 = parse_rtcor_filename_timestamp("RAD_NL25_RAC_RT_202401010000.h5");
     assert!(ts2.is_some());
 
-    assert_eq!(parse_rtcor_filename_timestamp("corrupted_rtcor_file.h5"), None);
+    assert_eq!(
+        parse_rtcor_filename_timestamp("corrupted_rtcor_file.h5"),
+        None
+    );
     assert_eq!(parse_rtcor_filename_timestamp(""), None);
 }
 
@@ -530,7 +575,10 @@ fn test_f03_05_rtcor_polar_stereographic_bounds() {
 #[test]
 fn test_f04_01_temp_forecast_binary_roundtrip() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_f04_temp.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_f04_temp.bin")
+        .to_string_lossy()
+        .to_string();
 
     let step = TempStep {
         forecast_hour: 5,
@@ -543,7 +591,8 @@ fn test_f04_01_temp_forecast_binary_roundtrip() {
         steps: vec![step],
     };
 
-    fc.write_to_file(&file_path).expect("Failed to write temp binary");
+    fc.write_to_file(&file_path)
+        .expect("Failed to write temp binary");
     let loaded = TempForecast::read_from_file(&file_path).expect("Failed to read temp binary");
 
     assert_eq!(loaded.reference_time, 1700000000);
@@ -557,7 +606,10 @@ fn test_f04_01_temp_forecast_binary_roundtrip() {
 #[test]
 fn test_f04_02_wind_forecast_binary_roundtrip() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_f04_wind.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_f04_wind.bin")
+        .to_string_lossy()
+        .to_string();
 
     let step = WindStep {
         forecast_hour: 2,
@@ -572,7 +624,8 @@ fn test_f04_02_wind_forecast_binary_roundtrip() {
         steps: vec![step],
     };
 
-    fc.write_to_file(&file_path).expect("Failed to write wind binary");
+    fc.write_to_file(&file_path)
+        .expect("Failed to write wind binary");
     let loaded = WindForecast::read_from_file(&file_path).expect("Failed to read wind binary");
 
     assert_eq!(loaded.reference_time, 1700000000);
@@ -587,7 +640,10 @@ fn test_f04_02_wind_forecast_binary_roundtrip() {
 #[test]
 fn test_f04_03_solar_forecast_binary_roundtrip() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_f04_solar.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_f04_solar.bin")
+        .to_string_lossy()
+        .to_string();
 
     let step = SolarStep {
         forecast_hour: 14,
@@ -600,7 +656,8 @@ fn test_f04_03_solar_forecast_binary_roundtrip() {
         steps: vec![step],
     };
 
-    fc.write_to_file(&file_path).expect("Failed to write solar binary");
+    fc.write_to_file(&file_path)
+        .expect("Failed to write solar binary");
     let loaded = SolarForecast::read_from_file(&file_path).expect("Failed to read solar binary");
 
     assert_eq!(loaded.reference_time, 1700000000);
@@ -614,7 +671,10 @@ fn test_f04_03_solar_forecast_binary_roundtrip() {
 #[test]
 fn test_f04_04_rain_forecast_binary_roundtrip() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_f04_rain.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_f04_rain.bin")
+        .to_string_lossy()
+        .to_string();
 
     let step = RainStep {
         forecast_hour: 18,
@@ -627,7 +687,8 @@ fn test_f04_04_rain_forecast_binary_roundtrip() {
         steps: vec![step],
     };
 
-    fc.write_to_file(&file_path).expect("Failed to write rain binary");
+    fc.write_to_file(&file_path)
+        .expect("Failed to write rain binary");
     let loaded = RainForecast::read_from_file(&file_path).expect("Failed to read rain binary");
 
     assert_eq!(loaded.reference_time, 1700000000);
@@ -641,7 +702,10 @@ fn test_f04_04_rain_forecast_binary_roundtrip() {
 #[test]
 fn test_f04_05_binary_cache_magic_byte_validation() {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_f04_corrupt_magic.bin").to_string_lossy().to_string();
+    let file_path = temp_dir
+        .join("test_f04_corrupt_magic.bin")
+        .to_string_lossy()
+        .to_string();
 
     std::fs::write(&file_path, b"XXXX_bogus_payload_data").expect("Write failed");
 
@@ -682,7 +746,9 @@ async fn test_f05_02_cold_boot_cache_directory() {
     let temp_cache = std::env::temp_dir().join("nimbus_cold_boot_cache");
     let cache_str = temp_cache.to_string_lossy().to_string();
 
-    tokio::fs::create_dir_all(&cache_str).await.expect("Cache dir creation failed");
+    tokio::fs::create_dir_all(&cache_str)
+        .await
+        .expect("Cache dir creation failed");
     assert!(tokio::fs::metadata(&cache_str).await.is_ok());
 
     let _ = tokio::fs::remove_dir_all(&cache_str).await;
@@ -693,7 +759,9 @@ async fn test_f05_03_tar_cleanup_stale_files() {
     let cache_dir = constants::CACHE_DIR;
     let _ = tokio::fs::create_dir_all(cache_dir).await;
     let stale_tar = format!("{}/HARM43_stale_archive.tar", cache_dir);
-    tokio::fs::write(&stale_tar, b"dummy tar bytes").await.expect("Write tar failed");
+    tokio::fs::write(&stale_tar, b"dummy tar bytes")
+        .await
+        .expect("Write tar failed");
 
     cleanup_tar_files().await;
 
@@ -742,10 +810,22 @@ fn test_f05_05_metadata_version_generation() {
 #[test]
 fn test_f06_01_empty_ensemble_returns_nodata() {
     let mut empty_vals: [u16; 0] = [];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut empty_vals), NODATA);
-    assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut empty_vals), NODATA);
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut empty_vals), NODATA);
-    assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut empty_vals), NODATA);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Median, &mut empty_vals),
+        NODATA
+    );
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Maximum, &mut empty_vals),
+        NODATA
+    );
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut empty_vals),
+        NODATA
+    );
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Spread, &mut empty_vals),
+        NODATA
+    );
 }
 
 #[test]
@@ -753,7 +833,10 @@ fn test_f06_02_first_nodata_returns_nodata() {
     let mut vals = [NODATA, 50, 100, 200];
     assert_eq!(reduce_ensemble(&EnsembleStat::Median, &mut vals), NODATA);
     assert_eq!(reduce_ensemble(&EnsembleStat::Maximum, &mut vals), NODATA);
-    assert_eq!(reduce_ensemble(&EnsembleStat::Probability, &mut vals), NODATA);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Probability, &mut vals),
+        NODATA
+    );
     assert_eq!(reduce_ensemble(&EnsembleStat::Spread, &mut vals), NODATA);
 }
 
@@ -810,8 +893,11 @@ async fn test_f07_01_api_metadata() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    let meta: Metadata = serde_json::from_slice(&body_bytes).expect("Failed to deserialize Metadata");
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let meta: Metadata =
+        serde_json::from_slice(&body_bytes).expect("Failed to deserialize Metadata");
     assert_eq!(meta.width, GRID_W);
     assert_eq!(meta.height, GRID_H);
     assert_eq!(meta.version, 12345678);
@@ -823,15 +909,24 @@ async fn test_f07_02_api_temp_wind_solar_metadata() {
     let state = create_mock_app_state();
     let app = create_test_router(state);
 
-    let req_temp = Request::builder().uri("/api/metadata/temp").body(Body::empty()).unwrap();
+    let req_temp = Request::builder()
+        .uri("/api/metadata/temp")
+        .body(Body::empty())
+        .unwrap();
     let res_temp = app.clone().oneshot(req_temp).await.unwrap();
     assert_eq!(res_temp.status(), StatusCode::OK);
 
-    let req_wind = Request::builder().uri("/api/metadata/wind").body(Body::empty()).unwrap();
+    let req_wind = Request::builder()
+        .uri("/api/metadata/wind")
+        .body(Body::empty())
+        .unwrap();
     let res_wind = app.clone().oneshot(req_wind).await.unwrap();
     assert_eq!(res_wind.status(), StatusCode::OK);
 
-    let req_solar = Request::builder().uri("/api/metadata/solar").body(Body::empty()).unwrap();
+    let req_solar = Request::builder()
+        .uri("/api/metadata/solar")
+        .body(Body::empty())
+        .unwrap();
     let res_solar = app.oneshot(req_solar).await.unwrap();
     assert_eq!(res_solar.status(), StatusCode::OK);
 }
@@ -849,7 +944,9 @@ async fn test_f07_03_api_value_point_query() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let val_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert!(val_res.get("status").is_some());
 }
@@ -867,7 +964,9 @@ async fn test_f07_04_api_timeseries_query() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let ts_res: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(ts_res["status"], "ok");
     assert!(!ts_res["times"].as_array().unwrap().is_empty());
@@ -950,7 +1049,10 @@ async fn test_f07_07_api_data_image_rendering() {
         .unwrap();
     let res_temp = app.clone().oneshot(req_temp).await.unwrap();
     assert_eq!(res_temp.status(), StatusCode::OK);
-    assert_eq!(res_temp.headers().get("Content-Type").unwrap(), "image/webp");
+    assert_eq!(
+        res_temp.headers().get("Content-Type").unwrap(),
+        "image/webp"
+    );
 
     let req_wind = Request::builder()
         .uri("/api/data/wind/10/0")
@@ -958,7 +1060,10 @@ async fn test_f07_07_api_data_image_rendering() {
         .unwrap();
     let res_wind = app.clone().oneshot(req_wind).await.unwrap();
     assert_eq!(res_wind.status(), StatusCode::OK);
-    assert_eq!(res_wind.headers().get("Content-Type").unwrap(), "image/webp");
+    assert_eq!(
+        res_wind.headers().get("Content-Type").unwrap(),
+        "image/webp"
+    );
 
     let req_solar = Request::builder()
         .uri("/api/data/solar/0")
@@ -966,7 +1071,10 @@ async fn test_f07_07_api_data_image_rendering() {
         .unwrap();
     let res_solar = app.oneshot(req_solar).await.unwrap();
     assert_eq!(res_solar.status(), StatusCode::OK);
-    assert_eq!(res_solar.headers().get("Content-Type").unwrap(), "image/webp");
+    assert_eq!(
+        res_solar.headers().get("Content-Type").unwrap(),
+        "image/webp"
+    );
 }
 
 #[tokio::test]

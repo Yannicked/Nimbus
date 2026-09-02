@@ -2,24 +2,24 @@
 
 #[path = "../src/constants.rs"]
 mod constants;
-#[path = "../src/models.rs"]
-mod models;
-#[path = "../src/state.rs"]
-mod state;
-#[path = "../src/projection.rs"]
-mod projection;
-#[path = "../src/interpolation.rs"]
-mod interpolation;
-#[path = "../src/rendering.rs"]
-mod rendering;
-#[path = "../src/radar.rs"]
-mod radar;
-#[path = "../src/rtcor.rs"]
-mod rtcor;
-#[path = "../src/harmonie.rs"]
-mod harmonie;
 #[path = "../src/handlers.rs"]
 mod handlers;
+#[path = "../src/harmonie.rs"]
+mod harmonie;
+#[path = "../src/interpolation.rs"]
+mod interpolation;
+#[path = "../src/models.rs"]
+mod models;
+#[path = "../src/projection.rs"]
+mod projection;
+#[path = "../src/radar.rs"]
+mod radar;
+#[path = "../src/rendering.rs"]
+mod rendering;
+#[path = "../src/rtcor.rs"]
+mod rtcor;
+#[path = "../src/state.rs"]
+mod state;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -104,15 +104,27 @@ fn create_mock_app_state() -> Arc<AppState> {
         let spread_grid = Arc::new(vec![15u16; fc_len]);
         let pmm_grid = Arc::new(vec![120u16; fc_len]);
 
-        radar_data.grid_cache.insert(("med".to_string(), t), med_grid.clone());
-        radar_data.grid_cache.insert(("max".to_string(), t), max_grid.clone());
-        radar_data.grid_cache.insert(("prob".to_string(), t), prob_grid.clone());
-        radar_data.grid_cache.insert(("spread".to_string(), t), spread_grid.clone());
-        radar_data.grid_cache.insert(("pmm".to_string(), t), pmm_grid.clone());
+        radar_data
+            .grid_cache
+            .insert(("med".to_string(), t), med_grid.clone());
+        radar_data
+            .grid_cache
+            .insert(("max".to_string(), t), max_grid.clone());
+        radar_data
+            .grid_cache
+            .insert(("prob".to_string(), t), prob_grid.clone());
+        radar_data
+            .grid_cache
+            .insert(("spread".to_string(), t), spread_grid.clone());
+        radar_data
+            .grid_cache
+            .insert(("pmm".to_string(), t), pmm_grid.clone());
 
         for e in 0..5 {
             let ens_grid = Arc::new(vec![100u16 + (e as u16) * 20; fc_len]);
-            radar_data.grid_cache.insert((e.to_string(), t), ens_grid.clone());
+            radar_data
+                .grid_cache
+                .insert((e.to_string(), t), ens_grid.clone());
             let webp_ens = render_data_webp_bytes(&ens_grid, &projection_lut);
             radar_data.data_cache.insert((e.to_string(), t), webp_ens);
         }
@@ -123,11 +135,21 @@ fn create_mock_app_state() -> Arc<AppState> {
         let webp_spread = render_data_webp_bytes(&spread_grid, &projection_lut);
         let webp_pmm = render_data_webp_bytes(&pmm_grid, &projection_lut);
 
-        radar_data.data_cache.insert(("med".to_string(), t), webp_med);
-        radar_data.data_cache.insert(("max".to_string(), t), webp_max);
-        radar_data.data_cache.insert(("prob".to_string(), t), webp_prob);
-        radar_data.data_cache.insert(("spread".to_string(), t), webp_spread);
-        radar_data.data_cache.insert(("pmm".to_string(), t), webp_pmm);
+        radar_data
+            .data_cache
+            .insert(("med".to_string(), t), webp_med);
+        radar_data
+            .data_cache
+            .insert(("max".to_string(), t), webp_max);
+        radar_data
+            .data_cache
+            .insert(("prob".to_string(), t), webp_prob);
+        radar_data
+            .data_cache
+            .insert(("spread".to_string(), t), webp_spread);
+        radar_data
+            .data_cache
+            .insert(("pmm".to_string(), t), webp_pmm);
     }
 
     let temp_steps = (0..5)
@@ -292,7 +314,10 @@ fn test_stress_binary_cache_steps_len_boundaries_temp() {
         f.write_all(&1000u32.to_le_bytes()).unwrap();
     }
     let res_1000 = TempForecast::read_from_file(path_1000.to_str().unwrap());
-    assert!(res_1000.is_err(), "steps_len=1000 with truncated payload must return Err");
+    assert!(
+        res_1000.is_err(),
+        "steps_len=1000 with truncated payload must return Err"
+    );
     let _ = std::fs::remove_file(path_1000);
 
     // 3. steps_len = 1001 (MAX_BINARY_CACHE_STEPS + 1) -> must reject immediately with bounded limit error
@@ -305,7 +330,10 @@ fn test_stress_binary_cache_steps_len_boundaries_temp() {
     }
     let res_1001 = TempForecast::read_from_file(path_1001.to_str().unwrap());
     assert!(res_1001.is_err());
-    assert!(res_1001.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_1001
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_1001);
 
     // 4. steps_len = 2^31 - 1 (0x7FFFFFFF) -> must reject immediately without OOM
@@ -318,7 +346,10 @@ fn test_stress_binary_cache_steps_len_boundaries_temp() {
     }
     let res_2_31 = TempForecast::read_from_file(path_2_31.to_str().unwrap());
     assert!(res_2_31.is_err());
-    assert!(res_2_31.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_2_31
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_2_31);
 
     // 5. steps_len = 2^32 - 1 (0xFFFFFFFF) -> must reject immediately without OOM
@@ -331,7 +362,10 @@ fn test_stress_binary_cache_steps_len_boundaries_temp() {
     }
     let res_2_32 = TempForecast::read_from_file(path_2_32.to_str().unwrap());
     assert!(res_2_32.is_err());
-    assert!(res_2_32.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_2_32
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_2_32);
 }
 
@@ -374,7 +408,10 @@ fn test_stress_binary_cache_steps_len_boundaries_wind() {
     }
     let res_1001 = WindForecast::read_from_file(path_1001.to_str().unwrap());
     assert!(res_1001.is_err());
-    assert!(res_1001.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_1001
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_1001);
 
     // 4. steps_len = 2^31 - 1
@@ -387,7 +424,10 @@ fn test_stress_binary_cache_steps_len_boundaries_wind() {
     }
     let res_2_31 = WindForecast::read_from_file(path_2_31.to_str().unwrap());
     assert!(res_2_31.is_err());
-    assert!(res_2_31.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_2_31
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_2_31);
 
     // 5. steps_len = 2^32 - 1
@@ -400,7 +440,10 @@ fn test_stress_binary_cache_steps_len_boundaries_wind() {
     }
     let res_2_32 = WindForecast::read_from_file(path_2_32.to_str().unwrap());
     assert!(res_2_32.is_err());
-    assert!(res_2_32.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_2_32
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_2_32);
 }
 
@@ -428,7 +471,10 @@ fn test_stress_binary_cache_steps_len_boundaries_solar_and_rain() {
     }
     let res_solar_1001 = SolarForecast::read_from_file(path_solar_1001.to_str().unwrap());
     assert!(res_solar_1001.is_err());
-    assert!(res_solar_1001.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_solar_1001
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_solar_1001);
 
     // Rain 0 and 0xFFFFFFFF
@@ -451,7 +497,10 @@ fn test_stress_binary_cache_steps_len_boundaries_solar_and_rain() {
     }
     let res_rain_huge = RainForecast::read_from_file(path_rain_huge.to_str().unwrap());
     assert!(res_rain_huge.is_err());
-    assert!(res_rain_huge.unwrap_err().to_string().contains("exceeds maximum limit"));
+    assert!(res_rain_huge
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum limit"));
     let _ = std::fs::remove_file(path_rain_huge);
 }
 
@@ -561,7 +610,10 @@ fn test_stress_pmm_reduction_member_counts_and_extremes() {
     let mut first_nodata = [NODATA; 20];
     first_nodata[1] = 500;
     first_nodata[2] = 1000;
-    assert_eq!(reduce_ensemble(&EnsembleStat::Pmm, &mut first_nodata), NODATA);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Pmm, &mut first_nodata),
+        NODATA
+    );
 
     // 6. 20 members: interspersed NODATA (defensive mean of valid members)
     let mut mixed = [NODATA; 20];
@@ -573,7 +625,10 @@ fn test_stress_pmm_reduction_member_counts_and_extremes() {
 
     // 7. Extreme maximum values (checking 64-bit sum accumulator safety)
     let mut extreme_vals = [65534u16; 20];
-    assert_eq!(reduce_ensemble(&EnsembleStat::Pmm, &mut extreme_vals), 65534);
+    assert_eq!(
+        reduce_ensemble(&EnsembleStat::Pmm, &mut extreme_vals),
+        65534
+    );
 
     // 8. Alternating 0 and 65534
     let mut alt_vals = [0u16; 20];
@@ -632,7 +687,10 @@ async fn test_stress_cold_boot_state_uninitialized_endpoints() {
     let app = create_test_router(empty_state);
 
     // 1. Radar metadata -> 500 (Subsystem not loaded yet during cold boot)
-    let req = Request::builder().uri("/api/metadata").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/api/metadata")
+        .body(Body::empty())
+        .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
@@ -719,7 +777,9 @@ async fn test_stress_concurrent_rapid_mqtt_burst_and_atomic_swapping() {
 
             // Populate some cache items with correct forecast grid dimensions (780 x 780)
             let dummy_grid = Arc::new(vec![version as u16 * 10; FORECAST_GRID_W * FORECAST_GRID_H]);
-            staged.grid_cache.insert(("med".to_string(), 0), dummy_grid.clone());
+            staged
+                .grid_cache
+                .insert(("med".to_string(), 0), dummy_grid.clone());
             let webp = render_data_webp_bytes(&dummy_grid, &state_clone.projection_lut);
             staged.data_cache.insert(("med".to_string(), 0), webp);
 
@@ -789,7 +849,9 @@ async fn test_stress_axum_missing_and_extreme_timestamps() {
         let res = app.clone().oneshot(req).await.unwrap();
         assert!(res.status() == StatusCode::OK || res.status() == StatusCode::NOT_FOUND);
         if res.status() == StatusCode::OK {
-            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap();
             assert!(!bytes.is_empty(), "WebP bytes must not be empty");
         }
 
@@ -846,8 +908,15 @@ async fn test_stress_axum_extreme_and_special_coordinates() {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/value for {}", desc);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/value for {}",
+            desc
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
             json_body["value"].is_null(),
@@ -861,22 +930,51 @@ async fn test_stress_axum_extreme_and_special_coordinates() {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/value/temp for {}", desc);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/value/temp for {}",
+            desc
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(json_body["value"].is_null(), "Expected null temp for {}", desc);
+        assert!(
+            json_body["value"].is_null(),
+            "Expected null temp for {}",
+            desc
+        );
 
         // 3. /api/value/wind
         let req = Request::builder()
-            .uri(format!("/api/value/wind?lat={}&lon={}&time=0&height=10", lat, lon))
+            .uri(format!(
+                "/api/value/wind?lat={}&lon={}&time=0&height=10",
+                lat, lon
+            ))
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/value/wind for {}", desc);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/value/wind for {}",
+            desc
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(json_body["speed"].is_null(), "Expected null wind speed for {}", desc);
-        assert!(json_body["direction"].is_null(), "Expected null wind direction for {}", desc);
+        assert!(
+            json_body["speed"].is_null(),
+            "Expected null wind speed for {}",
+            desc
+        );
+        assert!(
+            json_body["direction"].is_null(),
+            "Expected null wind direction for {}",
+            desc
+        );
 
         // 4. /api/value/solar
         let req = Request::builder()
@@ -884,10 +982,21 @@ async fn test_stress_axum_extreme_and_special_coordinates() {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/value/solar for {}", desc);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/value/solar for {}",
+            desc
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(json_body["value"].is_null(), "Expected null solar for {}", desc);
+        assert!(
+            json_body["value"].is_null(),
+            "Expected null solar for {}",
+            desc
+        );
 
         // 5. /api/timeseries
         let req = Request::builder()
@@ -895,7 +1004,12 @@ async fn test_stress_axum_extreme_and_special_coordinates() {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/timeseries for {}", desc);
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/timeseries for {}",
+            desc
+        );
 
         // 6. /api/timeseries/temp
         let req = Request::builder()
@@ -903,15 +1017,28 @@ async fn test_stress_axum_extreme_and_special_coordinates() {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/timeseries/temp for {}", desc);
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/timeseries/temp for {}",
+            desc
+        );
 
         // 7. /api/timeseries/wind
         let req = Request::builder()
-            .uri(format!("/api/timeseries/wind?lat={}&lon={}&height=10", lat, lon))
+            .uri(format!(
+                "/api/timeseries/wind?lat={}&lon={}&height=10",
+                lat, lon
+            ))
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/timeseries/wind for {}", desc);
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/timeseries/wind for {}",
+            desc
+        );
 
         // 8. /api/timeseries/solar
         let req = Request::builder()
@@ -919,7 +1046,12 @@ async fn test_stress_axum_extreme_and_special_coordinates() {
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "Failed on /api/timeseries/solar for {}", desc);
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "Failed on /api/timeseries/solar for {}",
+            desc
+        );
     }
 }
 
@@ -942,7 +1074,9 @@ async fn test_stress_axum_malformed_route_parameters_and_types() {
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
-    assert!(res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     // 3. Unrecognized wind height level (e.g. 9999m) -> 404 (No matching step)
     let req = Request::builder()
@@ -953,9 +1087,14 @@ async fn test_stress_axum_malformed_route_parameters_and_types() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
     // 4. Missing required query parameters on /api/value -> 400 or 422
-    let req = Request::builder().uri("/api/value").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/api/value")
+        .body(Body::empty())
+        .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
-    assert!(res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     // 5. Malformed string query parameter where float expected -> 400 or 422
     let req = Request::builder()
@@ -963,7 +1102,9 @@ async fn test_stress_axum_malformed_route_parameters_and_types() {
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
-    assert!(res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 // ==============================================================================
@@ -975,11 +1116,26 @@ async fn test_stress_axum_malformed_route_parameters_and_types() {
 fn test_reproduce_bug_1_interpolation_overflow_on_inf_coordinate() {
     let dummy_values = vec![100u16; 390 * 390];
     // fx = +inf, -inf, NaN, 1e30 must return NODATA cleanly and not panic
-    assert_eq!(interpolate_bilinear(f64::INFINITY, 0.0, 390, 390, &dummy_values), NODATA);
-    assert_eq!(interpolate_bilinear(f64::NEG_INFINITY, 0.0, 390, 390, &dummy_values), NODATA);
-    assert_eq!(interpolate_bilinear(f64::NAN, 0.0, 390, 390, &dummy_values), NODATA);
-    assert_eq!(interpolate_bilinear(1e30, 0.0, 390, 390, &dummy_values), NODATA);
-    assert_eq!(interpolate_bilinear(0.0, 1e30, 390, 390, &dummy_values), NODATA);
+    assert_eq!(
+        interpolate_bilinear(f64::INFINITY, 0.0, 390, 390, &dummy_values),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(f64::NEG_INFINITY, 0.0, 390, 390, &dummy_values),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(f64::NAN, 0.0, 390, 390, &dummy_values),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(1e30, 0.0, 390, 390, &dummy_values),
+        NODATA
+    );
+    assert_eq!(
+        interpolate_bilinear(0.0, 1e30, 390, 390, &dummy_values),
+        NODATA
+    );
 }
 
 /// Verifies Resolution of Bug Finding 2: lat=NaN, lon=NaN in /api/value returns out_of_bounds with null value instead of aliasing to cell (0, 0)
@@ -994,7 +1150,9 @@ async fn test_reproduce_bug_2_radar_value_nan_coordinate_aliasing() {
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json_body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
     assert_eq!(json_body["status"], "out_of_bounds");
