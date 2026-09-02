@@ -13,17 +13,22 @@ use chrono::{NaiveDateTime, TimeZone, Utc};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Parses the UTC unix timestamp from an RTCOR filename (`RAD_NL25_RAC_RT_YYYYMMDDHHMM.h5`).
+/// Parses the UTC unix timestamp from an RTCOR filename (`RAD_NL25_RAC_RT_YYYYMMDDHHMM.h5` or `RAD_NL25_RAC_MFBS_EM_YYYYMMDDHHMM.h5`).
 pub fn parse_rtcor_filename_timestamp(filename: &str) -> Option<i64> {
     let clean_name = Path::new(filename).file_name()?.to_str()?;
 
-    let prefix = "RAD_NL25_RAC_RT_";
-    if !clean_name.starts_with(prefix) || !clean_name.ends_with(".h5") {
+    if !clean_name.ends_with(".h5") {
         return None;
     }
 
-    let timestamp_str = &clean_name[prefix.len()..clean_name.len() - 3];
-    if timestamp_str.len() != 12 {
+    let stem = &clean_name[..clean_name.len() - 3];
+    let timestamp_str = if let Some(pos) = stem.rfind('_') {
+        &stem[pos + 1..]
+    } else {
+        stem
+    };
+
+    if timestamp_str.len() != 12 || !timestamp_str.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
 
@@ -31,6 +36,12 @@ pub fn parse_rtcor_filename_timestamp(filename: &str) -> Option<i64> {
         NaiveDateTime::parse_from_str(&format!("{}00", timestamp_str), "%Y%m%d%H%M%S").ok()?;
 
     Some(Utc.from_utc_datetime(&naive).timestamp())
+}
+
+/// Alias for `parse_rtcor_filename_timestamp` for convenience.
+#[allow(dead_code)]
+pub fn parse_rtcor_timestamp(filename: &str) -> Option<i64> {
+    parse_rtcor_filename_timestamp(filename)
 }
 
 /// Reads a 5-minute precipitation accumulation HDF5 file, converts pixel values

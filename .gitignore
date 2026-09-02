@@ -27,3 +27,6 @@ wheels/
 /cache/
 *.bin
 
+# Multi-agent teamwork temporary artifacts
+/.agents/
+

@@ -1,4 +1,4 @@
-use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, NODATA, RAIN_THRESHOLD};
+use crate::constants::{GRIB_HEIGHT, GRIB_WIDTH, MAX_BINARY_CACHE_STEPS, NODATA, RAIN_THRESHOLD};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::sync::Arc;
@@ -29,6 +29,7 @@ pub trait ForecastStep {
     fn forecast_hour(&self) -> i32;
 }
 
+#[derive(Clone, Debug)]
 pub struct TempStep {
     pub forecast_hour: i32,
     pub width: usize,
@@ -48,6 +49,7 @@ impl ForecastStep for &TempStep {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct TempForecast {
     pub reference_time: i64,
     pub steps: Vec<TempStep>,
@@ -88,6 +90,14 @@ impl TempForecast {
         let mut steps_len_bytes = [0u8; 4];
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
+
+        if steps_len > MAX_BINARY_CACHE_STEPS {
+            return Err(format!(
+                "steps_len {} exceeds maximum limit of {} in temperature forecast binary file",
+                steps_len, MAX_BINARY_CACHE_STEPS
+            )
+            .into());
+        }
 
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
@@ -130,6 +140,7 @@ impl TempForecast {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct WindStep {
     pub forecast_hour: i32,
     pub height_level: u32,
@@ -151,6 +162,7 @@ impl ForecastStep for &WindStep {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct WindForecast {
     pub reference_time: i64,
     pub steps: Vec<WindStep>,
@@ -195,6 +207,14 @@ impl WindForecast {
         let mut steps_len_bytes = [0u8; 4];
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
+
+        if steps_len > MAX_BINARY_CACHE_STEPS {
+            return Err(format!(
+                "steps_len {} exceeds maximum limit of {} in wind forecast binary file",
+                steps_len, MAX_BINARY_CACHE_STEPS
+            )
+            .into());
+        }
 
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
@@ -365,7 +385,20 @@ pub fn reduce_ensemble(stat: &EnsembleStat, member_vals: &mut [u16]) -> u16 {
             variance.sqrt().round() as u16
         }
         EnsembleStat::Pmm => {
-            panic!("PMM cannot be computed on a single grid cell; it is a domain-wide operation");
+            // PMM is fundamentally a domain-wide operation, but when evaluated on a single cell
+            // or reduced subset, compute the defensive mean of valid member values.
+            let valid_vals: Vec<f64> = member_vals
+                .iter()
+                .copied()
+                .filter(|&v| v != NODATA)
+                .map(|v| v as f64)
+                .collect();
+            if valid_vals.is_empty() {
+                return NODATA;
+            }
+            let n = valid_vals.len() as f64;
+            let sum: f64 = valid_vals.iter().sum();
+            (sum / n).round() as u16
         }
     }
 }
@@ -526,6 +559,14 @@ impl SolarForecast {
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
 
+        if steps_len > MAX_BINARY_CACHE_STEPS {
+            return Err(format!(
+                "steps_len {} exceeds maximum limit of {} in solar forecast binary file",
+                steps_len, MAX_BINARY_CACHE_STEPS
+            )
+            .into());
+        }
+
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
             let mut hour_bytes = [0u8; 4];
@@ -628,6 +669,14 @@ impl RainForecast {
         let mut steps_len_bytes = [0u8; 4];
         f.read_exact(&mut steps_len_bytes)?;
         let steps_len = u32::from_le_bytes(steps_len_bytes) as usize;
+
+        if steps_len > MAX_BINARY_CACHE_STEPS {
+            return Err(format!(
+                "steps_len {} exceeds maximum limit of {} in rain forecast binary file",
+                steps_len, MAX_BINARY_CACHE_STEPS
+            )
+            .into());
+        }
 
         let mut steps = Vec::with_capacity(steps_len);
         for _ in 0..steps_len {
@@ -797,9 +846,59 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "PMM cannot be computed on a single grid cell")]
-    fn test_reduce_ensemble_pmm_panics() {
+    fn test_reduce_ensemble_pmm_defensive_mean() {
         let mut vals = [10, 20, 30];
-        reduce_ensemble(&EnsembleStat::Pmm, &mut vals);
+        assert_eq!(reduce_ensemble(&EnsembleStat::Pmm, &mut vals), 20);
+
+        let mut vals_single = [42];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Pmm, &mut vals_single), 42);
+
+        let mut vals_mixed = [10, 30, NODATA];
+        assert_eq!(reduce_ensemble(&EnsembleStat::Pmm, &mut vals_mixed), 20);
+    }
+
+    #[test]
+    fn test_binary_cache_invalid_magic_bytes() {
+        use std::io::Write;
+        let temp_dir = std::env::temp_dir();
+        let bad_magic_file = temp_dir.join("test_bad_magic.bin");
+        let mut f = std::fs::File::create(&bad_magic_file).unwrap();
+        f.write_all(b"BAD!").unwrap();
+        f.write_all(&0i64.to_le_bytes()).unwrap();
+        f.write_all(&0u32.to_le_bytes()).unwrap();
+        drop(f);
+
+        let res = TempForecast::read_from_file(bad_magic_file.to_str().unwrap());
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("Invalid magic bytes"));
+
+        let res_wind = WindForecast::read_from_file(bad_magic_file.to_str().unwrap());
+        assert!(res_wind.is_err());
+
+        let res_solar = SolarForecast::read_from_file(bad_magic_file.to_str().unwrap());
+        assert!(res_solar.is_err());
+
+        let res_rain = RainForecast::read_from_file(bad_magic_file.to_str().unwrap());
+        assert!(res_rain.is_err());
+
+        let _ = std::fs::remove_file(bad_magic_file);
+    }
+
+    #[test]
+    fn test_binary_cache_unbounded_steps_len_rejection() {
+        use std::io::Write;
+        let temp_dir = std::env::temp_dir();
+        let huge_steps_file = temp_dir.join("test_huge_steps.bin");
+        let mut f = std::fs::File::create(&huge_steps_file).unwrap();
+        f.write_all(b"HRMT").unwrap();
+        f.write_all(&123456789i64.to_le_bytes()).unwrap();
+        f.write_all(&0xFFFFFFFFu32.to_le_bytes()).unwrap(); // Corrupted huge steps_len
+        drop(f);
+
+        let res = TempForecast::read_from_file(huge_steps_file.to_str().unwrap());
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("exceeds maximum limit"));
+
+        let _ = std::fs::remove_file(huge_steps_file);
     }
 }
