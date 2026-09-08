@@ -146,7 +146,6 @@ export async function fetchHoverValue(layerMode, ens, time, lat, lon, signal) {
         url = `/api/value/wind?time=${time}&lat=${lat}&lon=${lon}&height=${h}`;
     }
 
-    startNetworkRequest();
     try {
         const response = await fetch(url, { signal });
         if (!response.ok) {
@@ -163,8 +162,6 @@ export async function fetchHoverValue(layerMode, ens, time, lat, lon, signal) {
             console.error("Hover value fetch failed:", err);
         }
         throw err;
-    } finally {
-        endNetworkRequest();
     }
 }
 
