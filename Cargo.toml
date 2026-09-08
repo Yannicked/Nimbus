@@ -20,6 +20,7 @@ grib-reader = "0.5"
 tar = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 rayon = "1.12"
+hdf5-metno-sys = "0.11.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

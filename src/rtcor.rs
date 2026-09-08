@@ -50,24 +50,46 @@ pub fn parse_rtcor_timestamp(filename: &str) -> Option<i64> {
 pub fn read_rtcor_slice(
     file_path: &str,
 ) -> Result<Vec<u16>, Box<dyn std::error::Error + Send + Sync>> {
-    let file = netcdf::open(file_path)?;
-    let img_group = file
-        .group("image1")?
-        .ok_or("Missing image1 group in RTCOR HDF5 file")?;
-    let var = img_group
-        .variable("image_data")
-        .ok_or("Missing image_data variable in RTCOR HDF5 file")?;
-
+    let cpath = std::ffi::CString::new(file_path)?;
+    let cdata = std::ffi::CString::new("/image1/image_data")?;
     let expected_len = RTCOR_GRID_H * RTCOR_GRID_W;
-    let raw_data: Vec<u16> = var.get_values((.., ..))?;
+    let mut raw_data = vec![0u16; expected_len];
 
-    if raw_data.len() != expected_len {
-        return Err(format!(
-            "Unexpected image_data dimensions: expected {}, got {}",
-            expected_len,
-            raw_data.len()
-        )
-        .into());
+    unsafe {
+        let _g = hdf5_metno_sys::LOCK.lock();
+        hdf5_metno_sys::h5::H5open();
+
+        let fid = hdf5_metno_sys::h5f::H5Fopen(
+            cpath.as_ptr(),
+            hdf5_metno_sys::h5f::H5F_ACC_RDONLY,
+            hdf5_metno_sys::h5p::H5P_DEFAULT,
+        );
+        if fid < 0 {
+            return Err(format!("Failed to open HDF5 file: {}", file_path).into());
+        }
+
+        let did =
+            hdf5_metno_sys::h5d::H5Dopen2(fid, cdata.as_ptr(), hdf5_metno_sys::h5p::H5P_DEFAULT);
+        if did < 0 {
+            hdf5_metno_sys::h5f::H5Fclose(fid);
+            return Err(format!("Missing /image1/image_data dataset in {}", file_path).into());
+        }
+
+        let read_res = hdf5_metno_sys::h5d::H5Dread(
+            did,
+            *hdf5_metno_sys::h5t::H5T_NATIVE_UINT16,
+            hdf5_metno_sys::h5s::H5S_ALL,
+            hdf5_metno_sys::h5s::H5S_ALL,
+            hdf5_metno_sys::h5p::H5P_DEFAULT,
+            raw_data.as_mut_ptr().cast(),
+        );
+
+        hdf5_metno_sys::h5d::H5Dclose(did);
+        hdf5_metno_sys::h5f::H5Fclose(fid);
+
+        if read_res < 0 {
+            return Err(format!("Failed to read image_data from {}", file_path).into());
+        }
     }
 
     // Convert:
@@ -346,5 +368,43 @@ mod tests {
         assert_eq!(store.frames[0].timestamp, 1000 + (5 * 300));
         assert_eq!(store.frames[4].timestamp, 1000 + (9 * 300));
         assert_eq!(*store.frames[4].raw_values, vec![9]);
+    }
+
+    #[test]
+    fn test_read_rtcor_slice_fd_leak() {
+        // Create 10 distinct temp files
+        let mut paths = Vec::new();
+        for i in 0..10 {
+            let p = format!("scratch/test_temp_{}.h5", i);
+            std::fs::copy("scratch/test_rtcor.h5", &p).unwrap();
+            paths.push(p);
+        }
+
+        for p in &paths {
+            let slice = read_rtcor_slice(p).expect("read_rtcor_slice should succeed");
+            assert_eq!(slice.len(), RTCOR_GRID_H * RTCOR_GRID_W);
+        }
+
+        // Check if any open file descriptors in /proc/self/fd still point to any of our temp files
+        let leaked_fds: Vec<String> = std::fs::read_dir("/proc/self/fd")
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| std::fs::read_link(e.path()).ok())
+                    .map(|t| t.to_string_lossy().into_owned())
+                    .filter(|target| target.contains("test_temp_"))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for p in &paths {
+            let _ = std::fs::remove_file(p);
+        }
+
+        assert!(
+            leaked_fds.is_empty(),
+            "Leaked file descriptors found: {:?}",
+            leaked_fds
+        );
     }
 }

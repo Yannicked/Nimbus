@@ -15,6 +15,10 @@ services:
       - reverse-proxy
       - default
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
 volumes:
   nimbus_cache:

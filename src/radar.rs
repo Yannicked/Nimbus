@@ -1230,10 +1230,7 @@ mod tests {
     #[test]
     fn test_read_rtcor_h5() {
         if std::path::Path::new("scratch/test_rtcor.h5").exists() {
-            let file = netcdf::open("scratch/test_rtcor.h5").unwrap();
-            let image1 = file.group("image1").unwrap().unwrap();
-            let var = image1.variable("image_data").unwrap();
-            let values: Vec<u16> = var.get_values((.., ..)).unwrap();
+            let values = crate::rtcor::read_rtcor_slice("scratch/test_rtcor.h5").unwrap();
             assert_eq!(values.len(), 765 * 700);
         }
     }
